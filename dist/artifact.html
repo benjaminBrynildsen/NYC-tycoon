@@ -3068,6 +3068,30 @@ var CityScene = class {
     this.sky.frustumCulled = false;
     this.sky.userData.noAO = true;
     this.scene.add(this.sky);
+    this._envScene = new THREE4.Scene();
+    this._envSky = new THREE4.Mesh(this.sky.geometry, mat);
+    this._envSky.frustumCulled = false;
+    this._envScene.add(this._envSky);
+    this._pmrem = new THREE4.PMREMGenerator(this.renderer);
+    this._pmrem.compileEquirectangularShader();
+    this._envKey = null;
+  }
+  /**
+   * Re-bake the environment map. It is a 256px cube render plus a convolution
+   * — cheap, but not free, so it only runs when the sky has actually moved on
+   * (a couple of times an in-game hour, not 60 times a second).
+   */
+  _updateEnvironment(hour) {
+    const key = Math.round(hour * 3);
+    if (key === this._envKey) return;
+    const now = performance.now();
+    if (this._envAt && now - this._envAt < 100) return;
+    this._envAt = now;
+    this._envKey = key;
+    const made = this._pmrem.fromScene(this._envScene, 0, 100, 8e3);
+    this._envTarget?.dispose();
+    this._envTarget = made;
+    this.scene.environment = made.texture;
   }
   _water() {
     const c = document.createElement("canvas");
@@ -4161,6 +4185,7 @@ var CityScene = class {
     const fogC = this.skyUniforms.uMid.value;
     this.scene.fog.color.copy(fogC);
     this.scene.fog.density = 3e-4 + (1 - day) * 35e-5;
+    this._updateEnvironment(hour);
     const lit = 1 - Math.min(1, day * 2.4);
     this.night = lit;
     this.post?.setNight(lit);
@@ -5524,7 +5549,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "7d6d65f \xB7 2026-09-22 23:12" : "dev";
+var BUILD = true ? "3ca67d0 \xB7 2026-09-22 23:19" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");

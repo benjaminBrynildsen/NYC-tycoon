@@ -155,6 +155,37 @@ export class CityScene {
     this.sky.frustumCulled = false;
     this.sky.userData.noAO = true;
     this.scene.add(this.sky);
+
+    // The same dome, alone in a scene of its own, is what the environment map
+    // is baked from — so the reflections are the actual sky overhead, dusk
+    // included, rather than a stock HDRI that never changes.
+    this._envScene = new THREE.Scene();
+    this._envSky = new THREE.Mesh(this.sky.geometry, mat);
+    this._envSky.frustumCulled = false;
+    this._envScene.add(this._envSky);
+    this._pmrem = new THREE.PMREMGenerator(this.renderer);
+    this._pmrem.compileEquirectangularShader();
+    this._envKey = null;
+  }
+
+  /**
+   * Re-bake the environment map. It is a 256px cube render plus a convolution
+   * — cheap, but not free, so it only runs when the sky has actually moved on
+   * (a couple of times an in-game hour, not 60 times a second).
+   */
+  _updateEnvironment(hour) {
+    const key = Math.round(hour * 3);          // every twenty minutes
+    if (key === this._envKey) return;
+    // At a month a second the clock holds steady, but at twelve hours a second
+    // it would ask for thirty-six bakes a second. Cap it by real time.
+    const now = performance.now();
+    if (this._envAt && now - this._envAt < 100) return;
+    this._envAt = now;
+    this._envKey = key;
+    const made = this._pmrem.fromScene(this._envScene, 0, 100, 8000);
+    this._envTarget?.dispose();
+    this._envTarget = made;
+    this.scene.environment = made.texture;
   }
 
   _water() {
@@ -1281,6 +1312,8 @@ export class CityScene {
     const fogC = this.skyUniforms.uMid.value;
     this.scene.fog.color.copy(fogC);
     this.scene.fog.density = 0.00030 + (1 - day) * 0.00035;
+
+    this._updateEnvironment(hour);
 
     const lit = 1 - Math.min(1, day * 2.4);
     this.night = lit;
