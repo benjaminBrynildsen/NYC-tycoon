@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { generateCity, CONFIG, minFloors } from './world.js';
 import { createState, advance, netWorth, leaderboard, money, logEvent } from './economy.js';
 import { CityScene } from './scene.js';
-import { Controls, MODE, requestLock } from './controls.js';
+import { Controls, MODE, requestLock, isTyping } from './controls.js';
 import { UI } from './ui.js';
 
 // Game minutes that pass per real second, by speed setting.
@@ -57,8 +57,9 @@ const ray = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-canvas.addEventListener('pointerdown', (e) => {
+canvas.addEventListener('pointerup', (e) => {
   if (controls.mode !== MODE.BOARD || e.button !== 0) return;
+  if (controls.panMoved > 5) return;          // that was a drag, not a click
   ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, scene.camera);
 
@@ -79,7 +80,7 @@ canvas.addEventListener('pointerdown', (e) => {
 /** The building or site worth putting a label on, near where you're standing. */
 function nearbyNotable() {
   const f = controls.focusPoint;
-  let best = null, bd = 46 * 46;
+  let best = null, bd = 85 * 85;
   for (const l of city.lots) {
     if (!l.project && !l.building) continue;
     if (!l.project && l.owner !== 'player') continue;
@@ -105,7 +106,7 @@ function nearestLot(x, z, maxD) {
 let visionLot = null;
 
 addEventListener('keydown', (e) => {
-  if (e.repeat) return;
+  if (e.repeat || isTyping()) return;
   switch (e.code) {
     case 'KeyV': toggleVision(); break;
     case 'KeyF':
@@ -213,6 +214,7 @@ function frame(now) {
   if (uiAccum > 0.25) {
     uiAccum = 0;
     ui.refreshTop();
+    ui.refreshNews();
     if (controls.mode === MODE.BOARD) ui.refreshBoard();
     if (ui.selected) {
       const keep = ui.selected;

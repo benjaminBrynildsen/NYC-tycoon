@@ -13,6 +13,7 @@
 </script>
 </head>
 <body>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&display=swap">
 <canvas id="view"></canvas>
 
 <div id="hud">
@@ -44,11 +45,33 @@
 
   <div id="worldlabel" class="hidden"></div>
 
-  <div id="board-panel" class="panel hidden">
-    <h3>Standings</h3>
-    <ol id="leaderboard"></ol>
-    <h3>The wire</h3>
-    <ul id="log"></ul>
+  <div id="rail">
+    <div id="news" class="panel np">
+      <div class="np-mast">The City Ledger</div>
+      <div class="np-rule"></div>
+      <div class="np-date" id="np-date">—</div>
+      <canvas id="np-plate" width="248" height="134"></canvas>
+      <div class="np-head" id="np-head">No news yet</div>
+      <div class="np-dek" id="np-dek">The city is quiet. Buy something.</div>
+      <button id="np-more">Full edition</button>
+    </div>
+    <div id="board-panel" class="panel hidden">
+      <h3>Standings</h3>
+      <ol id="leaderboard"></ol>
+    </div>
+  </div>
+
+  <div id="np-full" class="hidden">
+    <div class="np-sheet np">
+      <button id="np-close">×</button>
+      <div class="np-mast big">The City Ledger</div>
+      <div class="np-sub" id="np-fulldate"></div>
+      <div class="np-rule thick"></div>
+      <div class="np-cols">
+        <div id="np-stories"></div>
+        <aside id="np-brief"><h4>In brief</h4><ul id="log"></ul></aside>
+      </div>
+    </div>
   </div>
 
   <div id="lot-panel" class="panel hidden">

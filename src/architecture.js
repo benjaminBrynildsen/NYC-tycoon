@@ -165,7 +165,7 @@ function solid(cache, key, color, roughness = 0.85, metalness = 0.05, glow = fal
  * they rise, which is both what the zoning envelope wants and what makes a
  * skyline read as New York rather than as a bar chart.
  */
-function volumes(lot, b, rnd) {
+export function volumes(lot, b, rnd) {
   const lotW = lot.w * 0.94, lotD = lot.d * 0.94;
   const side = Math.min(lotW, b.side || Math.sqrt((lot.areaSf * 0.7) / CONFIG.SF_PER_M2));
   const form = b.form || 'stepped';
@@ -328,6 +328,11 @@ export function makeBuilding(lot, b, cache) {
 }
 
 /** Geometry for the batched roof props, built once and instanced. */
+/** The same volume stack the mesh uses, for drawing the building on paper. */
+export function massingVolumes(lot, b) {
+  return volumes(lot, b, mulberry32(lot.seed + 31));
+}
+
 export function roofPropGeometries() {
   const tank = new THREE.CylinderGeometry(1.5, 1.7, 3.4, 10);
   tank.translate(0, 5.2, 0);

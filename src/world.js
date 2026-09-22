@@ -9,8 +9,16 @@ export const CONFIG = {
   FLOOR_H: 3.6,       // metres per storey
   SF_PER_M2: 10.7639,
   MAX_COVERAGE: 0.85, // share of lot the footprint may cover
-  MAX_FLOORS: 90,
+  MAX_FLOORS: 150,
 };
+
+// You cannot build a tower one broom closet wide. Below this, a floor can't
+// hold a lift core, stairs, risers and anything worth renting.
+export const MIN_PLATE_SF = 4200;
+
+// Zoning height limits by district. Supertall is a core privilege — which is
+// what makes getting into the core worth doing.
+export const HEIGHT_CAP = { res: 25, edge: 50, mid: 90, core: 150 };
 
 // The harbour wraps the south and east edges. Waterfront land is the scarcest
 // thing on the map and the game should make you feel that.
@@ -101,7 +109,12 @@ export function minFloors(lot) {
 }
 
 export function maxFloors(lot) {
-  return Math.min(CONFIG.MAX_FLOORS, Math.max(minFloors(lot) + 24, Math.round(minFloors(lot) * 2.2)));
+  return Math.max(minFloors(lot) + 2, HEIGHT_CAP[lot.district]);
+}
+
+/** Storeys you can reach on your own entitlement, before buying air rights. */
+export function floorsWithoutAir(lot) {
+  return Math.max(1, Math.floor(buildableSf(lot) / MIN_PLATE_SF));
 }
 
 /**
@@ -112,11 +125,22 @@ export function maxFloors(lot) {
 export function massing(lot, floors) {
   const entitled = buildableSf(lot);
   const perFloorMax = lot.areaSf * CONFIG.MAX_COVERAGE;
-  const gsf = Math.min(entitled, floors * perFloorMax);
+  let gsf = Math.min(entitled, floors * perFloorMax);
+  let airSf = 0;
+
+  // Past a certain height your entitlement no longer spreads across enough
+  // floors to make any of them usable, so the extra area has to be bought from
+  // the neighbours. That is how supertall actually gets built.
+  if (gsf / floors < MIN_PLATE_SF) {
+    const need = Math.min(floors * MIN_PLATE_SF, floors * perFloorMax);
+    airSf = Math.max(0, need - entitled);
+    gsf = entitled + airSf;
+  }
+
   const footprintSf = gsf / floors;
   const coverage = footprintSf / lot.areaSf;
   const side = Math.sqrt(footprintSf / CONFIG.SF_PER_M2);
-  return { gsf, footprintSf, coverage, side, height: floors * CONFIG.FLOOR_H, floors };
+  return { gsf, airSf, footprintSf, coverage, side, height: floors * CONFIG.FLOOR_H, floors };
 }
 
 export function generateCity(seed = 7) {

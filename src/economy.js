@@ -1,7 +1,8 @@
 // The simulation: money, land value, construction, the market cycle, and the
 // rival developers you're racing. Runs on a day tick. No rendering in here.
 
-import { CONFIG, DISTRICTS, USES, STYLES, FORMS, buildableSf, massing, minFloors, mulberry32 } from './world.js';
+import { CONFIG, DISTRICTS, USES, STYLES, FORMS, buildableSf, massing, minFloors,
+         maxFloors, mulberry32 } from './world.js';
 
 export const START_CASH = 100_000_000;
 export const CAP_RATE = 0.055;        // what a stabilised building is worth per $ of NOI
@@ -44,6 +45,8 @@ export function createState(city, seed = 11) {
     cyclePhase: rnd() * Math.PI * 2,
     projects: [],
     log: [],
+    news: [],
+    mood: 'steady',
     rnd,
     monthOfLastTick: -1,
   };
@@ -117,17 +120,33 @@ export function askPrice(state, lot) {
   return base * occupied;
 }
 
+/**
+ * Height is the most expensive thing in construction. Hoisting, concrete
+ * pumping, lift banks, wind engineering and a longer schedule all compound, so
+ * cost per square foot runs away rather than creeping.
+ */
+export function heightCostMul(floors) {
+  return 1 + 0.010 * floors + 0.00010 * floors * floors;
+}
+
+/** Lifts and structure eat a growing share of every floor as you go up. */
+export function coreEfficiency(floors) {
+  return Math.max(0.58, 0.88 - floors * 0.0016);
+}
+
 export function rentPerSf(state, lot, use, floors, quality = 1) {
   const u = USES[use];
-  const slender = 1 + Math.min(floors, 90) / 190;      // height and light are worth money
+  // Views are worth money and trophy height is worth disproportionately more,
+  // but efficiency losses claw some of it back.
+  const view = 1 + floors / 200 + Math.pow(floors / 150, 2) * 0.9;
+  const eff = coreEfficiency(floors) / coreEfficiency(10);
   const p = premiums(state, lot);
   const place = p.water * p.park * p.corridor * p.blight;
-  return u.rent * DISTRICTS[lot.district].rentMul * slender * quality * place * state.cycle;
+  return u.rent * DISTRICTS[lot.district].rentMul * view * eff * quality * place * state.cycle;
 }
 
 export function costPerSf(lot, use, floors) {
-  const u = USES[use];
-  return u.cost * (1 + floors / 55);                    // tall is disproportionately expensive
+  return USES[use].cost * heightCostMul(floors);
 }
 
 export function occupancyFor(state, lot) {
@@ -161,16 +180,20 @@ export function quote(state, lot, floors, use, ltc, design = DEFAULT_DESIGN, own
   const m = massing(lot, floors);
   const dm = designMul(design);
   const land = lot.owner === owner ? 0 : askPrice(state, lot);
+  // Floor area beyond your entitlement has to be bought from the neighbours,
+  // and they know exactly why you want it.
+  const airRate = landValue(state, lot) / Math.max(1, buildableSf(lot));
+  const air = (m.airSf || 0) * airRate * 1.45;
   const hard = m.gsf * costPerSf(lot, use, floors) * dm.cost;
   const soft = hard * 0.14;
-  const total = land + hard + soft;
+  const total = land + air + hard + soft;
   const loan = Math.min(total * ltc, total * MAX_LTC);
   const equity = total - loan;
   const gross = m.gsf * rentPerSf(state, lot, use, floors, 1) * dm.rent;
   const noi = gross * occupancyFor(state, lot) * (1 - USES[use].opex);
   const debtService = loan * INTEREST;
-  const months = Math.round(9 + floors * 0.75);
-  return { ...m, land, hard, soft, total, loan, equity, gross, noi,
+  const months = Math.round(8 + floors * 0.42 + Math.pow(floors / 34, 2));
+  return { ...m, land, air, hard, soft, total, loan, equity, gross, noi,
            debtService, cashflow: noi - debtService,
            yieldOnCost: noi / Math.max(total, 1), value: noi / CAP_RATE, months };
 }
@@ -235,6 +258,18 @@ export function startProject(state, lot, actorId, floors, use, ltc, design = DEF
   lot.building = null;                     // demolition is instant; this is a game
   state.projects.push(project);
   logEvent(state, actorId, `broke ground on ${floors} floors at #${lot.id} (${money(q.total)})`);
+  if (floors >= 16 || q.total > 55e6) {
+    const who = a.name === 'You' ? 'CITY DEVELOPER' : a.name.toUpperCase();
+    pushNews(state, 'groundbreaking',
+      floors >= 80 ? `${floors} STOREYS PLANNED FOR ${lot.avenue.name.toUpperCase()}`
+                   : `GROUND BROKEN ON ${floors}-STOREY ${use === 'residential' ? 'RESIDENCE' : 'TOWER'}`,
+      `${a.name} has committed ${money(q.total)} to a ${floors}-floor scheme at ${lot.address}, `
+      + `on a site zoned FAR ${lot.far}. ${q.airSf > 0
+          ? `The plan leans on ${sf(q.airSf)} of purchased air rights.`
+          : 'The scheme sits within its as-of-right envelope.'} `
+      + `Completion is projected in ${q.months} months.`,
+      lot);
+  }
   return { ok: true, project, quote: q };
 }
 
@@ -280,6 +315,9 @@ export function makeOffer(state, lot, actorId, amount) {
     lot.owner = actorId;
     lot.offerBlockedUntil = 0;
     logEvent(state, actorId, `bought ${lot.address} from ${name} for ${money(amount)}`);
+    pushNews(state, 'deal', `${lot.address.toUpperCase()} CHANGES HANDS`,
+      `${a.name} has bought ${lot.address} from ${name} for ${money(amount)} in an off-market deal. `
+      + `The site carries ${sf(buildableSf(lot))} of development rights.`, lot);
     return { ok: true, accepted: true, price: amount, from, seller: name };
   }
 
@@ -362,6 +400,23 @@ export function worthBreakdown(state, actorId = 'player') {
   };
 }
 
+/**
+ * The city's paper of record. Stories carry a snapshot of the building as it
+ * was when the story ran, so the illustration stays true even after the
+ * building changes hands or gets redeveloped.
+ */
+export function pushNews(state, kind, headline, dek, lot = null) {
+  const b = lot ? (lot.project || lot.building) : null;
+  state.news.unshift({
+    day: state.day, date: formatDate(state), kind, headline, dek,
+    lotId: lot ? lot.id : null,
+    address: lot ? lot.address : null,
+    snapshot: b ? { floors: b.floors, form: b.form, style: b.style,
+                    variant: b.variant, use: b.use, side: b.side } : null,
+  });
+  if (state.news.length > 40) state.news.pop();
+}
+
 export function logEvent(state, actorId, text) {
   const who = state.actors[actorId];
   state.log.unshift({ day: state.day, actor: actorId, name: who ? who.name : actorId, text });
@@ -401,6 +456,14 @@ function dayTick(state) {
       state.actors[p.owner].gsfBuilt += p.gsf;
       state.projects.splice(i, 1);
       logEvent(state, p.owner, `topped out ${p.floors} floors at #${p.lot.id} — ${sf(p.gsf)}`);
+      if (p.floors >= 12) {
+        const nm = p.lot.name || p.lot.address;
+        pushNews(state, 'topout', `${nm.toUpperCase()} TOPS OUT`,
+          `${state.actors[p.owner].name} has completed ${sf(p.gsf)} across ${p.floors} floors at `
+          + `${p.lot.address}. The building is expected to earn ${money(buildingNOI(state, p.lot))} a year `
+          + `at ${Math.round(occupancyFor(state, p.lot) * 100)}% occupancy.`,
+          p.lot);
+      }
       state._dirtyGeometry = true;
     }
   }
@@ -431,6 +494,35 @@ function monthTick(state) {
   }
 
   for (const r of RIVALS) rivalTurn(state, state.actors[r.id]);
+  marketStory(state);
+}
+
+/** The paper notices when the market turns. */
+function marketStory(state) {
+  // Hysteresis and a cooling-off period: the cycle wobbles across any single
+  // threshold, and a paper that cries boom every other month is noise.
+  const c = state.cycle;
+  let mood = state.mood;
+  if (c > 1.18) mood = 'boom';
+  else if (c < 0.84) mood = 'slump';
+  else if (c > 0.94 && c < 1.08) mood = 'steady';
+  if (mood === state.mood) return;
+  if (state.moodLockUntil && state.day < state.moodLockUntil) return;
+  const was = state.mood;
+  state.mood = mood;
+  state.moodLockUntil = state.day + 300;
+  if (mood === 'boom') {
+    pushNews(state, 'market', 'CAPITAL FLOODS IN AS VALUES RUN AHEAD OF RENTS',
+      `Land is trading at levels the income cannot yet justify. Lenders are competing on terms `
+      + `and every site in the core has three bidders. Developers who remember the last cycle are selling.`);
+  } else if (mood === 'slump') {
+    pushNews(state, 'market', 'THE MUSIC STOPS: LENDERS PULL BACK',
+      `Values are sliding and refinancing has gone quiet. Schemes that penciled at the top of the `
+      + `market are now short, and the over-levered are looking for buyers. Whoever holds cash sets the price.`);
+  } else {
+    pushNews(state, 'market', was === 'slump' ? 'MARKET FINDS ITS FOOTING' : 'FEVER BREAKS',
+      `Values and rents have come back into line. Ordinary deals pencil again.`);
+  }
 }
 
 // ------------------------------------------------- neighbourhood character
@@ -463,8 +555,13 @@ function updateCorridors(state) {
     c.famous = c.fame > 0.45;
     if (c.famous && !wasFamous) {
       logEvent(state, 'player', `— ${c.name} has become a destination retail strip`);
+      pushNews(state, 'corridor', `${c.name.toUpperCase()} IS THE CITY'S NEW HIGH STREET`,
+        `Ground-floor trade along ${c.name} has reached ${sf(c.retail)}, enough to draw shoppers `
+        + `from outside the district. Landlords on the strip can expect rents to follow.`);
     } else if (!c.famous && wasFamous) {
       logEvent(state, 'player', `— ${c.name} has lost its draw`);
+      pushNews(state, 'corridor', `${c.name.toUpperCase()} LOSES ITS DRAW`,
+        `Vacancies and neglect have hollowed out what was one of the city's busier strips.`);
     }
   }
 }
@@ -538,6 +635,9 @@ function rivalTurn(state, a) {
       a.debt = Math.max(0, a.debt - price * 0.6);
       lot.owner = 'npc';
       logEvent(state, a.id, `sold #${lot.id} under pressure for ${money(price)}`);
+      pushNews(state, 'distress', `${a.name.toUpperCase()} SELLS UNDER PRESSURE`,
+        `${a.name} has offloaded ${lot.address} for ${money(price)}, well below what the asset `
+        + `earned at the top of the market. The firm is carrying ${money(a.debt)} of debt.`, lot);
     }
     a.cooldown = 2;
     return;

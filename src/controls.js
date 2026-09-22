@@ -6,6 +6,13 @@ import { CONFIG, lotAt } from './world.js';
 
 export const MODE = { STREET: 'street', CAR: 'car', BOARD: 'board' };
 
+/** True while a text field or dropdown has focus, so game keys must stand down. */
+export function isTyping() {
+  const a = document.activeElement;
+  return !!a && (a.tagName === 'INPUT' || a.tagName === 'SELECT'
+                 || a.tagName === 'TEXTAREA' || a.isContentEditable);
+}
+
 /** Pointer lock is optional — some embedded views refuse it. Never let that throw. */
 export function requestLock(el) {
   try {
@@ -45,12 +52,19 @@ export class Controls {
 
   _bind() {
     addEventListener('keydown', (e) => {
+      if (isTyping()) { this.keys.clear(); return; }
       if (e.repeat) return;
       this.keys.add(e.code);
       if (e.code === 'Tab') { e.preventDefault(); this.toggleBoard(); }
     });
     addEventListener('keyup', (e) => this.keys.delete(e.code));
     addEventListener('blur', () => this.keys.clear());
+    // Focusing a field hands the keyboard and the mouse back to the page.
+    document.addEventListener('focusin', () => {
+      if (!isTyping()) return;
+      this.keys.clear();
+      if (document.pointerLockElement) document.exitPointerLock();
+    });
 
     this.canvas.addEventListener('click', () => {
       if (this.mode !== MODE.BOARD && !this.locked) requestLock(this.canvas);
@@ -63,6 +77,9 @@ export class Controls {
         if (this.dragging) {
           this.board.yaw -= e.movementX * 0.004;
           this.board.pitch = Math.max(-1.45, Math.min(-0.18, this.board.pitch - e.movementY * 0.003));
+        } else if (this.panning) {
+          this.panMoved += Math.abs(e.movementX) + Math.abs(e.movementY);
+          this.panBy(e.movementX, e.movementY);
         }
         return;
       }
@@ -72,10 +89,15 @@ export class Controls {
     });
 
     this.canvas.addEventListener('mousedown', (e) => {
-      if (this.mode === MODE.BOARD && e.button === 2) this.dragging = true;
-      if (this.mode !== MODE.BOARD && e.button === 0 && !this.locked) this.lookDrag = true;
+      if (this.mode === MODE.BOARD) {
+        if (e.button === 2) this.dragging = true;
+        // Left-drag pans the city; a left click that never moves is a select.
+        if (e.button === 0) { this.panning = true; this.panMoved = 0; }
+      } else if (e.button === 0 && !this.locked) this.lookDrag = true;
     });
-    addEventListener('mouseup', () => { this.dragging = false; this.lookDrag = false; });
+    addEventListener('mouseup', () => {
+      this.dragging = false; this.lookDrag = false; this.panning = false;
+    });
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     this.canvas.addEventListener('wheel', (e) => {
       if (this.mode !== MODE.BOARD) return;
@@ -226,6 +248,23 @@ export class Controls {
     const [cx, cz] = this.s.resolveCollision(pos.x, pos.z, 0.4);
     pos.x = cx; pos.z = cz;
     return { pos, q };
+  }
+
+  /**
+   * Drag the city around. The ground under the cursor stays under the cursor,
+   * so the map follows the hand rather than the camera.
+   */
+  panBy(dx, dy) {
+    const b = this.board;
+    const k = b.dist * 0.0021;
+    const sin = Math.sin(b.yaw), cos = Math.cos(b.yaw);
+    const right = { x: cos, z: -sin };
+    const fwd = { x: -sin, z: -cos };
+    b.target.x += (-right.x * dx + fwd.x * dy) * k;
+    b.target.z += (-right.z * dx + fwd.z * dy) * k;
+    const lim = CONFIG.EXTENT * 0.85;
+    b.target.x = Math.max(-lim, Math.min(lim, b.target.x));
+    b.target.z = Math.max(-lim, Math.min(lim, b.target.z));
   }
 
   _boardPan(dt) {
