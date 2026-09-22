@@ -108,6 +108,131 @@ function facadeCanvas(type, variant, emissive) {
   return c;
 }
 
+/**
+ * A height field on the same bay grid as the colour: wall at mid grey, glass
+ * cut back into it, sill and lintel standing proud. Sobelled into a normal
+ * map this is what gives a window a reveal — an edge that catches the sun on
+ * one side and shades on the other, instead of a rectangle painted on a slab.
+ */
+function facadeHeight(type, variant) {
+  const key = `${type}_${variant}_h`;
+  if (canvasCache.has(key)) return canvasCache.get(key);
+  const T = TYPES[type];
+  const S = 128, cell = S / 4;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+
+  g.fillStyle = '#9a9a9a';
+  g.fillRect(0, 0, S, S);
+
+  if (T.mortar > 0.2) {
+    for (let y = 0; y < S; y += 4) {          // mortar courses, raked back
+      g.fillStyle = `rgba(0,0,0,${0.28 * T.mortar})`;
+      g.fillRect(0, y, S, 1);
+    }
+  } else {
+    for (let y = 0; y < S; y += cell) {       // spandrel panel, set back
+      g.fillStyle = 'rgba(0,0,0,0.2)';
+      g.fillRect(0, y + cell - 5, S, 5);
+    }
+  }
+
+  const curtain = T.mortar < 0.2;
+  const wW = curtain ? cell - 6 : cell * 0.52;
+  const wH = curtain ? cell * 0.6 : cell * 0.55;
+  // A masonry wall is two feet thick and the window sits well inside it; a
+  // curtain wall is a sheet of glass a few inches off the mullion line.
+  const depth = curtain ? 40 : 96;
+  for (let ry = 0; ry < 4; ry++) {
+    for (let rx = 0; rx < 4; rx++) {
+      const x = rx * cell + (cell - wW) / 2;
+      const y = ry * cell + (cell - wH) / 2.4;
+      g.fillStyle = `rgb(${154 - depth},${154 - depth},${154 - depth})`;
+      g.fillRect(x, y, wW, wH);
+      g.fillStyle = '#e2e2e2';                // sill, proud of the wall
+      g.fillRect(x - 1.5, y + wH - 1, wW + 3, 2.5);
+      if (!curtain) {
+        g.fillStyle = '#c8c8c8';              // lintel
+        g.fillRect(x - 1.5, y - 2, wW + 3, 2);
+      }
+    }
+  }
+  canvasCache.set(key, c);
+  return c;
+}
+
+/** Sobel a height field into a tangent-space normal map. */
+function facadeNormal(type, variant) {
+  const key = `${type}_${variant}_n`;
+  if (canvasCache.has(key)) return canvasCache.get(key);
+  const src = facadeHeight(type, variant);
+  const S = src.width;
+  const sg = src.getContext('2d').getImageData(0, 0, S, S).data;
+  const out = document.createElement('canvas');
+  out.width = out.height = S;
+  const og = out.getContext('2d');
+  const img = og.createImageData(S, S);
+  // Wrapping lookups, because the texture tiles and a seam down every bay
+  // would be worse than no normal map at all.
+  const at = (x, y) => sg[(((y % S) + S) % S * S + ((x % S) + S) % S) * 4] / 255;
+  const strength = 2.6;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const dx = (at(x - 1, y) - at(x + 1, y)) * strength;
+      const dy = (at(x, y + 1) - at(x, y - 1)) * strength;
+      const len = Math.hypot(dx, dy, 1);
+      const i = (y * S + x) * 4;
+      img.data[i] = ((dx / len) * 0.5 + 0.5) * 255;
+      img.data[i + 1] = ((dy / len) * 0.5 + 0.5) * 255;
+      img.data[i + 2] = (1 / len) * 255;
+      img.data[i + 3] = 255;
+    }
+  }
+  og.putImageData(img, 0, 0);
+  canvasCache.set(key, out);
+  return out;
+}
+
+/**
+ * Where the wall is smooth and where it is not. Three multiplies the material
+ * roughness by the green channel, so this is a scale: glass comes out a third
+ * as rough as the masonry it is set into, which is what makes the reflection
+ * sit in the window rather than over the whole facade.
+ */
+function facadeRough(type, variant) {
+  const key = `${type}_${variant}_r`;
+  if (canvasCache.has(key)) return canvasCache.get(key);
+  const T = TYPES[type];
+  const S = 128, cell = S / 4;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, S, S);
+  const curtain = T.mortar < 0.2;
+  const wW = curtain ? cell - 6 : cell * 0.52;
+  const wH = curtain ? cell * 0.6 : cell * 0.55;
+  for (let ry = 0; ry < 4; ry++) {
+    for (let rx = 0; rx < 4; rx++) {
+      const x = rx * cell + (cell - wW) / 2;
+      const y = ry * cell + (cell - wH) / 2.4;
+      g.fillStyle = '#585858';
+      g.fillRect(x, y, wW, wH);
+    }
+  }
+  canvasCache.set(key, c);
+  return c;
+}
+
+/** A tiling texture from a canvas. Linear data maps must not be sRGB. */
+function dataTexture(canvas) {
+  const t = new THREE.CanvasTexture(canvas);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 4;
+  return t;
+}
+
 function makeTexture(type, variant, emissive) {
   const t = new THREE.CanvasTexture(facadeCanvas(type, variant, emissive));
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
@@ -152,6 +277,9 @@ export function facadeMaterial(cache, type, variant, condition) {
     emissive: 0xffffff,
     emissiveIntensity: 0,
     color: tint,
+    normalMap: dataTexture(facadeNormal(type, variant)),
+    normalScale: new THREE.Vector2(glassy ? 0.55 : 1.0, glassy ? 0.55 : 1.0),
+    roughnessMap: dataTexture(facadeRough(type, variant)),
     roughness: glassy ? 0.24 + (1 - condition) * 0.4 : 0.78 + (1 - condition) * 0.15,
     metalness: glassy ? 0.5 : 0.03,
   });
