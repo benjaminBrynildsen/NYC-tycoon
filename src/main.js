@@ -26,24 +26,26 @@ const STREET_CAP = 60;
  * session copy is the fallback where an embedded view rewrites the URL.
  */
 const DEFAULT_SEED = 7;
-function readSeed() {
-  const m = /^#s(\d+)$/.exec(location.hash || '');
-  if (m) return +m[1];
+const DEFAULT_YEAR = 1998;
+
+function readStart() {
+  const m = /^#s(\d+)y(\d+)$/.exec(location.hash || '');
+  if (m) return { seed: +m[1], year: +m[2] };
   try {
-    const v = sessionStorage.getItem('airrights.seed');
-    if (v) return +v;
+    const v = sessionStorage.getItem('airrights.start');
+    if (v) { const [s2, y2] = v.split(':').map(Number); return { seed: s2, year: y2 }; }
   } catch { /* private window or blocked storage */ }
-  return DEFAULT_SEED;
+  return { seed: DEFAULT_SEED, year: DEFAULT_YEAR };
 }
-function writeSeed(seed) {
-  try { sessionStorage.setItem('airrights.seed', String(seed)); } catch { /* fine */ }
-  try { location.hash = `s${seed}`; } catch { /* fine */ }
+function writeStart(seed, year) {
+  try { sessionStorage.setItem('airrights.start', `${seed}:${year}`); } catch { /* fine */ }
+  try { location.hash = `s${seed}y${year}`; } catch { /* fine */ }
 }
 
-const SEED = readSeed();
+const { seed: SEED, year: START_YEAR } = readStart();
 const canvas = document.getElementById('view');
-const city = generateCity(SEED);
-const state = createState(city, SEED);
+const city = generateCity(SEED, START_YEAR);
+const state = createState(city, SEED, START_YEAR);
 // A phone gets fewer people, fewer cars and no shadows; the sim is identical.
 const TOUCH = isTouch();
 const scene = new CityScene(state, canvas, TOUCH ? QUALITY.low : QUALITY.high);
@@ -249,7 +251,7 @@ controls.toggleBoard = () => {
 
 // Injected by the build so a stale page is obvious at a glance.
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
-document.getElementById('buildstamp').textContent = `city ${SEED} · build ${BUILD}`;
+document.getElementById('buildstamp').textContent = `city ${SEED} · ${START_YEAR} · build ${BUILD}`;
 console.log(`Air Rights — build ${BUILD}`);
 
 // --- reset
@@ -266,7 +268,7 @@ addEventListener('pointerdown', (e) => {
   if (!resetMenu.contains(e.target) && e.target !== resetBtn) closeReset();
 });
 function restart(sameCity) {
-  writeSeed(sameCity ? SEED : Math.floor(Math.random() * 999_999) + 1);
+  writeStart(sameCity ? SEED : Math.floor(Math.random() * 999_999) + 1, START_YEAR);
   location.reload();
 }
 document.getElementById('reset-new').onclick = () => restart(false);
@@ -284,6 +286,21 @@ function beginGame(message) {
 document.getElementById('begin').onclick = () => {
   beginGame('You own one building. Find something under-built and take it.');
 };
+
+// --- which century you start in
+{
+  const era = currentEra(state);
+  document.getElementById('era-now').textContent = `${START_YEAR} · ${era.name}`;
+  document.getElementById('era-note').textContent = era.note;
+  for (const btn of document.querySelectorAll('#erapick button')) {
+    btn.classList.toggle('on', +btn.dataset.year === START_YEAR);
+    btn.onclick = () => {
+      if (+btn.dataset.year === START_YEAR) return;
+      writeStart(SEED, +btn.dataset.year);
+      location.reload();
+    };
+  }
+}
 
 // --- joining a game already under way
 document.getElementById('begin-takeover').onclick = () => {

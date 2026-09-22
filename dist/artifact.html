@@ -516,6 +516,17 @@ body.touch #crosshair, body.touch #modehint { display: none; }
   #np-close { top: 8px; right: 10px; }
   .lift-readout span { font-size: 46px; }
 }
+
+#erapick { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+.eralabel { font-size: 12px; color: var(--dim); }
+.eralabel b { color: var(--accent); font-weight: 700; }
+.erarow { display: flex; gap: 6px; margin: 9px 0 4px; }
+.erarow button {
+  flex: 1; padding: 8px 4px; border-radius: 5px; cursor: pointer; font: inherit;
+  font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+  background: rgba(255,255,255,.07); color: var(--dim); border: 1px solid var(--line);
+}
+.erarow button.on { background: var(--accent); color: #06121b; border-color: var(--accent); }
 </style>
 <script type="importmap">
 { "imports": {
@@ -697,6 +708,17 @@ body.touch #crosshair, body.touch #modehint { display: none; }
       </div>
     </div>
     <p class="sub small">Buy land. Build on it. Rent pays you monthly and development pulls up the value of everything around it — including your rivals' land. The market runs in cycles; leverage is how you go fast and how you die.</p>
+    <div id="erapick">
+      <div class="eralabel">Start in <b id="era-now">—</b></div>
+      <div class="erarow">
+        <button data-year="1890">1890</button>
+        <button data-year="1916">1916</button>
+        <button data-year="1931">1931</button>
+        <button data-year="1998">1998</button>
+      </div>
+      <p class="hint" id="era-note"></p>
+    </div>
+
     <div class="startrow">
       <button id="begin" class="primary big">Break ground</button>
       <button id="begin-takeover" class="big">Take over a firm…</button>
@@ -4525,8 +4547,7 @@ var UI = class {
     $("i-use").onchange = () => this.refreshBuild();
     $("i-ltc").oninput = () => this.refreshBuild();
     $("do-build").onclick = () => this.commit();
-    $("i-style").innerHTML = Object.entries(STYLES).map(([k, v]) => `<option value="${k}">${v.name}</option>`).join("");
-    $("i-style").value = this.design.style;
+    this.refreshStyles();
     $("i-style").onchange = () => {
       this.design.style = $("i-style").value;
       this.design.variant = 1;
@@ -4541,6 +4562,16 @@ var UI = class {
       };
     }
     this.renderSwatches();
+  }
+  /** Only the facade systems the city has actually invented. */
+  refreshStyles() {
+    const allowed = currentEra(this.state).styles;
+    $("i-style").innerHTML = allowed.map((k) => `<option value="${k}">${STYLES[k].name}</option>`).join("");
+    if (!allowed.includes(this.design.style)) {
+      this.design.style = allowed[allowed.length - 1];
+      this.design.variant = 1;
+    }
+    $("i-style").value = this.design.style;
   }
   /** Facade colours come straight from the chosen style's palette. */
   renderSwatches() {
@@ -4924,14 +4955,16 @@ var UI = class {
   // -------------------------------------------------------------- build dialog
   openBuild(lot) {
     this.buildLot = lot;
+    this.refreshStyles();
+    this.renderSwatches();
     const whole = ownsWholeBlock(lot, "player");
-    const lo = minFloors(lot), hi = maxFloors(lot, "player");
+    const lo = minFloors(lot), hi = maxFloors(lot, "player", currentYear(this.state));
     const inp = $("i-floors");
     inp.min = lo;
     inp.max = hi;
     inp.value = Math.min(hi, Math.max(lo, Math.round(lo * 1.25)));
     const owned = lot.block.lots.filter((l) => l.owner === "player").length;
-    $("build-lot").innerHTML = `${lot.address} \xB7 FAR ${lot.far} \xB7 entitlement ${sf(buildableSf(lot))}<br><span class="dimtext">Past ${floorsWithoutAir(lot)} floors you need air rights. ` + (whole ? `You hold the whole block, so its ${sf(blockSpareSf(lot, "player"))} of spare rights move across free and you can go to ${hi} floors.` : `You hold ${owned} of ${lot.block.lots.length} lots on this block \u2014 take all ${lot.block.lots.length} to build past ${BLOCK_ASSEMBLY_FLOORS}.`) + "</span>";
+    $("build-lot").innerHTML = `${lot.address} \xB7 FAR ${lot.far} \xB7 entitlement ${sf(buildableSf(lot))}<br><span class="dimtext">Past ${floorsWithoutAir(lot)} floors you need air rights. ` + (whole ? `You hold the whole block, so its ${sf(blockSpareSf(lot, "player"))} of spare rights move across free.` : `You hold ${owned} of ${lot.block.lots.length} lots \u2014 take all ${lot.block.lots.length} to build past ${BLOCK_ASSEMBLY_FLOORS}.`) + ` ${currentEra(this.state).name} can engineer ${hi} floors.</span>`;
     $("build-panel").classList.remove("hidden");
     this.refreshBuild();
   }
@@ -5098,30 +5131,34 @@ function setupTouch(controls2, ui2, scene2, canvas2, actions) {
 var SPEEDS = [0, 5, 60, 720, 4320, 43200];
 var STREET_CAP = 60;
 var DEFAULT_SEED = 7;
-function readSeed() {
-  const m = /^#s(\d+)$/.exec(location.hash || "");
-  if (m) return +m[1];
+var DEFAULT_YEAR = 1998;
+function readStart() {
+  const m = /^#s(\d+)y(\d+)$/.exec(location.hash || "");
+  if (m) return { seed: +m[1], year: +m[2] };
   try {
-    const v = sessionStorage.getItem("airrights.seed");
-    if (v) return +v;
+    const v = sessionStorage.getItem("airrights.start");
+    if (v) {
+      const [s2, y2] = v.split(":").map(Number);
+      return { seed: s2, year: y2 };
+    }
   } catch {
   }
-  return DEFAULT_SEED;
+  return { seed: DEFAULT_SEED, year: DEFAULT_YEAR };
 }
-function writeSeed(seed) {
+function writeStart(seed, year) {
   try {
-    sessionStorage.setItem("airrights.seed", String(seed));
+    sessionStorage.setItem("airrights.start", `${seed}:${year}`);
   } catch {
   }
   try {
-    location.hash = `s${seed}`;
+    location.hash = `s${seed}y${year}`;
   } catch {
   }
 }
-var SEED = readSeed();
+var { seed: SEED, year: START_YEAR } = readStart();
 var canvas = document.getElementById("view");
-var city = generateCity(SEED);
-var state = createState(city, SEED);
+var city = generateCity(SEED, START_YEAR);
+var state = createState(city, SEED, START_YEAR);
 var TOUCH = isTouch();
 var scene = new CityScene(state, canvas, TOUCH ? QUALITY.low : QUALITY.high);
 var controls = new Controls(scene, canvas);
@@ -5331,8 +5368,8 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "bd64bc0 \xB7 2026-09-22 22:01" : "dev";
-document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 build ${BUILD}`;
+var BUILD = true ? "510a122 \xB7 2026-09-22 22:03" : "dev";
+document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
 var resetMenu = document.getElementById("resetmenu");
@@ -5347,7 +5384,7 @@ addEventListener("pointerdown", (e) => {
   if (!resetMenu.contains(e.target) && e.target !== resetBtn) closeReset();
 });
 function restart(sameCity) {
-  writeSeed(sameCity ? SEED : Math.floor(Math.random() * 999999) + 1);
+  writeStart(sameCity ? SEED : Math.floor(Math.random() * 999999) + 1, START_YEAR);
   location.reload();
 }
 document.getElementById("reset-new").onclick = () => restart(false);
@@ -5363,6 +5400,19 @@ function beginGame(message) {
 document.getElementById("begin").onclick = () => {
   beginGame("You own one building. Find something under-built and take it.");
 };
+{
+  const era = currentEra(state);
+  document.getElementById("era-now").textContent = `${START_YEAR} \xB7 ${era.name}`;
+  document.getElementById("era-note").textContent = era.note;
+  for (const btn of document.querySelectorAll("#erapick button")) {
+    btn.classList.toggle("on", +btn.dataset.year === START_YEAR);
+    btn.onclick = () => {
+      if (+btn.dataset.year === START_YEAR) return;
+      writeStart(SEED, +btn.dataset.year);
+      location.reload();
+    };
+  }
+}
 document.getElementById("begin-takeover").onclick = () => {
   document.getElementById("yearpick").classList.remove("hidden");
   document.getElementById("begin-takeover").disabled = true;

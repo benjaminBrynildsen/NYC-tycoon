@@ -11,7 +11,7 @@ import {
   leaderboard, buyLot, sellLot, startProject, formatDate, occupancyFor, rentPerSf,
   premiums, blockCharacter, rushQuote, rushProject, nameBuilding, worthBreakdown,
   makeOffer, reservePrice, regionGate, canWorkIn, demolitionBlock, LANDMARK_FLOORS,
-  blockSpareSf, sellAll,
+  blockSpareSf, sellAll, currentYear, currentEra,
 } from './economy.js';
 
 const $ = (id) => document.getElementById(id);
@@ -162,9 +162,7 @@ export class UI {
     $('i-ltc').oninput = () => this.refreshBuild();
     $('do-build').onclick = () => this.commit();
 
-    $('i-style').innerHTML = Object.entries(STYLES)
-      .map(([k, v]) => `<option value="${k}">${v.name}</option>`).join('');
-    $('i-style').value = this.design.style;
+    this.refreshStyles();
     $('i-style').onchange = () => {
       this.design.style = $('i-style').value;
       this.design.variant = 1;
@@ -177,6 +175,18 @@ export class UI {
       b.onclick = () => { this.design.form = b.dataset.form; this.refreshBuild(); };
     }
     this.renderSwatches();
+  }
+
+  /** Only the facade systems the city has actually invented. */
+  refreshStyles() {
+    const allowed = currentEra(this.state).styles;
+    $('i-style').innerHTML = allowed
+      .map((k) => `<option value="${k}">${STYLES[k].name}</option>`).join('');
+    if (!allowed.includes(this.design.style)) {
+      this.design.style = allowed[allowed.length - 1];
+      this.design.variant = 1;
+    }
+    $('i-style').value = this.design.style;
   }
 
   /** Facade colours come straight from the chosen style's palette. */
@@ -617,8 +627,10 @@ export class UI {
 
   openBuild(lot) {
     this.buildLot = lot;
+    this.refreshStyles();
+    this.renderSwatches();
     const whole = ownsWholeBlock(lot, 'player');
-    const lo = minFloors(lot), hi = maxFloors(lot, 'player');
+    const lo = minFloors(lot), hi = maxFloors(lot, 'player', currentYear(this.state));
     const inp = $('i-floors');
     inp.min = lo; inp.max = hi;
     inp.value = Math.min(hi, Math.max(lo, Math.round(lo * 1.25)));
@@ -628,10 +640,10 @@ export class UI {
       + `<span class="dimtext">Past ${floorsWithoutAir(lot)} floors you need air rights. `
       + (whole
           ? `You hold the whole block, so its ${sf(blockSpareSf(lot, 'player'))} of spare rights `
-            + `move across free and you can go to ${hi} floors.`
-          : `You hold ${owned} of ${lot.block.lots.length} lots on this block — take all `
+            + `move across free.`
+          : `You hold ${owned} of ${lot.block.lots.length} lots — take all `
             + `${lot.block.lots.length} to build past ${BLOCK_ASSEMBLY_FLOORS}.`)
-      + '</span>';
+      + ` ${currentEra(this.state).name} can engineer ${hi} floors.</span>`;
     $('build-panel').classList.remove('hidden');
     this.refreshBuild();
   }
