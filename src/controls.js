@@ -69,7 +69,8 @@ export class Controls {
       if (document.pointerLockElement) document.exitPointerLock();
     });
 
-    this.canvas.addEventListener('click', () => {
+    this.canvas.addEventListener('click', (e) => {
+      if (e.pointerType === 'touch' || !e.detail) return;   // not a real mouse click
       if (this.mode !== MODE.BOARD && !this.locked) requestLock(this.canvas);
     });
     document.addEventListener('pointerlockchange', () => {
@@ -79,7 +80,7 @@ export class Controls {
       if (this.mode === MODE.BOARD) {
         if (this.dragging) {
           this.board.yaw -= e.movementX * 0.004;
-          this.board.pitch = Math.max(-1.45, Math.min(-0.18, this.board.pitch - e.movementY * 0.003));
+          this.board.pitch = Math.max(-1.5, Math.min(-0.10, this.board.pitch - e.movementY * 0.003));
         } else if (this.panning) {
           this.panMoved += Math.abs(e.movementX) + Math.abs(e.movementY);
           this.panBy(e.movementX, e.movementY);

@@ -100,6 +100,9 @@ const ndc = new THREE.Vector2();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
 canvas.addEventListener('pointerup', (e) => {
+  // Fingers are handled by the touch module, which can tell a tap from a drag
+  // or a pinch. Without this guard every touch also arrives here as a click.
+  if (e.pointerType === 'touch') return;
   if (controls.mode !== MODE.BOARD || e.button !== 0) return;
   if (controls.panMoved > 5) return;          // that was a drag, not a click
   pickAt(e.clientX, e.clientY);
@@ -110,12 +113,18 @@ function pickAt(clientX, clientY) {
   ndc.set((clientX / innerWidth) * 2 - 1, -(clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, scene.camera);
 
-  // Prefer an actual building hit, fall back to the ground plane.
-  const hits = ray.intersectObjects(scene.buildingGroup.children, false);
+  // Prefer an actual building hit, fall back to the ground plane. Every
+  // building is a Group of meshes, so this has to walk the whole subtree and
+  // then climb back up to whichever ancestor carries the lot id.
+  const hits = ray.intersectObjects([scene.buildingGroup, scene.siteGroup], true);
   let lot = null;
-  if (hits.length && hits[0].object.userData.lotId !== undefined) {
-    lot = city.lots.find((l) => l.id === hits[0].object.userData.lotId);
-  } else {
+  for (const hit of hits) {
+    const id = lotIdOf(hit.object);
+    if (id === undefined) continue;
+    lot = city.lots.find((l) => l.id === id);
+    if (lot) break;
+  }
+  if (!lot) {
     const p = new THREE.Vector3();
     if (ray.ray.intersectPlane(groundPlane, p)) {
       lot = nearestLot(p.x, p.z, 26);
@@ -170,6 +179,14 @@ function nearbyNotable() {
     if (d < bd) { bd = d; best = l; }
   }
   return best;
+}
+
+/** Climb out of a building's meshes to the group that knows its lot. */
+function lotIdOf(obj) {
+  for (let o = obj; o; o = o.parent) {
+    if (o.userData && o.userData.lotId !== undefined) return o.userData.lotId;
+  }
+  return undefined;
 }
 
 function nearestLot(x, z, maxD) {

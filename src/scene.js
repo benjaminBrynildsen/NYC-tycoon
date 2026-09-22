@@ -679,7 +679,7 @@ export class CityScene {
     const craneX = lot.x + lot.w * 0.36, craneZ = lot.z + lot.d * 0.36;
 
     g.add(mud, slab, scaffold, mast, jib, counter);
-    g.userData = { lot, slab, scaffold, mast, jib, counter, craneX, craneZ };
+    g.userData = { lotId: lot.id, lot, slab, scaffold, mast, jib, counter, craneX, craneZ };
     this.siteGroup.add(g);
     this.siteByLot.set(lot.id, g);
     return g;

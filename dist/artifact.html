@@ -462,7 +462,9 @@ body.touch #crosshair, body.touch #modehint { display: none; }
 
 /* Right thumb: the verbs. */
 #touchpad {
-  position: fixed; right: 12px; bottom: 16px; z-index: 22;
+  /* Above the rail: the button that opens the menu has to stay reachable to
+     close it again. */
+  position: fixed; right: 12px; bottom: 16px; z-index: 32;
   flex-direction: column; gap: 10px; pointer-events: none;
 }
 #touchpad button {
@@ -492,6 +494,7 @@ body.touch #crosshair, body.touch #modehint { display: none; }
     padding: 58px 10px 16px; background: rgba(8,10,14,.94);
     transform: translateX(102%); transition: transform .22s ease;
     border-left: 1px solid var(--line); z-index: 26;
+    padding-bottom: 96px;   /* clear of the button cluster */
   }
   #rail.open { transform: none; }
 
@@ -527,6 +530,9 @@ body.touch #crosshair, body.touch #modehint { display: none; }
   background: rgba(255,255,255,.07); color: var(--dim); border: 1px solid var(--line);
 }
 .erarow button.on { background: var(--accent); color: #06121b; border-color: var(--accent); }
+
+.touchline { display: none; }
+body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin-top: 10px; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -698,6 +704,9 @@ body.touch #crosshair, body.touch #modehint { display: none; }
         <p><kbd>V</kbd> raise the Vision on the lot you're standing on</p>
         <p><kbd>E</kbd> car, or the lift to a roof · <kbd>F</kbd> first person</p>
         <p><kbd>Esc</kbd> frees the cursor so you can click the panels</p>
+        <p class="touchline">On a phone: left thumb walks, right thumb looks. On the map,
+          drag to pan, pinch to zoom, twist to rotate and slide two fingers up or down to tilt
+          towards the skyline. Tap a building for its details.</p>
       </div>
       <div>
         <h4>On the board</h4>
@@ -3451,7 +3460,7 @@ var CityScene = class {
     mast.castShadow = jib.castShadow = true;
     const craneX = lot.x + lot.w * 0.36, craneZ = lot.z + lot.d * 0.36;
     g.add(mud, slab, scaffold, mast, jib, counter);
-    g.userData = { lot, slab, scaffold, mast, jib, counter, craneX, craneZ };
+    g.userData = { lotId: lot.id, lot, slab, scaffold, mast, jib, counter, craneX, craneZ };
     this.siteGroup.add(g);
     this.siteByLot.set(lot.id, g);
     return g;
@@ -4128,7 +4137,8 @@ var Controls = class {
       this.keys.clear();
       if (document.pointerLockElement) document.exitPointerLock();
     });
-    this.canvas.addEventListener("click", () => {
+    this.canvas.addEventListener("click", (e) => {
+      if (e.pointerType === "touch" || !e.detail) return;
       if (this.mode !== MODE.BOARD && !this.locked) requestLock(this.canvas);
     });
     document.addEventListener("pointerlockchange", () => {
@@ -4138,7 +4148,7 @@ var Controls = class {
       if (this.mode === MODE.BOARD) {
         if (this.dragging) {
           this.board.yaw -= e.movementX * 4e-3;
-          this.board.pitch = Math.max(-1.45, Math.min(-0.18, this.board.pitch - e.movementY * 3e-3));
+          this.board.pitch = Math.max(-1.5, Math.min(-0.1, this.board.pitch - e.movementY * 3e-3));
         } else if (this.panning) {
           this.panMoved += Math.abs(e.movementX) + Math.abs(e.movementY);
           this.panBy(e.movementX, e.movementY);
@@ -5031,29 +5041,39 @@ function isTouch() {
   return (matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0) && matchMedia("(hover: none)").matches;
 }
 var $2 = (id) => document.getElementById(id);
+var clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+var TAP_SLOP = 12;
+var TAP_MS = 550;
 function setupTouch(controls2, ui2, scene2, canvas2, actions) {
   document.body.classList.add("touch");
   const stick = $2("stick");
   const knob = $2("stick-knob");
   const RADIUS = 52;
   let moveId = null, moveOrigin = null;
-  let lookId = null, lookLast = null;
+  let lookId = null, look = null;
   let pinch = null;
+  let multi = false;
   const isBoard = () => controls2.mode === "board";
   const onUI = (t) => !!t.target.closest("#hud .panel, #touchpad, #topbar, #rail, #np-full, #firms, #start");
+  const twoFingers = (e) => {
+    const a = [...e.touches].slice(0, 2);
+    return {
+      d: Math.hypot(a[0].clientX - a[1].clientX, a[0].clientY - a[1].clientY),
+      a: Math.atan2(a[1].clientY - a[0].clientY, a[1].clientX - a[0].clientX),
+      cy: (a[0].clientY + a[1].clientY) / 2
+    };
+  };
   canvas2.addEventListener("touchstart", (e) => {
+    if (moveId === null && lookId === null && pinch === null) multi = false;
+    if (e.touches.length > 1 || e.changedTouches.length > 1) multi = true;
     for (const t of e.changedTouches) {
       if (onUI(t)) continue;
       if (isBoard()) {
         if (lookId === null) {
           lookId = t.identifier;
-          lookLast = { x: t.clientX, y: t.clientY, moved: 0 };
-        } else if (pinch === null) {
-          const a = [...e.touches].slice(0, 2);
-          pinch = {
-            d: Math.hypot(a[0].clientX - a[1].clientX, a[0].clientY - a[1].clientY),
-            a: Math.atan2(a[1].clientY - a[0].clientY, a[1].clientX - a[0].clientX)
-          };
+          look = { x: t.clientX, y: t.clientY, moved: 0, t0: performance.now() };
+        } else if (pinch === null && e.touches.length >= 2) {
+          pinch = twoFingers(e);
         }
         continue;
       }
@@ -5065,18 +5085,19 @@ function setupTouch(controls2, ui2, scene2, canvas2, actions) {
         stick.classList.add("on");
       } else if (lookId === null) {
         lookId = t.identifier;
-        lookLast = { x: t.clientX, y: t.clientY, moved: 0 };
+        look = { x: t.clientX, y: t.clientY, moved: 0, t0: performance.now() };
       }
     }
   }, { passive: true });
   canvas2.addEventListener("touchmove", (e) => {
     if (pinch && e.touches.length >= 2) {
-      const a = [...e.touches].slice(0, 2);
-      const d = Math.hypot(a[0].clientX - a[1].clientX, a[0].clientY - a[1].clientY);
-      const ang = Math.atan2(a[1].clientY - a[0].clientY, a[1].clientX - a[0].clientX);
-      controls2.board.dist = Math.max(90, Math.min(2600, controls2.board.dist * (pinch.d / (d || 1))));
-      controls2.board.yaw -= ang - pinch.a;
-      pinch = { d, a: ang };
+      const now = twoFingers(e);
+      const ratio = clamp(pinch.d / (now.d || 1), 0.7, 1.45);
+      controls2.board.dist = clamp(controls2.board.dist * ratio, 90, 2600);
+      controls2.board.yaw -= now.a - pinch.a;
+      controls2.board.pitch = clamp(controls2.board.pitch + (pinch.cy - now.cy) * 4e-3, -1.5, -0.1);
+      pinch = now;
+      if (look) look.moved += TAP_SLOP + 1;
       e.preventDefault();
       return;
     }
@@ -5084,16 +5105,18 @@ function setupTouch(controls2, ui2, scene2, canvas2, actions) {
       if (t.identifier === moveId) {
         const dx = t.clientX - moveOrigin.x, dy = t.clientY - moveOrigin.y;
         const len = Math.hypot(dx, dy) || 1;
-        const clamp = Math.min(len, RADIUS) / RADIUS;
-        knob.style.transform = `translate(${dx / len * clamp * RADIUS}px, ${dy / len * clamp * RADIUS}px)`;
-        controls2.touchAxis = { fx: dx / len * clamp, fz: dy / len * clamp };
-      } else if (t.identifier === lookId) {
-        const dx = t.clientX - lookLast.x, dy = t.clientY - lookLast.y;
-        lookLast = { x: t.clientX, y: t.clientY, moved: lookLast.moved + Math.abs(dx) + Math.abs(dy) };
+        const reach = Math.min(len, RADIUS) / RADIUS;
+        knob.style.transform = `translate(${dx / len * reach * RADIUS}px, ${dy / len * reach * RADIUS}px)`;
+        controls2.touchAxis = { fx: dx / len * reach, fz: dy / len * reach };
+      } else if (t.identifier === lookId && look) {
+        const dx = t.clientX - look.x, dy = t.clientY - look.y;
+        look.x = t.clientX;
+        look.y = t.clientY;
+        look.moved += Math.abs(dx) + Math.abs(dy);
         if (isBoard()) controls2.panBy(dx, dy);
         else {
           controls2.yaw -= dx * 5e-3;
-          controls2.pitch = Math.max(-1.05, Math.min(0.95, controls2.pitch - dy * 5e-3));
+          controls2.pitch = clamp(controls2.pitch - dy * 5e-3, -1.05, 0.95);
         }
       }
     }
@@ -5107,12 +5130,17 @@ function setupTouch(controls2, ui2, scene2, canvas2, actions) {
         knob.style.transform = "";
         stick.classList.remove("on");
       } else if (t.identifier === lookId) {
-        if (isBoard() && lookLast && lookLast.moved < 12) actions.pick(t.clientX, t.clientY);
+        const tapped = look && !multi && look.moved < TAP_SLOP && performance.now() - look.t0 < TAP_MS;
+        if (tapped) {
+          if (isBoard()) actions.pick(t.clientX, t.clientY);
+          $2("rail").classList.remove("open");
+        }
         lookId = null;
-        lookLast = null;
+        look = null;
       }
     }
     if (e.touches.length < 2) pinch = null;
+    if (e.touches.length === 0) multi = false;
   };
   canvas2.addEventListener("touchend", end, { passive: true });
   canvas2.addEventListener("touchcancel", end, { passive: true });
@@ -5202,6 +5230,7 @@ var ray = new THREE6.Raycaster();
 var ndc = new THREE6.Vector2();
 var groundPlane = new THREE6.Plane(new THREE6.Vector3(0, 1, 0), 0);
 canvas.addEventListener("pointerup", (e) => {
+  if (e.pointerType === "touch") return;
   if (controls.mode !== MODE.BOARD || e.button !== 0) return;
   if (controls.panMoved > 5) return;
   pickAt(e.clientX, e.clientY);
@@ -5209,11 +5238,15 @@ canvas.addEventListener("pointerup", (e) => {
 function pickAt(clientX, clientY) {
   ndc.set(clientX / innerWidth * 2 - 1, -(clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, scene.camera);
-  const hits = ray.intersectObjects(scene.buildingGroup.children, false);
+  const hits = ray.intersectObjects([scene.buildingGroup, scene.siteGroup], true);
   let lot = null;
-  if (hits.length && hits[0].object.userData.lotId !== void 0) {
-    lot = city.lots.find((l) => l.id === hits[0].object.userData.lotId);
-  } else {
+  for (const hit2 of hits) {
+    const id = lotIdOf(hit2.object);
+    if (id === void 0) continue;
+    lot = city.lots.find((l) => l.id === id);
+    if (lot) break;
+  }
+  if (!lot) {
     const p = new THREE6.Vector3();
     if (ray.ray.intersectPlane(groundPlane, p)) {
       lot = nearestLot(p.x, p.z, 26);
@@ -5267,6 +5300,12 @@ function nearbyNotable() {
     }
   }
   return best;
+}
+function lotIdOf(obj) {
+  for (let o = obj; o; o = o.parent) {
+    if (o.userData && o.userData.lotId !== void 0) return o.userData.lotId;
+  }
+  return void 0;
 }
 function nearestLot(x, z, maxD) {
   let best = null, bd = maxD * maxD;
@@ -5368,7 +5407,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "510a122 \xB7 2026-09-22 22:03" : "dev";
+var BUILD = true ? "d38e4dc \xB7 2026-09-22 22:48" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");

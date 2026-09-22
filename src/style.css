@@ -460,7 +460,9 @@ body.touch #crosshair, body.touch #modehint { display: none; }
 
 /* Right thumb: the verbs. */
 #touchpad {
-  position: fixed; right: 12px; bottom: 16px; z-index: 22;
+  /* Above the rail: the button that opens the menu has to stay reachable to
+     close it again. */
+  position: fixed; right: 12px; bottom: 16px; z-index: 32;
   flex-direction: column; gap: 10px; pointer-events: none;
 }
 #touchpad button {
@@ -490,6 +492,7 @@ body.touch #crosshair, body.touch #modehint { display: none; }
     padding: 58px 10px 16px; background: rgba(8,10,14,.94);
     transform: translateX(102%); transition: transform .22s ease;
     border-left: 1px solid var(--line); z-index: 26;
+    padding-bottom: 96px;   /* clear of the button cluster */
   }
   #rail.open { transform: none; }
 
@@ -525,3 +528,6 @@ body.touch #crosshair, body.touch #modehint { display: none; }
   background: rgba(255,255,255,.07); color: var(--dim); border: 1px solid var(--line);
 }
 .erarow button.on { background: var(--accent); color: #06121b; border-color: var(--accent); }
+
+.touchline { display: none; }
+body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin-top: 10px; }
