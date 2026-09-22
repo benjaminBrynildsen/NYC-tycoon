@@ -113,10 +113,11 @@ function pickAt(clientX, clientY) {
   ndc.set((clientX / innerWidth) * 2 - 1, -(clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, scene.camera);
 
-  // Prefer an actual building hit, fall back to the ground plane. Every
-  // building is a Group of meshes, so this has to walk the whole subtree and
-  // then climb back up to whichever ancestor carries the lot id.
-  const hits = ray.intersectObjects([scene.buildingGroup, scene.siteGroup], true);
+  // Prefer an actual building hit, fall back to the ground plane. The visible
+  // city is merged per block and has no idea which lot a triangle came from,
+  // so the ray is cast at the pick proxies: one invisible solid per building,
+  // never rendered, each of which knows its lot.
+  const hits = ray.intersectObjects([scene.pickGroup, scene.siteGroup], true);
   let lot = null;
   for (const hit of hits) {
     const id = lotIdOf(hit.object);
@@ -548,4 +549,5 @@ if (TOUCH) {
 }
 
 // Handy when poking at the running game from the console.
-window.__game = { state, city, scene, controls, ui, showWater, startReclaim, reclaimCost, advance };
+window.__game = { state, city, scene, controls, ui, showWater, startReclaim, reclaimCost,
+                  advance, ray, pickAt };

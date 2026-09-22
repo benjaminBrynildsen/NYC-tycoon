@@ -2199,6 +2199,7 @@ function pickFloors(lot, strategy, state2) {
 
 // src/scene.js
 import * as THREE4 from "three";
+import { mergeGeometries as mergeGeometries2 } from "three/addons/utils/BufferGeometryUtils.js";
 
 // src/architecture.js
 import * as THREE from "three";
@@ -2289,27 +2290,33 @@ function facadeCanvas(type, variant, emissive) {
   canvasCache.set(key, c);
   return c;
 }
-function makeTexture(type, variant, emissive, rx, ry) {
+function makeTexture(type, variant, emissive) {
   const t = new THREE.CanvasTexture(facadeCanvas(type, variant, emissive));
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.colorSpace = THREE.SRGBColorSpace;
-  t.repeat.set(rx, ry);
   t.anisotropy = 4;
   return t;
 }
-function facadeMaterial(cache, type, variant, sideM, floors, condition) {
-  const rx = Math.max(1, Math.round(sideM / 13));
-  const ry = Math.max(1, Math.round(floors / 4));
+function facadeTiling(sideM, floors) {
+  return { rx: Math.max(1, Math.round(sideM / 13)), ry: Math.max(1, Math.round(floors / 4)) };
+}
+function tileUV(geo, rx, ry) {
+  const uv = geo.getAttribute("uv");
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * rx, uv.getY(i) * ry);
+  uv.needsUpdate = true;
+  return geo;
+}
+function facadeMaterial(cache, type, variant, condition) {
   const wear = condition < 0.45 ? "w" : condition < 0.75 ? "m" : "g";
-  const key = `f_${type}_${variant}_${rx}_${ry}_${wear}`;
+  const key = `f_${type}_${variant}_${wear}`;
   if (cache.has(key)) return cache.get(key);
   const T = TYPES[type];
   const glassy = type === "glass" || type === "midcentury";
   const grime = condition < 0.75 ? new THREE.Color(6971477) : new THREE.Color(16777215);
   const tint = new THREE.Color(16777215).lerp(grime, Math.max(0, 0.8 - condition));
   const m = new THREE.MeshStandardMaterial({
-    map: makeTexture(type, variant, false, rx, ry),
-    emissiveMap: makeTexture(type, variant, true, rx, ry),
+    map: makeTexture(type, variant, false),
+    emissiveMap: makeTexture(type, variant, true),
     emissive: 16777215,
     emissiveIntensity: 0,
     color: tint,
@@ -2382,15 +2389,16 @@ function makeBuilding(lot, b, cache) {
     const v = vols[i];
     const h = v.floors * FH;
     const y0 = v.y0 * FH;
-    const mat = facadeMaterial(cache, type, variant, Math.max(v.w, v.d), v.floors, condition);
+    const mat = facadeMaterial(cache, type, variant, condition);
     const roofMat = solid(
       cache,
       `roof_${condition > 0.5 ? "ok" : "bad"}`,
       condition > 0.5 ? 3815997 : 3025961,
       0.97
     );
+    const { rx, ry } = facadeTiling(Math.max(v.w, v.d), v.floors);
     const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(v.w, h, v.d),
+      tileUV(new THREE.BoxGeometry(v.w, h, v.d), rx, ry),
       [mat, mat, roofMat, roofMat, mat, mat]
     );
     mesh.position.set(lot.x, y0 + h / 2 + 0.4, lot.z);
@@ -2945,6 +2953,56 @@ function freeze(o) {
   o.matrixAutoUpdate = false;
   return o;
 }
+function meshPieces(mesh) {
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  const src = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry;
+  const byMat = /* @__PURE__ */ new Map();
+  if (!src.groups.length) {
+    byMat.set(mats[0], null);
+  } else {
+    for (const g of src.groups) {
+      const m = mats[g.materialIndex] ?? mats[0];
+      if (!byMat.has(m)) byMat.set(m, []);
+      byMat.get(m).push(g);
+    }
+  }
+  const out = [];
+  for (const [material, groups] of byMat) {
+    const geo = groups ? sliceGroups(src, groups) : copyAttributes(src);
+    geo.applyMatrix4(mesh.matrix);
+    out.push({ material, geometry: geo });
+  }
+  if (src !== mesh.geometry) src.dispose();
+  return out;
+}
+var MERGE_ATTRS = ["position", "normal", "uv"];
+function copyAttributes(src, pick) {
+  const out = new THREE4.BufferGeometry();
+  const count = pick ? pick.total : src.getAttribute("position").count;
+  for (const name of MERGE_ATTRS) {
+    const a = src.getAttribute(name);
+    const size = name === "uv" ? 2 : 3;
+    if (!a) {
+      out.setAttribute(name, new THREE4.BufferAttribute(new Float32Array(count * size), size));
+      continue;
+    }
+    if (!pick) {
+      out.setAttribute(name, new THREE4.BufferAttribute(Float32Array.from(a.array), a.itemSize));
+      continue;
+    }
+    const dst = new Float32Array(count * a.itemSize);
+    let o = 0;
+    for (const g of pick.groups) {
+      dst.set(a.array.subarray(g.start * a.itemSize, (g.start + g.count) * a.itemSize), o);
+      o += g.count * a.itemSize;
+    }
+    out.setAttribute(name, new THREE4.BufferAttribute(dst, a.itemSize));
+  }
+  return out;
+}
+function sliceGroups(src, groups) {
+  return copyAttributes(src, { groups, total: groups.reduce((n, g) => n + g.count, 0) });
+}
 var QUALITY = {
   high: {
     peds: 430,
@@ -2974,6 +3032,9 @@ var QUALITY = {
     ao: false
   }
 };
+var PICK_MAT = new THREE4.MeshBasicMaterial({ visible: false });
+var TILE = 3;
+var tileKey = (block) => `${Math.floor(block.col / TILE)},${Math.floor(block.row / TILE)}`;
 var CityScene = class {
   constructor(state2, canvas2, quality = QUALITY.high) {
     this.state = state2;
@@ -3459,6 +3520,10 @@ var CityScene = class {
     this.roofGroup = new THREE4.Group();
     this.scene.add(this.buildingGroup, this.siteGroup, this.roofGroup);
     this.buildingByLot = /* @__PURE__ */ new Map();
+    this.tileBatches = /* @__PURE__ */ new Map();
+    this.pickGroup = new THREE4.Group();
+    this.pickByLot = /* @__PURE__ */ new Map();
+    this._dirtyTiles = /* @__PURE__ */ new Set();
     this.siteByLot = /* @__PURE__ */ new Map();
     this.roofGeo = roofPropGeometries();
     this.roofMats = {
@@ -3508,7 +3573,6 @@ var CityScene = class {
     this._addSignage(g, lot);
     g.matrixAutoUpdate = false;
     g.updateMatrix();
-    this.buildingGroup.add(g);
     return g;
   }
   syncBuildings() {
@@ -3518,14 +3582,14 @@ var CityScene = class {
       const b = lot.building;
       const sig = b ? `${b.floors}_${b.use}_${b.style || "-"}_${b.form || "-"}_${b.variant ?? "-"}_${Math.round((b.condition ?? 1) * 4)}_${lot.name || ""}` : null;
       if (b && (!has || has.userData.sig !== sig)) {
-        if (has) this.buildingGroup.remove(has);
         const g = this._makeBuilding(lot);
         g.userData.sig = sig;
         this.buildingByLot.set(lot.id, g);
+        this._dirtyTiles.add(tileKey(lot.block));
         changed = true;
       } else if (!b && has) {
-        this.buildingGroup.remove(has);
         this.buildingByLot.delete(lot.id);
+        this._dirtyTiles.add(tileKey(lot.block));
         changed = true;
       }
       const site = this.siteByLot.get(lot.id);
@@ -3538,11 +3602,90 @@ var CityScene = class {
         changed = true;
       }
     }
+    if (this._dirtyTiles.size) {
+      for (const key of this._dirtyTiles) this._rebuildTile(key);
+      this._dirtyTiles.clear();
+      this.pickGroup.updateMatrixWorld(true);
+    }
     if (changed) {
       this._rebuildRoofProps();
       this.rebuildCollision();
       this._lit = void 0;
     }
+  }
+  /**
+   * Redraw one tile. Merging by material collapses a few hundred boxes into
+   * one mesh per material, and doing it per tile rather than per city keeps
+   * frustum culling working and means a single new tower re-merges its own
+   * corner of the map instead of the whole thing.
+   */
+  _rebuildTile(key) {
+    const old = this.tileBatches.get(key);
+    if (old) {
+      this.buildingGroup.remove(old);
+      for (const m of old.children) m.geometry.dispose();
+      this.tileBatches.delete(key);
+    }
+    const lots = [];
+    for (const block of this.city.blocks) {
+      if (tileKey(block) === key) lots.push(...block.lots);
+    }
+    for (const lot of lots) {
+      const proxy = this.pickByLot.get(lot.id);
+      if (proxy) {
+        this.pickGroup.remove(proxy);
+        proxy.geometry.dispose();
+        this.pickByLot.delete(lot.id);
+      }
+    }
+    const buckets = /* @__PURE__ */ new Map();
+    for (const lot of lots) {
+      const g = this.buildingByLot.get(lot.id);
+      if (!g) continue;
+      const solids = [];
+      for (const child of g.children) {
+        if (!child.isMesh) continue;
+        for (const piece of meshPieces(child)) {
+          let b = buckets.get(piece.material);
+          if (!b) {
+            b = {
+              geos: [],
+              cast: child.castShadow,
+              receive: child.receiveShadow,
+              order: child.renderOrder
+            };
+            buckets.set(piece.material, b);
+          }
+          b.geos.push(piece.geometry);
+          if (child.userData.lotId !== void 0) solids.push(piece.geometry.clone());
+        }
+      }
+      if (solids.length) {
+        const hull = mergeGeometries2(solids, false);
+        for (const s of solids) s.dispose();
+        if (hull) {
+          const proxy = new THREE4.Mesh(hull, PICK_MAT);
+          proxy.userData.lotId = lot.id;
+          this.pickGroup.add(freeze(proxy));
+          this.pickByLot.set(lot.id, proxy);
+        }
+      }
+    }
+    if (!buckets.size) return;
+    const batch = new THREE4.Group();
+    for (const [material, b] of buckets) {
+      const merged = mergeGeometries2(b.geos, false);
+      for (const g of b.geos) g.dispose();
+      if (!merged) continue;
+      const mesh = new THREE4.Mesh(merged, material);
+      mesh.castShadow = b.cast;
+      mesh.receiveShadow = b.receive;
+      mesh.renderOrder = b.order;
+      batch.add(freeze(mesh));
+    }
+    freeze(batch);
+    this.buildingGroup.add(batch);
+    this.tileBatches.set(key, batch);
   }
   _rebuildRoofProps() {
     this.roofGroup.clear();
@@ -5380,7 +5523,7 @@ canvas.addEventListener("pointerup", (e) => {
 function pickAt(clientX, clientY) {
   ndc.set(clientX / innerWidth * 2 - 1, -(clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, scene.camera);
-  const hits = ray.intersectObjects([scene.buildingGroup, scene.siteGroup], true);
+  const hits = ray.intersectObjects([scene.pickGroup, scene.siteGroup], true);
   let lot = null;
   for (const hit2 of hits) {
     const id = lotIdOf(hit2.object);
@@ -5549,7 +5692,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "3ca67d0 \xB7 2026-09-22 23:19" : "dev";
+var BUILD = true ? "3f83ecb \xB7 2026-09-22 23:31" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
@@ -5765,5 +5908,17 @@ if (TOUCH) {
     pick: (cx, cy) => pickAt(cx, cy)
   });
 }
-window.__game = { state, city, scene, controls, ui, showWater, startReclaim, reclaimCost, advance };
+window.__game = {
+  state,
+  city,
+  scene,
+  controls,
+  ui,
+  showWater,
+  startReclaim,
+  reclaimCost,
+  advance,
+  ray,
+  pickAt
+};
 </script>

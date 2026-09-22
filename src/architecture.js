@@ -108,21 +108,36 @@ function facadeCanvas(type, variant, emissive) {
   return c;
 }
 
-function makeTexture(type, variant, emissive, rx, ry) {
+function makeTexture(type, variant, emissive) {
   const t = new THREE.CanvasTexture(facadeCanvas(type, variant, emissive));
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.colorSpace = THREE.SRGBColorSpace;
-  t.repeat.set(rx, ry);
   t.anisotropy = 4;
   return t;
 }
 
-/** Materials are shared across every building with the same look and tiling. */
-export function facadeMaterial(cache, type, variant, sideM, floors, condition) {
-  const rx = Math.max(1, Math.round(sideM / 13));
-  const ry = Math.max(1, Math.round(floors / 4));
+/** How many bays across a wall, and how many floors down it. */
+export function facadeTiling(sideM, floors) {
+  return { rx: Math.max(1, Math.round(sideM / 13)), ry: Math.max(1, Math.round(floors / 4)) };
+}
+
+/** Bake the tiling into the wall's own UVs. */
+export function tileUV(geo, rx, ry) {
+  const uv = geo.getAttribute('uv');
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * rx, uv.getY(i) * ry);
+  uv.needsUpdate = true;
+  return geo;
+}
+
+/**
+ * Materials are shared across every building with the same look. Tiling used
+ * to be part of the key, which meant a 40-storey tower and a 41-storey one
+ * next door had separate materials and could never be drawn together. The
+ * repeat lives in the geometry now, so the key is just the look.
+ */
+export function facadeMaterial(cache, type, variant, condition) {
   const wear = condition < 0.45 ? 'w' : condition < 0.75 ? 'm' : 'g';
-  const key = `f_${type}_${variant}_${rx}_${ry}_${wear}`;
+  const key = `f_${type}_${variant}_${wear}`;
   if (cache.has(key)) return cache.get(key);
 
   const T = TYPES[type];
@@ -132,8 +147,8 @@ export function facadeMaterial(cache, type, variant, sideM, floors, condition) {
   const tint = new THREE.Color(0xffffff).lerp(grime, Math.max(0, 0.8 - condition));
 
   const m = new THREE.MeshStandardMaterial({
-    map: makeTexture(type, variant, false, rx, ry),
-    emissiveMap: makeTexture(type, variant, true, rx, ry),
+    map: makeTexture(type, variant, false),
+    emissiveMap: makeTexture(type, variant, true),
     emissive: 0xffffff,
     emissiveIntensity: 0,
     color: tint,
@@ -234,11 +249,12 @@ export function makeBuilding(lot, b, cache) {
     const v = vols[i];
     const h = v.floors * FH;
     const y0 = v.y0 * FH;
-    const mat = facadeMaterial(cache, type, variant, Math.max(v.w, v.d), v.floors, condition);
+    const mat = facadeMaterial(cache, type, variant, condition);
     const roofMat = solid(cache, `roof_${condition > 0.5 ? 'ok' : 'bad'}`,
                           condition > 0.5 ? 0x3a3a3d : 0x2e2c29, 0.97);
+    const { rx, ry } = facadeTiling(Math.max(v.w, v.d), v.floors);
     // BoxGeometry face order: +x, -x, +y, -y, +z, -z — 2 and 3 are the caps.
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(v.w, h, v.d),
+    const mesh = new THREE.Mesh(tileUV(new THREE.BoxGeometry(v.w, h, v.d), rx, ry),
                                 [mat, mat, roofMat, roofMat, mat, mat]);
     mesh.position.set(lot.x, y0 + h / 2 + 0.4, lot.z);
     mesh.castShadow = mesh.receiveShadow = true;

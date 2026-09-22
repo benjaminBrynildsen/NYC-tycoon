@@ -2,6 +2,7 @@
 
 import * as THREE from 'three';
 import { CONFIG, cellCenter, cellOf, mulberry32 } from './world.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeBuilding, roofPropGeometries } from './architecture.js';
 import { Post } from './post.js';
 import { vehicleModels, CAR_PAINT, personParts, COAT_COLORS, SKIN_TONES, streetProps,
@@ -47,6 +48,63 @@ function freeze(o) {
   return o;
 }
 
+/**
+ * One geometry per material, baked into world space and ready to merge.
+ *
+ * A massing box carries a material array — walls on four faces, roof on the
+ * caps — so it has to come apart by group first. toNonIndexed() expands the
+ * index into the attribute arrays and keeps the group ranges pointing at them,
+ * which makes slicing a group a plain subarray copy.
+ */
+function meshPieces(mesh) {
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  const src = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry;
+  const byMat = new Map();
+  if (!src.groups.length) {
+    byMat.set(mats[0], null);                   // the whole geometry, one material
+  } else {
+    for (const g of src.groups) {
+      const m = mats[g.materialIndex] ?? mats[0];
+      if (!byMat.has(m)) byMat.set(m, []);
+      byMat.get(m).push(g);
+    }
+  }
+  const out = [];
+  for (const [material, groups] of byMat) {
+    const geo = groups ? sliceGroups(src, groups) : copyAttributes(src);
+    geo.applyMatrix4(mesh.matrix);
+    out.push({ material, geometry: geo });
+  }
+  if (src !== mesh.geometry) src.dispose();
+  return out;
+}
+
+const MERGE_ATTRS = ['position', 'normal', 'uv'];
+
+/** Everything merged has to carry the same attributes, so pin them down. */
+function copyAttributes(src, pick) {
+  const out = new THREE.BufferGeometry();
+  const count = pick ? pick.total : src.getAttribute('position').count;
+  for (const name of MERGE_ATTRS) {
+    const a = src.getAttribute(name);
+    const size = name === 'uv' ? 2 : 3;
+    if (!a) { out.setAttribute(name, new THREE.BufferAttribute(new Float32Array(count * size), size)); continue; }
+    if (!pick) { out.setAttribute(name, new THREE.BufferAttribute(Float32Array.from(a.array), a.itemSize)); continue; }
+    const dst = new Float32Array(count * a.itemSize);
+    let o = 0;
+    for (const g of pick.groups) {
+      dst.set(a.array.subarray(g.start * a.itemSize, (g.start + g.count) * a.itemSize), o);
+      o += g.count * a.itemSize;
+    }
+    out.setAttribute(name, new THREE.BufferAttribute(dst, a.itemSize));
+  }
+  return out;
+}
+
+function sliceGroups(src, groups) {
+  return copyAttributes(src, { groups, total: groups.reduce((n, g) => n + g.count, 0) });
+}
+
 /** What to draw at full fat, and what a phone gets instead. */
 export const QUALITY = {
   high: { peds: 430, cars: 110, clouds: 46, shadows: true, dpr: 1.75, shadowMap: 2048,
@@ -56,6 +114,16 @@ export const QUALITY = {
   low:  { peds: 120, cars: 38,  clouds: 20, shadows: false, dpr: 1.2, shadowMap: 1024,
           bloom: true, bloomScale: 0.5, msaa: 0, ao: false },
 };
+
+const PICK_MAT = new THREE.MeshBasicMaterial({ visible: false });
+
+// Buildings are batched in squares of this many blocks. Per block the batches
+// were too small to share much — a block holds three or four buildings and
+// most of them look different. Three by three is big enough that the shared
+// facade materials actually collapse, and small enough that one new tower
+// re-merges a sixteenth of the city rather than all of it.
+const TILE = 3;
+const tileKey = (block) => `${Math.floor(block.col / TILE)},${Math.floor(block.row / TILE)}`;
 
 export class CityScene {
   constructor(state, canvas, quality = QUALITY.high) {
@@ -571,6 +639,12 @@ export class CityScene {
     this.roofGroup = new THREE.Group();
     this.scene.add(this.buildingGroup, this.siteGroup, this.roofGroup);
     this.buildingByLot = new Map();
+    // What you see is one mesh per material per tile of blocks; what you
+    // click is a separate, much cheaper set of per-lot solids, never rendered.
+    this.tileBatches = new Map();
+    this.pickGroup = new THREE.Group();
+    this.pickByLot = new Map();
+    this._dirtyTiles = new Set();
     this.siteByLot = new Map();
     this.roofGeo = roofPropGeometries();
     this.roofMats = {
@@ -623,7 +697,9 @@ export class CityScene {
     this._addSignage(g, lot);
     g.matrixAutoUpdate = false;
     g.updateMatrix();
-    this.buildingGroup.add(g);
+    // The group is the model of the building — what holds its roof, its mast
+    // and its materials. It is never added to the scene; its geometry goes
+    // into the tile batch instead.
     return g;
   }
 
@@ -638,14 +714,14 @@ export class CityScene {
         : null;
 
       if (b && (!has || has.userData.sig !== sig)) {
-        if (has) this.buildingGroup.remove(has);
         const g = this._makeBuilding(lot);
         g.userData.sig = sig;
         this.buildingByLot.set(lot.id, g);
+        this._dirtyTiles.add(tileKey(lot.block));
         changed = true;
       } else if (!b && has) {
-        this.buildingGroup.remove(has);
         this.buildingByLot.delete(lot.id);
+        this._dirtyTiles.add(tileKey(lot.block));
         changed = true;
       }
 
@@ -657,7 +733,86 @@ export class CityScene {
         changed = true;
       }
     }
+    if (this._dirtyTiles.size) {
+      for (const key of this._dirtyTiles) this._rebuildTile(key);
+      this._dirtyTiles.clear();
+      this.pickGroup.updateMatrixWorld(true);
+    }
     if (changed) { this._rebuildRoofProps(); this.rebuildCollision(); this._lit = undefined; }
+  }
+
+  /**
+   * Redraw one tile. Merging by material collapses a few hundred boxes into
+   * one mesh per material, and doing it per tile rather than per city keeps
+   * frustum culling working and means a single new tower re-merges its own
+   * corner of the map instead of the whole thing.
+   */
+  _rebuildTile(key) {
+    const old = this.tileBatches.get(key);
+    if (old) {
+      this.buildingGroup.remove(old);
+      for (const m of old.children) m.geometry.dispose();
+      this.tileBatches.delete(key);
+    }
+    const lots = [];
+    for (const block of this.city.blocks) {
+      if (tileKey(block) === key) lots.push(...block.lots);
+    }
+    for (const lot of lots) {
+      const proxy = this.pickByLot.get(lot.id);
+      if (proxy) {
+        this.pickGroup.remove(proxy);
+        proxy.geometry.dispose();
+        this.pickByLot.delete(lot.id);
+      }
+    }
+
+    const buckets = new Map();          // material -> { geos, flags }
+    for (const lot of lots) {
+      const g = this.buildingByLot.get(lot.id);
+      if (!g) continue;
+      const solids = [];
+      for (const child of g.children) {
+        if (!child.isMesh) continue;
+        for (const piece of meshPieces(child)) {
+          let b = buckets.get(piece.material);
+          if (!b) {
+            b = { geos: [], cast: child.castShadow, receive: child.receiveShadow,
+                  order: child.renderOrder };
+            buckets.set(piece.material, b);
+          }
+          b.geos.push(piece.geometry);
+          // The massing itself is what you click; a sign or an awning is not.
+          if (child.userData.lotId !== undefined) solids.push(piece.geometry.clone());
+        }
+      }
+      if (solids.length) {
+        const hull = mergeGeometries(solids, false);
+        for (const s of solids) s.dispose();
+        if (hull) {
+          const proxy = new THREE.Mesh(hull, PICK_MAT);
+          proxy.userData.lotId = lot.id;
+          this.pickGroup.add(freeze(proxy));
+          this.pickByLot.set(lot.id, proxy);
+        }
+      }
+    }
+    if (!buckets.size) return;
+
+    const batch = new THREE.Group();
+    for (const [material, b] of buckets) {
+      const merged = mergeGeometries(b.geos, false);
+      for (const g of b.geos) g.dispose();
+      if (!merged) continue;
+      const mesh = new THREE.Mesh(merged, material);
+      mesh.castShadow = b.cast;
+      mesh.receiveShadow = b.receive;
+      mesh.renderOrder = b.order;
+      batch.add(freeze(mesh));
+    }
+    freeze(batch);
+    this.buildingGroup.add(batch);
+    this.tileBatches.set(key, batch);
   }
 
   _rebuildRoofProps() {
