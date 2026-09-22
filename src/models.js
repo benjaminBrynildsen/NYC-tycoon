@@ -191,6 +191,39 @@ export const COAT_COLORS = [
 ];
 export const SKIN_TONES = [0xf0c8a0, 0xd9a57a, 0xb57c53, 0x8d5a3a, 0x63402b, 0xf5d9bd];
 
+// ------------------------------------------------------------------ airship
+
+/**
+ * A rigid airship, nose at +Z so it can simply be yawed to face its heading.
+ * Three parts: silver hull, dark gondola and fins, and lit windows for night.
+ */
+export function airshipParts() {
+  const hull = new THREE.SphereGeometry(10, 18, 12);
+  hull.scale(1, 1, 4.4);                       // ~88m long, 20m across
+  const nose = new THREE.ConeGeometry(4.2, 9, 12);
+  nose.rotateX(Math.PI / 2);
+  nose.translate(0, 0, 47);
+
+  const fins = [];
+  for (const rot of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+    const f = new THREE.BoxGeometry(1.1, 13, 12);
+    f.translate(0, 10, -36);
+    f.rotateZ(rot);
+    fins.push(f);
+  }
+  const gondola = box(5.2, 3.4, 15, 0, -11, 10);
+  const strut = box(1.2, 2.4, 1.2, 0, -9.6, 16);
+
+  return {
+    hull: merge([hull, nose]),
+    rigging: merge([...fins, gondola, strut]),
+    lights: merge([
+      box(3.6, 1.1, 10, 0, -11.2, 10),         // gondola windows
+      box(1.4, 1.4, 1.4, 0, 0, 49),            // nose lamp
+    ]),
+  };
+}
+
 // ----------------------------------------------------------- street furniture
 
 export function streetProps() {

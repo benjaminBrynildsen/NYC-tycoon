@@ -1,8 +1,8 @@
 // The simulation: money, land value, construction, the market cycle, and the
 // rival developers you're racing. Runs on a day tick. No rendering in here.
 
-import { CONFIG, DISTRICTS, USES, STYLES, FORMS, REGIONS, HOODS, buildableSf, massing,
-         minFloors, maxFloors, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS, canReclaim,
+import { CONFIG, DISTRICTS, USES, STYLES, FORMS, REGIONS, HOODS, ERAS, eraAt, buildableSf,
+         massing, minFloors, maxFloors, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS, canReclaim,
          shoreContact, mulberry32 } from './world.js';
 
 export const START_CASH = 100_000_000;
@@ -19,7 +19,7 @@ export const RIVALS = [
     blurb: 'Cheap lots, high volume, thin margins. Grinds you down.' },
 ];
 
-export function createState(city, seed = 11) {
+export function createState(city, seed = 11, startYear = 1998) {
   const rnd = mulberry32(seed + 99);
 
   const actors = {
@@ -43,7 +43,8 @@ export function createState(city, seed = 11) {
     city,
     actors,
     day: 0,
-    startYear: 1998,
+    startYear,
+    era: eraAt(startYear).name,
     cycle: 1.0,          // market multiplier on rents and land
     cyclePhase: rnd() * Math.PI * 2,
     projects: [],
@@ -62,6 +63,9 @@ export function dateOf(state) {
   d.setUTCDate(d.getUTCDate() + Math.floor(state.day));
   return d;
 }
+export function currentYear(state) { return dateOf(state).getUTCFullYear(); }
+export function currentEra(state) { return eraAt(currentYear(state)); }
+
 export function formatDate(state) {
   const d = dateOf(state);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
@@ -277,6 +281,17 @@ export function regionGate(state, actorId, lot) {
   return `${REGIONS[lot.region].name} opens at ${money(need)} net worth — you're at ${money(have)}.`;
 }
 
+/** The city learns to build differently, and the paper notices. */
+function checkEra(state) {
+  const era = currentEra(state);
+  if (era.name === state.era) return;
+  state.era = era.name;
+  pushNews(state, 'era', era.name.toUpperCase(),
+    `${era.note} ${era.styles.length} facade system${era.styles.length > 1 ? 's' : ''} are now `
+    + `available, and nothing taller than ${era.maxFloors} storeys can be engineered yet.`);
+  logEvent(state, 'player', `— the city enters ${era.name}`);
+}
+
 /** Crossing a billion opens the rest of the city. */
 function checkUnlocks(state) {
   for (const id in state.actors) {
@@ -421,6 +436,21 @@ export function startProject(state, lot, actorId, floors, use, ltc, design = DEF
   if (gate) return { ok: false, why: gate };
   const standing = demolitionBlock(lot);
   if (standing) return { ok: false, why: standing };
+  const era = currentEra(state);
+  if (!era.styles.includes(design.style)) {
+    return { ok: false, why: `${STYLES[design.style].name} has not been invented yet — this is ${era.name}.` };
+  }
+  if (floors > era.maxFloors) {
+    return { ok: false, why: `${floors} storeys cannot be engineered in ${era.name}. The limit is ${era.maxFloors}.` };
+  }
+  // The UI caps the slider, but the rule belongs here — a command must not be
+  // able to route around it.
+  const ceiling = maxFloors(lot, actorId, currentYear(state));
+  if (floors > ceiling) {
+    return { ok: false, why: floors > BLOCK_ASSEMBLY_FLOORS
+      ? `Past ${BLOCK_ASSEMBLY_FLOORS} floors you need every lot on the block.`
+      : `The limit here is ${ceiling} floors.` };
+  }
   const q = quote(state, lot, floors, use, ltc, design, actorId);
   if (a.cash < q.equity) return { ok: false, why: `Need ${money(q.equity)} equity.` };
 
@@ -722,6 +752,7 @@ function monthTick(state) {
     a.lastNOI = noi;
   }
 
+  checkEra(state);
   checkUnlocks(state);
   for (const r of RIVALS) {
     const a = state.actors[r.id];
@@ -889,9 +920,9 @@ function rivalTurn(state, a) {
     if (lot.owner && lot.owner !== 'npc') continue;
     if (!a.regions.has(lot.region)) continue;
     if (demolitionBlock(lot)) continue;
-    const floors = pickFloors(lot, a.strategy);
+    const floors = Math.min(pickFloors(lot, a.strategy), currentEra(state).maxFloors);
     const q = quote(state, lot, floors, a.strategy === 'grinder' ? 'residential' : 'office',
-                    a.ltc, rivalDesign(a, lot, floors), a.id);
+                    a.ltc, rivalDesign(a, lot, floors, state), a.id);
     if (q.equity > a.cash * 0.6) continue;
     const score = q.yieldOnCost * 100 * wants(lot) - (a.strategy === 'institution' ? q.equity / 9e7 : 0);
     if (score > bestScore) { bestScore = score; best = { lot, floors, q }; }
@@ -917,20 +948,24 @@ function rivalTurn(state, a) {
       best.lot.owner = a.id;
     }
     const use = a.strategy === 'grinder' ? 'residential' : 'office';
-    startProject(state, best.lot, a.id, best.floors, use, a.ltc, rivalDesign(a, best.lot, best.floors));
+    startProject(state, best.lot, a.id, best.floors, use, a.ltc, rivalDesign(a, best.lot, best.floors, state));
     a.cooldown = a.patience;
     state._dirtyGeometry = true;
   }
 }
 
 /** Each rival has a house style, which you can read off the skyline. */
-function rivalDesign(a, lot, floors) {
-  if (a.strategy === 'institution') return { style: floors > 20 ? 'deco' : 'masonry', form: 'stepped', variant: 1 };
-  if (a.strategy === 'cowboy') return { style: 'glass', form: 'point', variant: 2 };
-  return { style: floors > 14 ? 'curtain' : 'brick', form: 'slab', variant: 0 };
+function rivalDesign(a, lot, floors, state) {
+  const allowed = currentEra(state).styles;
+  const pick = (...wanted) => wanted.find((w) => allowed.includes(w)) ?? allowed[allowed.length - 1];
+  if (a.strategy === 'institution') {
+    return { style: pick(floors > 20 ? 'deco' : 'masonry', 'masonry', 'brick'), form: 'stepped', variant: 1 };
+  }
+  if (a.strategy === 'cowboy') return { style: pick('glass', 'curtain', 'deco', 'loft'), form: 'point', variant: 2 };
+  return { style: pick(floors > 14 ? 'curtain' : 'brick', 'brick', 'loft'), form: 'slab', variant: 0 };
 }
 
-function pickFloors(lot, strategy) {
+function pickFloors(lot, strategy, state) {
   const lo = minFloors(lot);
   if (strategy === 'cowboy') return Math.min(CONFIG.MAX_FLOORS, Math.round(lo * 1.8));
   if (strategy === 'institution') return Math.round(lo * 1.35);

@@ -3,7 +3,8 @@
 import * as THREE from 'three';
 import { CONFIG, cellCenter, cellOf, mulberry32 } from './world.js';
 import { makeBuilding, roofPropGeometries } from './architecture.js';
-import { vehicleModels, CAR_PAINT, personParts, COAT_COLORS, SKIN_TONES, streetProps } from './models.js';
+import { vehicleModels, CAR_PAINT, personParts, COAT_COLORS, SKIN_TONES, streetProps,
+         airshipParts } from './models.js';
 
 const OWNER_TINT = { player: 0x4ade80, r1: 0xd4664a, r2: 0xe0b341, r3: 0x6fa8c7 };
 const MODEL_MIX = ['sedan', 'sedan', 'taxi', 'suv', 'sedan', 'van', 'sports', 'boxtruck', 'suv', 'taxi'];
@@ -45,15 +46,23 @@ function freeze(o) {
   return o;
 }
 
+/** What to draw at full fat, and what a phone gets instead. */
+export const QUALITY = {
+  high: { peds: 430, cars: 110, clouds: 46, shadows: true, dpr: 1.75, shadowMap: 2048 },
+  low:  { peds: 120, cars: 38,  clouds: 20, shadows: false, dpr: 1.2, shadowMap: 1024 },
+};
+
 export class CityScene {
-  constructor(state, canvas) {
+  constructor(state, canvas, quality = QUALITY.high) {
     this.state = state;
     this.city = state.city;
     this.matCache = new Map();
+    this.q = quality;
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
-    this.renderer.shadowMap.enabled = true;
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: quality.shadows,
+                                              powerPreference: 'high-performance' });
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, quality.dpr));
+    this.renderer.shadowMap.enabled = quality.shadows;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.18;
@@ -75,6 +84,7 @@ export class CityScene {
     this._buildings();
     this._vehicles();
     this._clouds();
+    this._airships();
     this._crowd();
     this._highlight();
     this._vision();
@@ -92,7 +102,7 @@ export class CityScene {
 
     this.sun = new THREE.DirectionalLight(0xfff0dd, 2.4);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.mapSize.set(this.q.shadowMap, this.q.shadowMap);
     const s = this.sun.shadow.camera;
     s.near = 20; s.far = 1400; s.left = -230; s.right = 230; s.top = 320; s.bottom = -230;
     this.sun.shadow.bias = -0.0009;
@@ -527,6 +537,7 @@ export class CityScene {
       watertower: new THREE.MeshStandardMaterial({ color: 0x6b4f38, roughness: 0.95 }),
       bulkhead: new THREE.MeshStandardMaterial({ color: 0x7a7269, roughness: 0.9 }),
       mast: new THREE.MeshStandardMaterial({ color: 0x53585e, roughness: 0.6, metalness: 0.5 }),
+      mooringMast: new THREE.MeshStandardMaterial({ color: 0x9aa2ab, roughness: 0.42, metalness: 0.7 }),
       ac: new THREE.MeshStandardMaterial({ color: 0x8e9299, roughness: 0.7, metalness: 0.3 }),
     };
     this.syncBuildings();
@@ -611,7 +622,7 @@ export class CityScene {
 
   _rebuildRoofProps() {
     this.roofGroup.clear();
-    const buckets = { watertower: [], bulkhead: [], mast: [], ac: [] };
+    const buckets = { watertower: [], bulkhead: [], mast: [], mooringMast: [], ac: [] };
     for (const g of this.buildingByLot.values()) {
       for (const p of g.userData.props || []) buckets[p.kind]?.push(p);
     }
@@ -705,7 +716,7 @@ export class CityScene {
 
   _vehicles() {
     const models = vehicleModels();
-    const COUNT = 110;
+    const COUNT = this.q.cars;
     const rnd = mulberry32(4242);
     const { PITCH } = CONFIG;
 
@@ -806,7 +817,7 @@ export class CityScene {
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
 
-    const COUNT = 46;
+    const COUNT = this.q.clouds;
     this.cloudMat = new THREE.MeshBasicMaterial({
       map: tex, transparent: true, opacity: 0.62, depthWrite: false, fog: false,
       side: THREE.DoubleSide,
@@ -840,6 +851,101 @@ export class CityScene {
     this.clouds.instanceMatrix.needsUpdate = true;
   }
 
+  // ---------------------------------------------------------------- airships
+
+  _airships() {
+    this.airshipGroup = new THREE.Group();
+    this.scene.add(this.airshipGroup);
+    this.airships = [];
+    this.crowdBoost = new Map();
+    const parts = airshipParts();
+    this._airshipGeo = parts;
+    this._airshipMats = {
+      hull: new THREE.MeshStandardMaterial({ color: 0xd3d7db, roughness: 0.42, metalness: 0.55 }),
+      rigging: new THREE.MeshStandardMaterial({ color: 0x3b4046, roughness: 0.7, metalness: 0.3 }),
+      lights: new THREE.MeshStandardMaterial({ color: 0xfff0cf, emissive: 0xffd89a, emissiveIntensity: 0.2 }),
+    };
+  }
+
+  /** Every mooring mast currently standing in the city. */
+  masts() {
+    const out = [];
+    for (const g of this.buildingByLot.values()) if (g.userData.mast) out.push(g.userData.mast);
+    return out;
+  }
+
+  _spawnAirship() {
+    const masts = this.masts();
+    if (!masts.length) return;
+    const target = masts[Math.floor(Math.random() * masts.length)];
+    if (this.airships.some((a) => a.target === target)) return;   // one ship per mast
+
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(this._airshipGeo.hull, this._airshipMats.hull));
+    g.add(new THREE.Mesh(this._airshipGeo.rigging, this._airshipMats.rigging));
+    const lamps = new THREE.Mesh(this._airshipGeo.lights, this._airshipMats.lights);
+    g.add(lamps);
+    g.children[0].castShadow = true;
+
+    const a = Math.random() * Math.PI * 2;
+    const R = 1100;
+    g.position.set(target.x + Math.cos(a) * R, target.y + 90 + Math.random() * 60, target.z + Math.sin(a) * R);
+    this.airshipGroup.add(g);
+    this.airships.push({ g, target, phase: 'inbound', t: 0, speed: 26 });
+  }
+
+  /**
+   * Airships come in, nose up to a mast, sit a while and leave. While one is
+   * moored the street below fills up, because everyone on board has to get
+   * down somehow.
+   */
+  updateAirships(dt, allowed) {
+    if (allowed && this.airships.length < 2 && Math.random() < dt * 0.06) this._spawnAirship();
+
+    for (let i = this.airships.length - 1; i >= 0; i--) {
+      const s = this.airships[i];
+      const p = s.g.position;
+      const m = s.target;
+
+      if (s.phase === 'inbound' || s.phase === 'departing') {
+        const dest = s.phase === 'inbound'
+          ? tmpV.set(m.x, m.y + 4, m.z + 49)     // nose right up to the mast
+          : s.away;
+        const dx = dest.x - p.x, dy = dest.y - p.y, dz = dest.z - p.z;
+        const d = Math.hypot(dx, dy, dz) || 1;
+        const step = Math.min(s.speed * dt, d);
+        p.x += (dx / d) * step; p.y += (dy / d) * step; p.z += (dz / d) * step;
+        s.g.rotation.y = Math.atan2(dx, dz);
+        // A slow roll so it reads as floating rather than sliding.
+        s.g.rotation.z = Math.sin(this.clock * 0.4 + i) * 0.03;
+
+        if (s.phase === 'inbound' && d < 3) {
+          s.phase = 'moored';
+          s.t = 38;
+          const cell = cellOf(m.x, m.z);
+          this.crowdBoost.set(`${cell.col},${cell.row}`, 3.2);   // passengers spill out below
+        } else if (s.phase === 'departing' && d < 40) {
+          this.airshipGroup.remove(s.g);
+          this.airships.splice(i, 1);
+        }
+        continue;
+      }
+
+      // Moored: bob on the mast.
+      s.t -= dt;
+      p.set(m.x, m.y + 4 + Math.sin(this.clock * 0.6) * 0.7, m.z + 49);
+      s.g.rotation.y = Math.PI;
+      s.g.rotation.z = Math.sin(this.clock * 0.3) * 0.02;
+      if (s.t <= 0) {
+        s.phase = 'departing';
+        const a = Math.random() * Math.PI * 2;
+        s.away = new THREE.Vector3(m.x + Math.cos(a) * 1400, m.y + 160, m.z + Math.sin(a) * 1400);
+        const cell = cellOf(m.x, m.z);
+        this.crowdBoost.delete(`${cell.col},${cell.row}`);
+      }
+    }
+  }
+
   /** Where a building's lift lets you out. */
   roofOf(lotId) {
     return this.buildingByLot.get(lotId)?.userData.roof ?? null;
@@ -848,7 +954,7 @@ export class CityScene {
   // ----------------------------------------------------------------- people
 
   _crowd() {
-    const COUNT = 430;
+    const COUNT = this.q.peds;
     const parts = personParts();
     const rnd = mulberry32(909);
 
@@ -893,7 +999,7 @@ export class CityScene {
     if (!b) return 0;
     let gsf = 0;
     for (const l of b.lots) if (l.building) gsf += l.building.gsf;
-    return gsf;
+    return gsf * (this.crowdBoost?.get(`${col},${row}`) ?? 1);
   }
 
   /** Pedestrians live near the camera and are recycled in front of you. */
@@ -1182,6 +1288,7 @@ export class CityScene {
       this.lampGlow.material.emissiveIntensity = lit * 2.4;
       for (const m of this.carLampMats) m.emissiveIntensity = lit * 2.2;
       this.playerLamps.material.emissiveIntensity = lit * 2.2;
+      this._airshipMats.lights.emissiveIntensity = 0.2 + lit * 2.0;
     }
   }
 

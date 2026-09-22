@@ -98,6 +98,46 @@ export const DISTRICTS = {
   res:  { far: 3,  landBase: 45,  rentMul: 0.85, name: 'R6' },
 };
 
+/**
+ * What the city knows how to build, and when. This is close to the real
+ * sequence: load-bearing masonry until the steel skeleton and the safety
+ * elevator, the 1916 zoning resolution that forced towers to step back for
+ * light and air, the Deco race to the top with its mooring masts, curtain
+ * wall after the war, and structural engineering without limits after that.
+ */
+export const ERAS = [
+  { from: 1870, name: 'The Gilded Age', maxFloors: 12,
+    styles: ['brick', 'loft'],
+    note: 'Load-bearing masonry and cast iron. Six storeys is a walk-up; ten is a statement.' },
+  { from: 1892, name: 'The Steel Frame', maxFloors: 30,
+    styles: ['brick', 'loft', 'masonry'],
+    note: 'Steel skeletons and safe elevators. The city discovers it can climb.' },
+  { from: 1916, name: 'Setback Zoning', maxFloors: 70,
+    styles: ['brick', 'loft', 'masonry', 'deco'],
+    note: 'The 1916 resolution: a tower must step back for the light it takes.' },
+  { from: 1931, name: 'The Deco Peak', maxFloors: 102,
+    styles: ['loft', 'masonry', 'deco'], airships: true,
+    note: 'A race to the top — observation decks, spires, and masts for the airships.' },
+  { from: 1952, name: 'Glass and Steel', maxFloors: 110,
+    styles: ['masonry', 'deco', 'curtain'], airships: true,
+    note: 'Curtain wall, the plaza, and the tower in the park.' },
+  { from: 1985, name: 'The Modern City', maxFloors: 150,
+    styles: ['masonry', 'deco', 'curtain', 'glass'], airships: true,
+    note: 'Floor-to-ceiling glass and engineering that stopped saying no.' },
+  { from: 2005, name: 'Supertall', maxFloors: 300,
+    styles: ['curtain', 'glass', 'deco'], airships: true,
+    note: 'Slender towers on assembled blocks, priced on the view.' },
+];
+
+export function eraAt(year) {
+  let era = ERAS[0];
+  for (const e of ERAS) if (year >= e.from) era = e;
+  return era;
+}
+
+/** Storeys above which a building carries a mooring mast. */
+export const MAST_FLOORS = 50;
+
 // Height is no longer capped by district. Past this you need the whole block:
 // one owner, four lots, and the development rights that come with them.
 export const BLOCK_ASSEMBLY_FLOORS = 150;
@@ -151,8 +191,9 @@ export function mulberry32(seed) {
 /** Floor area a lot is entitled to — nothing, once its rights are transferred. */
 export function buildableSf(lot) { return lot.airSpent ? 0 : lot.areaSf * lot.far; }
 export function minFloors(lot) { return Math.max(1, Math.ceil(lot.far / CONFIG.MAX_COVERAGE)); }
-export function maxFloors(lot, actorId) {
-  return ownsWholeBlock(lot, actorId) ? ABSOLUTE_MAX_FLOORS : BLOCK_ASSEMBLY_FLOORS;
+export function maxFloors(lot, actorId, year = 9999) {
+  const structural = ownsWholeBlock(lot, actorId) ? ABSOLUTE_MAX_FLOORS : BLOCK_ASSEMBLY_FLOORS;
+  return Math.min(structural, eraAt(year).maxFloors);
 }
 export function floorsWithoutAir(lot) {
   return Math.max(1, Math.floor(buildableSf(lot) / MIN_PLATE_SF));
@@ -184,8 +225,9 @@ export function massing(lot, floors) {
 
 // ------------------------------------------------------------------- the city
 
-export function generateCity(seed = 7) {
+export function generateCity(seed = 7, startYear = 1998) {
   const rnd = mulberry32(seed);
+  const era = eraAt(startYear);
   const { COLS, ROWS, BLOCK, PITCH, LOT, SF_PER_M2 } = CONFIG;
 
   // Which cells are dry land, so water distance and the renderer agree.
@@ -278,7 +320,8 @@ export function generateCity(seed = 7) {
     const density = lot.tier === 'core' ? 0.72 : lot.tier === 'mid' ? 0.66 : 0.58;
     if (rnd() >= density) continue;
     const cap = Math.max(2, Math.round(minFloors(lot) * (0.15 + rnd() * 0.45)));
-    const floors = Math.min(cap, 26);
+    // The stock that is already standing belongs to the era you start in.
+    const floors = Math.min(cap, 26, Math.max(2, Math.round(era.maxFloors * 0.62)));
     const m = massing(lot, floors);
     lot.owner = 'npc';
     lot.building = {

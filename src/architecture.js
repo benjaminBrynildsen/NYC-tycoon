@@ -3,7 +3,7 @@
 // back as they rise, ground-floor retail, cornices, and water towers.
 
 import * as THREE from 'three';
-import { CONFIG, STYLES, mulberry32 } from './world.js';
+import { CONFIG, STYLES, MAST_FLOORS, mulberry32 } from './world.js';
 
 const FH = CONFIG.FLOOR_H;
 
@@ -329,7 +329,13 @@ export function makeBuilding(lot, b, cache) {
   }
   props.push({ kind: 'bulkhead', x: lot.x + (rnd() - 0.5) * top.w * 0.3, y: roofY,
                z: lot.z + (rnd() - 0.5) * top.d * 0.3, s: 0.8 + rnd() * 0.5 });
-  if (b.floors > 26) {
+  let mast = null;
+  if (b.floors >= MAST_FLOORS) {
+    // Tall enough to moor an airship. The mast is the reason the spire exists.
+    const s = 1 + rnd() * 0.4;
+    props.push({ kind: 'mooringMast', x: lot.x, y: roofY, z: lot.z, s });
+    mast = { x: lot.x, y: roofY + 34 * s, z: lot.z };
+  } else if (b.floors > 26) {
     props.push({ kind: 'mast', x: lot.x, y: roofY, z: lot.z, s: 1 + rnd() * 1.4 });
   }
   if (b.floors > 8 && rnd() < 0.5) {
@@ -339,7 +345,7 @@ export function makeBuilding(lot, b, cache) {
 
   const topVol = vols[vols.length - 1];
   group.userData = {
-    lotId: lot.id, type, props, height: b.floors * FH,
+    lotId: lot.id, type, props, mast, height: b.floors * FH,
     // Where the lift lets you out, and how far you can walk before the parapet.
     roof: { y: (topVol.y0 + topVol.floors) * FH + 1.2,
             hw: topVol.w / 2 - 1.2, hd: topVol.d / 2 - 1.2,
@@ -365,6 +371,11 @@ export function roofPropGeometries() {
     watertower: [tank, cone, legs],
     bulkhead: [(() => { const g = new THREE.BoxGeometry(4.2, 3, 3.4); g.translate(0, 1.5, 0); return g; })()],
     mast: [(() => { const g = new THREE.CylinderGeometry(0.16, 0.3, 14, 6); g.translate(0, 7, 0); return g; })()],
+    mooringMast: [
+      (() => { const g = new THREE.CylinderGeometry(0.9, 3.2, 26, 8); g.translate(0, 13, 0); return g; })(),
+      (() => { const g = new THREE.CylinderGeometry(0.4, 0.9, 9, 8); g.translate(0, 30, 0); return g; })(),
+      (() => { const g = new THREE.TorusGeometry(1.5, 0.28, 6, 12); g.rotateX(Math.PI / 2); g.translate(0, 34, 0); return g; })(),
+    ],
     ac: [(() => { const g = new THREE.BoxGeometry(2.4, 1.2, 1.8); g.translate(0, 0.6, 0); return g; })()],
   };
 }

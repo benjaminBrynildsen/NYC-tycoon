@@ -111,6 +111,8 @@ export class Controls {
 
   /** WASD and the arrow keys, as one forward/right pair. */
   moveAxis() {
+    // A thumb stick, when there is one, stands in for the keys.
+    if (this.touchAxis) return this.touchAxis;
     const k = this.keys;
     let fx = 0, fz = 0;
     if (k.has('KeyW') || k.has('ArrowUp')) fz -= 1;

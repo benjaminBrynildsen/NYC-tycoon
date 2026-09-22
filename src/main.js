@@ -3,11 +3,13 @@
 import * as THREE from 'three';
 import { generateCity, CONFIG, cellOf, canReclaim, minFloors } from './world.js';
 import { createState, advance, netWorth, leaderboard, money, sf, logEvent, formatDate,
+         currentEra, currentYear,
          reclaimCost, startReclaim, canReclaimHere, sellAll,
          takeableFirms, takeOverFirm } from './economy.js';
-import { CityScene } from './scene.js';
+import { CityScene, QUALITY } from './scene.js';
 import { Controls, MODE, requestLock, isTyping } from './controls.js';
 import { UI } from './ui.js';
+import { isTouch, setupTouch } from './touch.js';
 
 // Game minutes that pass per real second, by speed setting.
 // 43,200 minutes is thirty days: one month every second.
@@ -42,7 +44,9 @@ const SEED = readSeed();
 const canvas = document.getElementById('view');
 const city = generateCity(SEED);
 const state = createState(city, SEED);
-const scene = new CityScene(state, canvas);
+// A phone gets fewer people, fewer cars and no shadows; the sim is identical.
+const TOUCH = isTouch();
+const scene = new CityScene(state, canvas, TOUCH ? QUALITY.low : QUALITY.high);
 const controls = new Controls(scene, canvas);
 const ui = new UI(state, controls);
 
@@ -96,7 +100,12 @@ const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 canvas.addEventListener('pointerup', (e) => {
   if (controls.mode !== MODE.BOARD || e.button !== 0) return;
   if (controls.panMoved > 5) return;          // that was a drag, not a click
-  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  pickAt(e.clientX, e.clientY);
+});
+
+/** Turn a screen point in the board view into a lot, or into open water. */
+function pickAt(clientX, clientY) {
+  ndc.set((clientX / innerWidth) * 2 - 1, -(clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, scene.camera);
 
   // Prefer an actual building hit, fall back to the ground plane.
@@ -117,7 +126,7 @@ canvas.addEventListener('pointerup', (e) => {
   const { col, row } = cellOf(hit.x, hit.z);
   if (canReclaim(city, col, row)) showWater(col, row);
   else hideWater();
-});
+}
 
 // --- reclaiming water
 const waterPanel = document.getElementById('water-panel');
@@ -406,6 +415,7 @@ function frame(now) {
   scene.updateSky(hour, controls.mode === MODE.BOARD ? controls.board.target : controls.focusPoint, dt);
 
   scene.updateClouds(dt);
+  scene.updateAirships(dt, !!currentEra(state).airships);
   scene.updateFills(state.fills);
 
   const lift = document.getElementById('elevator');
@@ -493,6 +503,14 @@ function checkMilestones() {
     warnedCash = true;
     ui.toast('You are out of cash. Debt service is eating you — sell something.', true);
   } else if (me.cash > 5e6) warnedCash = false;
+}
+
+if (TOUCH) {
+  setupTouch(controls, ui, scene, canvas, {
+    vision: toggleVision,
+    use: useElevatorOrCar,
+    pick: (cx, cy) => pickAt(cx, cy),
+  });
 }
 
 // Handy when poking at the running game from the console.
