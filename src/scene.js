@@ -73,6 +73,7 @@ export class CityScene {
     this._buildings();
     this._vehicles();
     this._crowd();
+    this._highlight();
     this._vision();
     this._avatar();
     this._playerCar();
@@ -747,6 +748,57 @@ export class CityScene {
     }
     tmpS.set(1, 1, 1);
     for (const m of [this.pCoat, this.pHead, this.pLegA, this.pLegB]) m.instanceMatrix.needsUpdate = true;
+  }
+
+  // -------------------------------------------------------------- highlight
+
+  _highlight() {
+    this.highlightGroup = new THREE.Group();
+    this.scene.add(this.highlightGroup);
+    this.highlightOwner = null;
+  }
+
+  /** Light up everything one developer owns, so you can read their position. */
+  setOwnerHighlight(ownerId) {
+    this.highlightOwner = ownerId;
+    for (const c of this.highlightGroup.children) c.geometry.dispose();
+    this.highlightGroup.clear();
+    this.highlightPulse = null;
+    if (!ownerId) return 0;
+
+    const lots = this.city.lots.filter((l) => l.owner === ownerId);
+    if (!lots.length) return 0;
+    const color = OWNER_TINT[ownerId] ?? 0xffffff;
+
+    const padMat = new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.34, depthWrite: false, fog: false });
+    const beamMat = new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.12, depthWrite: false, fog: false });
+    const pads = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.5, 1), padMat, lots.length);
+    const beams = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), beamMat, lots.length);
+    pads.renderOrder = 4; beams.renderOrder = 4;
+
+    const q = new THREE.Quaternion();
+    lots.forEach((lot, i) => {
+      tmpM.compose(tmpV.set(lot.x, 0.85, lot.z), q, tmpS.set(lot.w * 1.02, 1, lot.d * 1.02));
+      pads.setMatrixAt(i, tmpM);
+      // A column tall enough to spot from the board, keyed to what's on the lot.
+      const floors = lot.building?.floors ?? lot.project?.floors ?? 4;
+      const h = floors * CONFIG.FLOOR_H + 34;
+      tmpM.compose(tmpV.set(lot.x, h / 2, lot.z), q, tmpS.set(lot.w * 0.5, h, lot.d * 0.5));
+      beams.setMatrixAt(i, tmpM);
+    });
+    tmpS.set(1, 1, 1);
+    this.highlightGroup.add(pads, beams);
+    this.highlightPulse = { padMat, beamMat };
+    return lots.length;
+  }
+
+  updateHighlight() {
+    if (!this.highlightPulse) return;
+    const t = 0.72 + Math.sin(this.clock * 2.4) * 0.28;
+    this.highlightPulse.padMat.opacity = 0.34 * t;
+    this.highlightPulse.beamMat.opacity = 0.14 * t;
   }
 
   // ----------------------------------------------------------------- vision

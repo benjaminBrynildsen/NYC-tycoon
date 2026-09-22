@@ -40,7 +40,12 @@ scene.syncBuildings();
 let speed = 1;
 ui.setSpeed(1);
 ui.onSpeed = (n) => { speed = n; };
-ui.onDirty = () => { scene.syncBuildings(); ui.refreshBoard(); };
+ui.onDirty = () => {
+  scene.syncBuildings();
+  if (ui.highlightOwner) scene.setOwnerHighlight(ui.highlightOwner);   // ownership moved
+  ui.refreshBoard();
+};
+ui.onHighlight = (id) => scene.setOwnerHighlight(id);
 ui.onTravel = (lot) => {
   const dist = controls.travelTo(lot.x, lot.z);
   advance(state, dist / 900);                 // walking across town costs you time
@@ -155,6 +160,11 @@ controls.toggleBoard = () => {
 
 // ------------------------------------------------------------- start & loop
 
+// Injected by the build so a stale page is obvious at a glance.
+const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
+document.getElementById('buildstamp').textContent = `build ${BUILD}`;
+console.log(`Air Rights — build ${BUILD}`);
+
 document.getElementById('begin').onclick = () => {
   document.getElementById('start').remove();
   requestLock(canvas);
@@ -182,6 +192,7 @@ function frame(now) {
   scene.updateTraffic(dt);
   scene.updateCrowd(dt, controls.focusPoint);
   scene.updateSites(dt);
+  scene.updateHighlight();
   scene.animateAvatar(dt, controls.moving && controls.mode === MODE.STREET);
 
   const hour = ((state.day % 1) * 24 + 11) % 24;   // open late morning

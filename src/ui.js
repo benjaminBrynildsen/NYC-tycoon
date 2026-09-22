@@ -109,12 +109,27 @@ export class UI {
     this.onTravel = () => {};
     this.onDirty = () => {};
     this.onMassingPreview = () => {};
+    this.onHighlight = () => 0;
+    this.highlightOwner = null;
     this.design = { style: 'masonry', form: 'stepped', variant: 1 };
 
     $('lot-close').onclick = () => this.closeLot();
     $('build-close').onclick = () => $('build-panel').classList.add('hidden');
     $('pf-close').onclick = () => $('portfolio').classList.add('hidden');
     $('np-more').onclick = () => this.openFullEdition();
+    // Delegated: the standings list is rebuilt on a timer, so a handler bound
+    // to each row would be thrown away between press and release.
+    $('leaderboard').addEventListener('click', (e) => {
+      const li = e.target.closest('li[data-actor]');
+      if (!li) return;
+      const id = li.dataset.actor;
+      this.highlightOwner = this.highlightOwner === id ? null : id;
+      const n = this.onHighlight(this.highlightOwner);
+      this.toast(this.highlightOwner
+        ? `${this.state.actors[id].name}: ${n} ${n === 1 ? 'property' : 'properties'} lit up on the map.`
+        : 'Highlight cleared.');
+      this.refreshBoard();
+    });
     $('np-close').onclick = () => $('np-full').classList.add('hidden');
     $('np-full').onclick = (e) => { if (e.target.id === 'np-full') $('np-full').classList.add('hidden'); };
     $('s-worth-wrap').onclick = () => this.togglePortfolio();
@@ -219,11 +234,14 @@ export class UI {
   refreshBoard() {
     const s = this.state;
     $('leaderboard').innerHTML = leaderboard(s).map((a) => `
-      <li class="${a.isPlayer ? 'me' : ''}">
+      <li data-actor="${a.id}" class="${a.isPlayer ? 'me' : ''}${this.highlightOwner === a.id ? ' lit' : ''}">
         <span class="dot" style="background:#${a.color.toString(16).padStart(6, '0')}"></span>
         <span class="nm">${a.name}<br><span class="sub">${sf(a.gsfBuilt)} built</span></span>
         <span class="wv">${money(a.worth)}</span>
       </li>`).join('');
+    $('lb-hint').textContent = this.highlightOwner
+      ? 'Click again to clear the highlight'
+      : 'Click a firm to see what they own';
   }
 
   // -------------------------------------------------------------- the paper
@@ -233,7 +251,13 @@ export class UI {
     const s = this.state;
     const top = s.news[0];
     $('np-date').textContent = formatDate(s);
-    if (!top || this._newsDay === top.day + top.headline) return;
+    if (!top) {
+      // Draw the skyline anyway so day one isn't a blank rectangle.
+      if (!this._emptyPlate) { this._emptyPlate = true; drawPlate($('np-plate'), {}, s.city); }
+      return;
+    }
+    this._emptyPlate = false;
+    if (this._newsDay === top.day + top.headline) return;
     this._newsDay = top.day + top.headline;
     $('np-head').textContent = top.headline;
     $('np-dek').textContent = top.dek;

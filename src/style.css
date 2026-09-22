@@ -339,3 +339,12 @@ input[type=text]::placeholder { color: #5f6b7a; }
   .np-story { flex-direction: column; }
   .np-story canvas { width: 100%; }
 }
+
+#buildstamp {
+  margin-top: 14px; font-size: 10px; color: #4d5a6b;
+  letter-spacing: .08em; font-variant-numeric: tabular-nums;
+}
+
+#leaderboard li { cursor: pointer; border-radius: 5px; margin: 0 -6px; padding: 5px 6px; }
+#leaderboard li:hover { background: rgba(255,255,255,.07); }
+#leaderboard li.lit { background: rgba(94,200,255,.15); box-shadow: inset 2px 0 0 var(--accent); }

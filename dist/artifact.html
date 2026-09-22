@@ -341,6 +341,15 @@ input[type=text]::placeholder { color: #5f6b7a; }
   .np-story { flex-direction: column; }
   .np-story canvas { width: 100%; }
 }
+
+#buildstamp {
+  margin-top: 14px; font-size: 10px; color: #4d5a6b;
+  letter-spacing: .08em; font-variant-numeric: tabular-nums;
+}
+
+#leaderboard li { cursor: pointer; border-radius: 5px; margin: 0 -6px; padding: 5px 6px; }
+#leaderboard li:hover { background: rgba(255,255,255,.07); }
+#leaderboard li.lit { background: rgba(94,200,255,.15); box-shadow: inset 2px 0 0 var(--accent); }
 </style>
 <script type="importmap">
 { "imports": {
@@ -394,6 +403,7 @@ input[type=text]::placeholder { color: #5f6b7a; }
     <div id="board-panel" class="panel hidden">
       <h3>Standings</h3>
       <ol id="leaderboard"></ol>
+      <p class="hint" id="lb-hint">Click a firm to see what they own</p>
     </div>
   </div>
 
@@ -490,7 +500,3481 @@ input[type=text]::placeholder { color: #5f6b7a; }
     </div>
     <p class="sub small">Buy land. Build on it. Rent pays you monthly and development pulls up the value of everything around it — including your rivals' land. The market runs in cycles; leverage is how you go fast and how you die.</p>
     <button id="begin" class="primary big">Break ground</button>
+    <div id="buildstamp"></div>
   </div>
 </div>
 
-<script type="module" src="src/main.js"></script>
+
+
+<script type="module">
+// src/main.js
+import * as THREE6 from "three";
+
+// src/world.js
+var CONFIG = {
+  GRID: 8,
+  // blocks per side
+  BLOCK: 60,
+  // metres
+  STREET: 18,
+  // metres
+  LOT: 28,
+  // metres (2x2 lots per block)
+  FLOOR_H: 3.6,
+  // metres per storey
+  SF_PER_M2: 10.7639,
+  MAX_COVERAGE: 0.85,
+  // share of lot the footprint may cover
+  MAX_FLOORS: 150
+};
+var MIN_PLATE_SF = 4200;
+var HEIGHT_CAP = { res: 25, edge: 50, mid: 90, core: 150 };
+var WATER = { southZ: 0, eastX: 0 };
+CONFIG.PITCH = CONFIG.BLOCK + CONFIG.STREET;
+CONFIG.EXTENT = CONFIG.GRID * CONFIG.PITCH;
+WATER.southZ = CONFIG.EXTENT / 2 + 4;
+WATER.eastX = CONFIG.EXTENT / 2 + 4;
+function waterDistance(x, z) {
+  return Math.min(WATER.southZ - z, WATER.eastX - x);
+}
+var AVENUE_NAMES = [
+  "Harrow Ave",
+  "Kestrel Ave",
+  "Dutch Ave",
+  "Pell Ave",
+  "Vandam Ave",
+  "Orchard Ave",
+  "Bowery Ave",
+  "Meridian Ave",
+  "Harbor Ave"
+];
+function streetName(i) {
+  const n = i + 1;
+  const s = ["th", "st", "nd", "rd"][n % 100 > 10 && n % 100 < 14 ? 0 : Math.min(n % 10, 4) % 4] || "th";
+  return `${n}${s} St`;
+}
+var DISTRICTS = {
+  core: { far: 15, landBase: 220, rentMul: 1.15, name: "C6 Core" },
+  mid: { far: 10, landBase: 140, rentMul: 1.05, name: "C5 Midtown" },
+  edge: { far: 6, landBase: 80, rentMul: 0.95, name: "C4 Edge" },
+  res: { far: 3, landBase: 45, rentMul: 0.85, name: "R6 Residential" }
+};
+var STYLES = {
+  brick: { name: "Brick", type: "brownstone", cost: 0.9, rent: 0.95 },
+  loft: { name: "Industrial", type: "loft", cost: 0.95, rent: 0.99 },
+  masonry: { name: "Masonry", type: "prewar", cost: 1, rent: 1.02 },
+  deco: { name: "Deco stone", type: "deco", cost: 1.09, rent: 1.07 },
+  curtain: { name: "Curtain wall", type: "midcentury", cost: 1.05, rent: 1.05 },
+  glass: { name: "Glass", type: "glass", cost: 1.2, rent: 1.15 }
+};
+var FORMS = {
+  slab: { name: "Slab", cost: 0.95, rent: 0.96 },
+  stepped: { name: "Stepped", cost: 1.04, rent: 1.04 },
+  point: { name: "Point", cost: 1.13, rent: 1.1 }
+};
+var USES = {
+  office: { name: "Office", rent: 78, cost: 400, opex: 0.34 },
+  residential: { name: "Residential", rent: 62, cost: 360, opex: 0.3 },
+  mixed: { name: "Mixed-use", rent: 70, cost: 385, opex: 0.32 }
+};
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function() {
+    a = a + 1831565813 >>> 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function districtFor(bx, by, grid) {
+  const c = (grid - 1) / 2;
+  const d = Math.max(Math.abs(bx - c), Math.abs(by - c));
+  if (d < 1.2) return "core";
+  if (d < 2.2) return "mid";
+  if (d < 3.2) return "edge";
+  return "res";
+}
+function buildableSf(lot) {
+  return lot.areaSf * lot.far;
+}
+function minFloors(lot) {
+  return Math.max(1, Math.ceil(lot.far / CONFIG.MAX_COVERAGE));
+}
+function maxFloors(lot) {
+  return Math.max(minFloors(lot) + 2, HEIGHT_CAP[lot.district]);
+}
+function floorsWithoutAir(lot) {
+  return Math.max(1, Math.floor(buildableSf(lot) / MIN_PLATE_SF));
+}
+function massing(lot, floors) {
+  const entitled = buildableSf(lot);
+  const perFloorMax = lot.areaSf * CONFIG.MAX_COVERAGE;
+  let gsf = Math.min(entitled, floors * perFloorMax);
+  let airSf = 0;
+  if (gsf / floors < MIN_PLATE_SF) {
+    const need = Math.min(floors * MIN_PLATE_SF, floors * perFloorMax);
+    airSf = Math.max(0, need - entitled);
+    gsf = entitled + airSf;
+  }
+  const footprintSf = gsf / floors;
+  const coverage = footprintSf / lot.areaSf;
+  const side = Math.sqrt(footprintSf / CONFIG.SF_PER_M2);
+  return { gsf, airSf, footprintSf, coverage, side, height: floors * CONFIG.FLOOR_H, floors };
+}
+function generateCity(seed = 7) {
+  const rnd = mulberry32(seed);
+  const { GRID, BLOCK, PITCH, LOT, SF_PER_M2 } = CONFIG;
+  const origin = -CONFIG.EXTENT / 2 + PITCH / 2;
+  const lots = [];
+  const blocks = [];
+  const corridors = [];
+  for (let i = 0; i <= GRID; i++) {
+    corridors.push({
+      id: `av${i}`,
+      axis: "ns",
+      index: i,
+      name: AVENUE_NAMES[i % AVENUE_NAMES.length],
+      retail: 0,
+      fame: 0,
+      famous: false,
+      lots: []
+    });
+    corridors.push({
+      id: `st${i}`,
+      axis: "ew",
+      index: i,
+      name: streetName(i),
+      retail: 0,
+      fame: 0,
+      famous: false,
+      lots: []
+    });
+  }
+  const corridorBy = new Map(corridors.map((c) => [c.id, c]));
+  let id = 0;
+  for (let by = 0; by < GRID; by++) {
+    for (let bx = 0; bx < GRID; bx++) {
+      const cx = origin + bx * PITCH;
+      const cz = origin + by * PITCH;
+      const district = districtFor(bx, by, GRID);
+      const isPark = district !== "core" && rnd() < 0.055;
+      const block = { bx, by, cx, cz, district, isPark, lots: [] };
+      blocks.push(block);
+      if (isPark) continue;
+      const off = BLOCK / 2 - LOT / 2 - 1;
+      for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        const lot = {
+          id: id++,
+          bx,
+          by,
+          block,
+          x: cx + sx * off,
+          z: cz + sz * off,
+          w: LOT,
+          d: LOT,
+          district,
+          far: DISTRICTS[district].far,
+          areaSf: LOT * LOT * SF_PER_M2,
+          owner: null,
+          // null = on the market, else 'player' or a rival id
+          building: null,
+          project: null,
+          landPerSf: DISTRICTS[district].landBase * (0.82 + rnd() * 0.36),
+          seed: Math.floor(rnd() * 1e6),
+          name: null
+        };
+        lot.avenue = corridorBy.get(`av${sx < 0 ? bx : bx + 1}`);
+        lot.street = corridorBy.get(`st${sz < 0 ? by : by + 1}`);
+        lot.avenue.lots.push(lot);
+        lot.street.lots.push(lot);
+        const num = 100 + by * 100 + (sz < 0 ? 0 : 50) + (sx < 0 ? 1 : 3) + bx % 10 * 4;
+        lot.address = `${num} ${lot.avenue.name}`;
+        lot.crossStreet = lot.street.name;
+        lot.waterDist = waterDistance(lot.x, lot.z);
+        lots.push(lot);
+        block.lots.push(lot);
+      }
+    }
+  }
+  for (const lot of lots) {
+    const r = rnd();
+    const density = lot.district === "core" ? 0.72 : lot.district === "mid" ? 0.66 : 0.58;
+    if (r < density) {
+      const cap = Math.max(2, Math.round(minFloors(lot) * (0.15 + rnd() * 0.45)));
+      const floors = Math.min(cap, 26);
+      const m = massing(lot, floors);
+      lot.owner = "npc";
+      lot.building = {
+        floors,
+        gsf: Math.min(m.gsf, floors * lot.areaSf * 0.8),
+        side: Math.sqrt(lot.areaSf * (0.6 + rnd() * 0.25) / SF_PER_M2),
+        use: rnd() < 0.5 ? "residential" : "mixed",
+        quality: 0.45 + rnd() * 0.3,
+        age: Math.floor(20 + rnd() * 70),
+        builtBy: "npc",
+        condition: 0.45 + rnd() * 0.45
+      };
+    }
+  }
+  const parkBlocks = blocks.filter((b) => b.isPark);
+  for (const lot of lots) {
+    lot.parkFront = parkBlocks.some((b) => Math.abs(b.cx - lot.x) < CONFIG.PITCH * 1.05 && Math.abs(b.cz - lot.z) < CONFIG.PITCH * 1.05);
+  }
+  return { lots, blocks, corridors, seed };
+}
+function lotAt(city2, x, z) {
+  let best = null, bestD = Infinity;
+  for (const l of city2.lots) {
+    const dx = Math.abs(l.x - x), dz = Math.abs(l.z - z);
+    if (dx > l.w / 2 + 11 || dz > l.d / 2 + 11) continue;
+    const d = dx + dz;
+    if (d < bestD) {
+      bestD = d;
+      best = l;
+    }
+  }
+  return best;
+}
+
+// src/economy.js
+var START_CASH = 1e8;
+var CAP_RATE = 0.055;
+var INTEREST = 0.065;
+var MAX_LTC = 0.65;
+var RIVALS = [
+  {
+    id: "r1",
+    name: "Halvorsen Estates",
+    color: 13919818,
+    strategy: "institution",
+    blurb: "Old money. Patient, unlevered, prime sites only."
+  },
+  {
+    id: "r2",
+    name: "Vance Bros. Capital",
+    color: 14725953,
+    strategy: "cowboy",
+    blurb: "Maximum leverage, maximum speed. Always over-extended."
+  },
+  {
+    id: "r3",
+    name: "Kestrel Holdings",
+    color: 7317703,
+    strategy: "grinder",
+    blurb: "Cheap lots, high volume, thin margins. Grinds you down."
+  }
+];
+function createState(city2, seed = 11) {
+  const rnd = mulberry32(seed + 99);
+  const actors = {
+    player: {
+      id: "player",
+      name: "You",
+      color: 4906624,
+      cash: START_CASH,
+      debt: 0,
+      gsfBuilt: 0,
+      isPlayer: true,
+      history: []
+    }
+  };
+  for (const r of RIVALS) {
+    actors[r.id] = {
+      ...r,
+      cash: START_CASH,
+      debt: 0,
+      gsfBuilt: 0,
+      isPlayer: false,
+      patience: r.strategy === "institution" ? 3 : r.strategy === "cowboy" ? 0 : 1,
+      ltc: r.strategy === "cowboy" ? 0.65 : r.strategy === "institution" ? 0.3 : 0.5,
+      cooldown: 0
+    };
+  }
+  return {
+    city: city2,
+    actors,
+    day: 0,
+    startYear: 1998,
+    cycle: 1,
+    // market multiplier on rents and land
+    cyclePhase: rnd() * Math.PI * 2,
+    projects: [],
+    log: [],
+    news: [],
+    mood: "steady",
+    rnd,
+    monthOfLastTick: -1
+  };
+}
+function dateOf(state2) {
+  const d = new Date(Date.UTC(state2.startYear, 0, 1));
+  d.setUTCDate(d.getUTCDate() + Math.floor(state2.day));
+  return d;
+}
+function formatDate(state2) {
+  const d = dateOf(state2);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+function money(n) {
+  const a = Math.abs(n);
+  const s = n < 0 ? "-" : "";
+  if (a >= 1e9) return `${s}$${(a / 1e9).toFixed(2)}B`;
+  if (a >= 1e6) return `${s}$${(a / 1e6).toFixed(1)}M`;
+  if (a >= 1e3) return `${s}$${(a / 1e3).toFixed(0)}K`;
+  return `${s}$${a.toFixed(0)}`;
+}
+function sf(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M sf`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}K sf`;
+  return `${Math.round(n)} sf`;
+}
+function localIntensity(state2, lot, radius = 150) {
+  let built = 0, capacity = 0;
+  for (const l of state2.city.lots) {
+    const dx = l.x - lot.x, dz = l.z - lot.z;
+    if (dx * dx + dz * dz > radius * radius) continue;
+    capacity += buildableSf(l);
+    if (l.building) built += l.building.gsf;
+  }
+  return capacity > 0 ? built / capacity : 0;
+}
+function premiums(state2, lot) {
+  const water = lot.waterDist < 120 ? 1 + 0.42 * (1 - lot.waterDist / 120) : 1;
+  const park = lot.parkFront ? 1.24 : 1;
+  const corridorFame = Math.max(lot.avenue.fame, lot.street.fame);
+  const corridor = 1 + corridorFame * 0.38;
+  const blight = 1 - (lot._blight ?? 0) * 0.34;
+  const intensity = 0.65 + (lot._intensity ?? 0.35) * 0.9;
+  return {
+    water,
+    park,
+    corridor,
+    blight,
+    intensity,
+    total: water * park * corridor * blight * intensity
+  };
+}
+function landValue(state2, lot) {
+  return lot.landPerSf * buildableSf(lot) * premiums(state2, lot).total * state2.cycle;
+}
+function askPrice(state2, lot) {
+  const base = landValue(state2, lot);
+  const occupied = lot.building ? 1.25 + lot.building.gsf / (buildableSf(lot) + 1) * 0.5 : 1;
+  return base * occupied;
+}
+function heightCostMul(floors) {
+  return 1 + 0.01 * floors + 1e-4 * floors * floors;
+}
+function coreEfficiency(floors) {
+  return Math.max(0.58, 0.88 - floors * 16e-4);
+}
+function rentPerSf(state2, lot, use, floors, quality = 1) {
+  const u = USES[use];
+  const view = 1 + floors / 200 + Math.pow(floors / 150, 2) * 0.9;
+  const eff = coreEfficiency(floors) / coreEfficiency(10);
+  const p = premiums(state2, lot);
+  const place = p.water * p.park * p.corridor * p.blight;
+  return u.rent * DISTRICTS[lot.district].rentMul * view * eff * quality * place * state2.cycle;
+}
+function costPerSf(lot, use, floors) {
+  return USES[use].cost * heightCostMul(floors);
+}
+function occupancyFor(state2, lot) {
+  const glut = Math.max(0, (lot._intensity ?? 0.35) - 0.72) * 1.1;
+  return Math.max(0.55, Math.min(0.97, 0.94 * state2.cycle - glut));
+}
+function buildingNOI(state2, lot) {
+  const b = lot.building;
+  if (!b) return 0;
+  const cond = 0.55 + (b.condition ?? 1) * 0.45;
+  const gross = b.gsf * rentPerSf(state2, lot, b.use, b.floors, (b.quality ?? 1) * cond) * (b.designRent ?? 1);
+  const occ = occupancyFor(state2, lot);
+  return gross * occ * (1 - USES[b.use].opex);
+}
+function buildingValue(state2, lot) {
+  return buildingNOI(state2, lot) / CAP_RATE;
+}
+var DEFAULT_DESIGN = { style: "masonry", form: "stepped", variant: 1 };
+function designMul(design = DEFAULT_DESIGN) {
+  const st = STYLES[design.style] || STYLES.masonry;
+  const fm = FORMS[design.form] || FORMS.stepped;
+  return { cost: st.cost * fm.cost, rent: st.rent * fm.rent };
+}
+function quote(state2, lot, floors, use, ltc, design = DEFAULT_DESIGN, owner = "player") {
+  const m = massing(lot, floors);
+  const dm = designMul(design);
+  const land = lot.owner === owner ? 0 : askPrice(state2, lot);
+  const airRate = landValue(state2, lot) / Math.max(1, buildableSf(lot));
+  const air = (m.airSf || 0) * airRate * 1.45;
+  const hard = m.gsf * costPerSf(lot, use, floors) * dm.cost;
+  const soft = hard * 0.14;
+  const total = land + air + hard + soft;
+  const loan = Math.min(total * ltc, total * MAX_LTC);
+  const equity = total - loan;
+  const gross = m.gsf * rentPerSf(state2, lot, use, floors, 1) * dm.rent;
+  const noi = gross * occupancyFor(state2, lot) * (1 - USES[use].opex);
+  const debtService = loan * INTEREST;
+  const months = Math.round(8 + floors * 0.42 + Math.pow(floors / 34, 2));
+  return {
+    ...m,
+    land,
+    air,
+    hard,
+    soft,
+    total,
+    loan,
+    equity,
+    gross,
+    noi,
+    debtService,
+    cashflow: noi - debtService,
+    yieldOnCost: noi / Math.max(total, 1),
+    value: noi / CAP_RATE,
+    months
+  };
+}
+function netWorth(state2, actorId) {
+  const a = state2.actors[actorId];
+  let assets = 0;
+  for (const lot of state2.city.lots) {
+    if (lot.owner !== actorId) continue;
+    assets += landValue(state2, lot);
+    if (lot.building) assets += buildingValue(state2, lot);
+  }
+  for (const p of state2.projects) {
+    if (p.owner === actorId) assets += p.spent;
+  }
+  return a.cash + assets - a.debt;
+}
+function leaderboard(state2) {
+  return Object.values(state2.actors).map((a) => ({ ...a, worth: netWorth(state2, a.id) })).sort((x, y) => y.worth - x.worth);
+}
+function buyLot(state2, lot, actorId) {
+  const a = state2.actors[actorId];
+  const price = askPrice(state2, lot);
+  if (lot.owner === actorId) return { ok: false, why: "You already own this lot." };
+  if (lot.owner && lot.owner !== "npc") return { ok: false, why: "Not for sale \u2014 a rival owns it." };
+  if (a.cash < price) return { ok: false, why: "Not enough cash." };
+  a.cash -= price;
+  lot.owner = actorId;
+  if (lot.building) lot.building.builtBy = lot.building.builtBy || "npc";
+  logEvent(state2, actorId, `bought ${lot.district.toUpperCase()} lot #${lot.id} for ${money(price)}`);
+  return { ok: true, price };
+}
+function startProject(state2, lot, actorId, floors, use, ltc, design = DEFAULT_DESIGN) {
+  const a = state2.actors[actorId];
+  if (lot.owner !== actorId) return { ok: false, why: "You do not own this lot." };
+  if (lot.project) return { ok: false, why: "Already under construction." };
+  const q = quote(state2, lot, floors, use, ltc, design, actorId);
+  if (a.cash < q.equity) return { ok: false, why: `Need ${money(q.equity)} equity.` };
+  a.cash -= q.equity;
+  a.debt += q.loan;
+  const project = {
+    lot,
+    owner: actorId,
+    floors,
+    use,
+    ltc,
+    style: design.style,
+    form: design.form,
+    variant: design.variant,
+    designRent: designMul(design).rent,
+    cost: q.total,
+    loan: q.loan,
+    spent: q.equity,
+    side: q.side,
+    gsf: q.gsf,
+    startDay: state2.day,
+    endDay: state2.day + q.months * 30,
+    baseMonths: q.months,
+    projectedNOI: q.noi,
+    demolished: !!lot.building
+  };
+  lot.project = project;
+  lot.building = null;
+  state2.projects.push(project);
+  logEvent(state2, actorId, `broke ground on ${floors} floors at #${lot.id} (${money(q.total)})`);
+  if (floors >= 16 || q.total > 55e6) {
+    const who = a.name === "You" ? "CITY DEVELOPER" : a.name.toUpperCase();
+    pushNews(
+      state2,
+      "groundbreaking",
+      floors >= 80 ? `${floors} STOREYS PLANNED FOR ${lot.avenue.name.toUpperCase()}` : `GROUND BROKEN ON ${floors}-STOREY ${use === "residential" ? "RESIDENCE" : "TOWER"}`,
+      `${a.name} has committed ${money(q.total)} to a ${floors}-floor scheme at ${lot.address}, on a site zoned FAR ${lot.far}. ${q.airSf > 0 ? `The plan leans on ${sf(q.airSf)} of purchased air rights.` : "The scheme sits within its as-of-right envelope."} Completion is projected in ${q.months} months.`,
+      lot
+    );
+  }
+  return { ok: true, project, quote: q };
+}
+function reservePrice(state2, lot) {
+  const intrinsic = landValue(state2, lot) + (lot.building ? buildingValue(state2, lot) : 0);
+  const owner = state2.actors[lot.owner];
+  if (!owner) return intrinsic * 1.12;
+  const attachment = { institution: 1.42, grinder: 1.24, cowboy: 1.14 }[owner.strategy] ?? 1.25;
+  const strain = (owner.cash < 0 ? 0.16 : owner.cash < 1e7 ? 0.08 : 0) + (owner.debt > intrinsic * 2 ? 0.08 : 0) + (state2.cycle < 0.85 ? 0.07 : 0);
+  return intrinsic * Math.max(1, attachment - strain);
+}
+function makeOffer(state2, lot, actorId, amount) {
+  const a = state2.actors[actorId];
+  if (lot.owner === actorId) return { ok: false, why: "You already own this." };
+  if (lot.project) return { ok: false, why: "Not while it is under construction." };
+  if (lot.offerBlockedUntil && state2.day < lot.offerBlockedUntil) {
+    const days = Math.ceil(lot.offerBlockedUntil - state2.day);
+    return { ok: false, why: `They won't revisit it for another ${days} days.` };
+  }
+  if (a.cash < amount) return { ok: false, why: "You do not have the cash." };
+  const reserve = reservePrice(state2, lot);
+  const owner = state2.actors[lot.owner];
+  const name = owner ? owner.name : "The owner";
+  if (amount >= reserve) {
+    a.cash -= amount;
+    if (owner) {
+      owner.cash += amount;
+      owner.debt = Math.max(0, owner.debt - amount * 0.45);
+    }
+    const from = lot.owner;
+    lot.owner = actorId;
+    lot.offerBlockedUntil = 0;
+    logEvent(state2, actorId, `bought ${lot.address} from ${name} for ${money(amount)}`);
+    pushNews(
+      state2,
+      "deal",
+      `${lot.address.toUpperCase()} CHANGES HANDS`,
+      `${a.name} has bought ${lot.address} from ${name} for ${money(amount)} in an off-market deal. The site carries ${sf(buildableSf(lot))} of development rights.`,
+      lot
+    );
+    return { ok: true, accepted: true, price: amount, from, seller: name };
+  }
+  const ratio = amount / reserve;
+  lot.offerBlockedUntil = state2.day + (ratio < 0.7 ? 120 : 45);
+  return {
+    ok: true,
+    accepted: false,
+    seller: name,
+    reserve,
+    insulting: ratio < 0.7,
+    why: ratio < 0.7 ? `${name} did not dignify that with a counter.` : `${name} won't go below ${money(reserve)}.`
+  };
+}
+function sellLot(state2, lot, actorId) {
+  const a = state2.actors[actorId];
+  if (lot.owner !== actorId || lot.project) return { ok: false, why: "Cannot sell right now." };
+  const price = landValue(state2, lot) + (lot.building ? buildingValue(state2, lot) : 0);
+  a.cash += price * 0.97;
+  lot.owner = "npc";
+  logEvent(state2, actorId, `sold #${lot.id} for ${money(price * 0.97)}`);
+  return { ok: true, price };
+}
+function rushQuote(state2, project, months) {
+  const remaining = (project.endDay - state2.day) / 30;
+  const max = Math.max(0, remaining * 0.45);
+  const m = Math.max(0, Math.min(months, max));
+  const cost = project.cost * (0.035 * m + 0.012 * m * m);
+  return { months: m, maxMonths: max, cost, remaining };
+}
+function rushProject(state2, lot, actorId, months) {
+  const p = lot.project;
+  if (!p || p.owner !== actorId) return { ok: false, why: "Not your site." };
+  const q = rushQuote(state2, p, months);
+  if (q.months <= 0.05) return { ok: false, why: "Nothing left to pull forward." };
+  const a = state2.actors[actorId];
+  if (a.cash < q.cost) return { ok: false, why: `Need ${money(q.cost)}.` };
+  a.cash -= q.cost;
+  p.endDay -= q.months * 30;
+  p.cost += q.cost;
+  p.spent += q.cost;
+  p.rushed = (p.rushed ?? 0) + q.months;
+  logEvent(state2, actorId, `paid ${money(q.cost)} to pull #${lot.id} forward ${q.months.toFixed(1)} months`);
+  return { ok: true, ...q };
+}
+function nameBuilding(state2, lot, name) {
+  lot.name = (name || "").trim().slice(0, 40) || null;
+  return lot.name;
+}
+function worthBreakdown(state2, actorId = "player") {
+  const a = state2.actors[actorId];
+  let land = 0, buildings = 0, wip = 0, noi = 0, tax = 0, lots = 0, built = 0, gsf = 0;
+  for (const lot of state2.city.lots) {
+    if (lot.owner !== actorId) continue;
+    lots++;
+    land += landValue(state2, lot);
+    tax += landValue(state2, lot) * 0.012;
+    if (lot.building) {
+      built++;
+      gsf += lot.building.gsf;
+      buildings += buildingValue(state2, lot);
+      noi += buildingNOI(state2, lot);
+    }
+  }
+  for (const p of state2.projects) if (p.owner === actorId) wip += p.spent;
+  const debtService = a.debt * INTEREST;
+  return {
+    cash: a.cash,
+    land,
+    buildings,
+    wip,
+    debt: a.debt,
+    total: a.cash + land + buildings + wip - a.debt,
+    noi,
+    tax,
+    debtService,
+    netIncome: noi - tax - debtService,
+    lots,
+    built,
+    gsf
+  };
+}
+function pushNews(state2, kind, headline, dek, lot = null) {
+  const b = lot ? lot.project || lot.building : null;
+  state2.news.unshift({
+    day: state2.day,
+    date: formatDate(state2),
+    kind,
+    headline,
+    dek,
+    lotId: lot ? lot.id : null,
+    address: lot ? lot.address : null,
+    snapshot: b ? {
+      floors: b.floors,
+      form: b.form,
+      style: b.style,
+      variant: b.variant,
+      use: b.use,
+      side: b.side
+    } : null
+  });
+  if (state2.news.length > 40) state2.news.pop();
+}
+function logEvent(state2, actorId, text) {
+  const who = state2.actors[actorId];
+  state2.log.unshift({ day: state2.day, actor: actorId, name: who ? who.name : actorId, text });
+  if (state2.log.length > 60) state2.log.pop();
+}
+function advance(state2, days) {
+  const target = state2.day + days;
+  while (state2.day < target) {
+    const step = Math.min(1, target - state2.day);
+    state2.day += step;
+    if (Math.floor(state2.day) !== Math.floor(state2.day - step)) dayTick(state2);
+  }
+}
+function dayTick(state2) {
+  const d = dateOf(state2);
+  state2.cyclePhase += Math.PI * 2 / (365 * 7);
+  const noise = (state2.rnd() - 0.5) * 4e-3;
+  state2.cycle = Math.max(0.55, Math.min(
+    1.5,
+    1 + Math.sin(state2.cyclePhase) * 0.28 + noise * 40
+  ));
+  for (let i = state2.projects.length - 1; i >= 0; i--) {
+    const p = state2.projects[i];
+    if (state2.day >= p.endDay) {
+      p.lot.building = {
+        floors: p.floors,
+        gsf: p.gsf,
+        side: p.side,
+        use: p.use,
+        quality: 1,
+        age: 0,
+        builtBy: p.owner,
+        condition: 1,
+        style: p.style,
+        form: p.form,
+        variant: p.variant,
+        designRent: p.designRent
+      };
+      p.lot.project = null;
+      state2.actors[p.owner].gsfBuilt += p.gsf;
+      state2.projects.splice(i, 1);
+      logEvent(state2, p.owner, `topped out ${p.floors} floors at #${p.lot.id} \u2014 ${sf(p.gsf)}`);
+      if (p.floors >= 12) {
+        const nm = p.lot.name || p.lot.address;
+        pushNews(
+          state2,
+          "topout",
+          `${nm.toUpperCase()} TOPS OUT`,
+          `${state2.actors[p.owner].name} has completed ${sf(p.gsf)} across ${p.floors} floors at ${p.lot.address}. The building is expected to earn ${money(buildingNOI(state2, p.lot))} a year at ${Math.round(occupancyFor(state2, p.lot) * 100)}% occupancy.`,
+          p.lot
+        );
+      }
+      state2._dirtyGeometry = true;
+    }
+  }
+  if (d.getUTCDate() === 1 && state2.monthOfLastTick !== d.getUTCMonth()) {
+    state2.monthOfLastTick = d.getUTCMonth();
+    monthTick(state2);
+  }
+}
+function monthTick(state2) {
+  for (const lot of state2.city.lots) lot._intensity = localIntensity(state2, lot);
+  updateCorridors(state2);
+  updateCondition(state2);
+  updateBlight(state2);
+  for (const id in state2.actors) {
+    const a = state2.actors[id];
+    let noi = 0, tax = 0;
+    for (const lot of state2.city.lots) {
+      if (lot.owner !== id) continue;
+      noi += buildingNOI(state2, lot) / 12;
+      tax += landValue(state2, lot) * 0.012 / 12;
+    }
+    a.cash += noi - tax - a.debt * INTEREST / 12;
+    a.lastNOI = noi;
+  }
+  for (const r of RIVALS) rivalTurn(state2, state2.actors[r.id]);
+  marketStory(state2);
+}
+function marketStory(state2) {
+  const c = state2.cycle;
+  let mood = state2.mood;
+  if (c > 1.18) mood = "boom";
+  else if (c < 0.84) mood = "slump";
+  else if (c > 0.94 && c < 1.08) mood = "steady";
+  if (mood === state2.mood) return;
+  if (state2.moodLockUntil && state2.day < state2.moodLockUntil) return;
+  const was = state2.mood;
+  state2.mood = mood;
+  state2.moodLockUntil = state2.day + 300;
+  if (mood === "boom") {
+    pushNews(
+      state2,
+      "market",
+      "CAPITAL FLOODS IN AS VALUES RUN AHEAD OF RENTS",
+      `Land is trading at levels the income cannot yet justify. Lenders are competing on terms and every site in the core has three bidders. Developers who remember the last cycle are selling.`
+    );
+  } else if (mood === "slump") {
+    pushNews(
+      state2,
+      "market",
+      "THE MUSIC STOPS: LENDERS PULL BACK",
+      `Values are sliding and refinancing has gone quiet. Schemes that penciled at the top of the market are now short, and the over-levered are looking for buyers. Whoever holds cash sets the price.`
+    );
+  } else {
+    pushNews(
+      state2,
+      "market",
+      was === "slump" ? "MARKET FINDS ITS FOOTING" : "FEVER BREAKS",
+      `Values and rents have come back into line. Ordinary deals pencil again.`
+    );
+  }
+}
+function updateCorridors(state2) {
+  for (const c of state2.city.corridors) {
+    let retail = 0, quality = 0, n = 0;
+    for (const lot of c.lots) {
+      const b = lot.building;
+      if (!b) continue;
+      const share = b.use === "mixed" ? 0.3 : b.use === "residential" ? 0.08 : 0.14;
+      retail += b.gsf * share * (b.condition ?? 1);
+      quality += b.condition ?? 1;
+      n++;
+    }
+    c.retail = retail;
+    const density = n / Math.max(1, c.lots.length);
+    const avgQuality = n ? quality / n : 0;
+    const target = Math.max(0, Math.min(
+      1,
+      retail / 4e5 * 0.5 + density * 0.3 + avgQuality * 0.3 - 0.25
+    ));
+    c.fame += (target - c.fame) * 0.05;
+    const wasFamous = c.famous;
+    c.famous = c.fame > 0.45;
+    if (c.famous && !wasFamous) {
+      logEvent(state2, "player", `\u2014 ${c.name} has become a destination retail strip`);
+      pushNews(
+        state2,
+        "corridor",
+        `${c.name.toUpperCase()} IS THE CITY'S NEW HIGH STREET`,
+        `Ground-floor trade along ${c.name} has reached ${sf(c.retail)}, enough to draw shoppers from outside the district. Landlords on the strip can expect rents to follow.`
+      );
+    } else if (!c.famous && wasFamous) {
+      logEvent(state2, "player", `\u2014 ${c.name} has lost its draw`);
+      pushNews(
+        state2,
+        "corridor",
+        `${c.name.toUpperCase()} LOSES ITS DRAW`,
+        `Vacancies and neglect have hollowed out what was one of the city's busier strips.`
+      );
+    }
+  }
+}
+function updateCondition(state2) {
+  for (const lot of state2.city.lots) {
+    const b = lot.building;
+    if (!b) continue;
+    b.age = (b.age ?? 0) + 1 / 12;
+    if (b.condition === void 0) b.condition = 1;
+    const owner = state2.actors[lot.owner];
+    const noi = buildingNOI(state2, lot);
+    const funded = owner ? owner.cash > 0 && noi > 0 : state2.cycle > 0.85 && (lot._intensity ?? 0.3) > 0.22;
+    const drift = funded ? 5e-3 : -45e-4;
+    b.condition = Math.max(0.12, Math.min(1, b.condition + drift - 8e-4));
+  }
+}
+function updateBlight(state2) {
+  for (const lot of state2.city.lots) {
+    let sum = 0, n = 0;
+    for (const other of lot.block.lots) {
+      if (!other.building) continue;
+      sum += 1 - (other.building.condition ?? 1);
+      n++;
+    }
+    const blockBlight = n ? sum / n : 0.25;
+    lot._blight = (lot._blight ?? blockBlight) * 0.85 + blockBlight * 0.15;
+  }
+}
+function blockCharacter(state2, block) {
+  const built = block.lots.filter((l) => l.building);
+  if (block.isPark) return "Park";
+  if (!built.length) return "Vacant";
+  const blight = built.reduce((a, l) => a + (1 - (l.building.condition ?? 1)), 0) / built.length;
+  if (blight > 0.55) return "Distressed";
+  const famous = block.lots.some((l) => l.avenue.famous || l.street.famous);
+  if (famous) return "Retail row";
+  const gsf = built.reduce((a, l) => a + l.building.gsf, 0);
+  const capacity = block.lots.reduce((a, l) => a + buildableSf(l), 0);
+  const office = built.filter((l) => l.building.use === "office").length / built.length;
+  if (gsf / capacity > 0.6 && office > 0.5) return "Business district";
+  if (gsf / capacity > 0.55) return "Dense mixed";
+  if (office > 0.5) return "Commercial";
+  return "Residential";
+}
+function rivalTurn(state2, a) {
+  if (a.cooldown > 0) {
+    a.cooldown--;
+    return;
+  }
+  if (a.cash < 0) {
+    const owned = state2.city.lots.filter((l) => l.owner === a.id && !l.project);
+    if (owned.length) {
+      owned.sort((x, y) => buildingValue(state2, x) - buildingValue(state2, y));
+      const lot = owned[0];
+      const price = (landValue(state2, lot) + buildingValue(state2, lot)) * 0.82;
+      a.cash += price;
+      a.debt = Math.max(0, a.debt - price * 0.6);
+      lot.owner = "npc";
+      logEvent(state2, a.id, `sold #${lot.id} under pressure for ${money(price)}`);
+      pushNews(
+        state2,
+        "distress",
+        `${a.name.toUpperCase()} SELLS UNDER PRESSURE`,
+        `${a.name} has offloaded ${lot.address} for ${money(price)}, well below what the asset earned at the top of the market. The firm is carrying ${money(a.debt)} of debt.`,
+        lot
+      );
+    }
+    a.cooldown = 2;
+    return;
+  }
+  const wants = {
+    institution: (l) => l.district === "core" ? 3 : l.district === "mid" ? 2 : 0.3,
+    cowboy: (l) => 1 + (l._intensity ?? 0.3) * 2,
+    grinder: (l) => l.district === "edge" || l.district === "res" ? 2.5 : 0.5
+  }[a.strategy];
+  let best = null, bestScore = -Infinity;
+  for (const lot of state2.city.lots) {
+    if (lot.owner === a.id || lot.project) continue;
+    if (lot.owner && lot.owner !== "npc") continue;
+    const floors = pickFloors(lot, a.strategy);
+    const q = quote(
+      state2,
+      lot,
+      floors,
+      a.strategy === "grinder" ? "residential" : "office",
+      a.ltc,
+      rivalDesign(a, lot, floors),
+      a.id
+    );
+    if (q.equity > a.cash * 0.6) continue;
+    const score = q.yieldOnCost * 100 * wants(lot) - (a.strategy === "institution" ? q.equity / 9e7 : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = { lot, floors, q };
+    }
+  }
+  const threshold = { institution: 8.5, cowboy: 6, grinder: 9 }[a.strategy];
+  if (best && bestScore > threshold) {
+    if (best.lot.owner === "npc" || best.lot.owner === null) {
+      const price = askPrice(state2, best.lot);
+      if (a.cash < price + best.q.equity * 0.5) {
+        a.cooldown = 1;
+        return;
+      }
+      a.cash -= price;
+      best.lot.owner = a.id;
+    }
+    const use = a.strategy === "grinder" ? "residential" : "office";
+    startProject(state2, best.lot, a.id, best.floors, use, a.ltc, rivalDesign(a, best.lot, best.floors));
+    a.cooldown = a.patience;
+    state2._dirtyGeometry = true;
+  }
+}
+function rivalDesign(a, lot, floors) {
+  if (a.strategy === "institution") return { style: floors > 20 ? "deco" : "masonry", form: "stepped", variant: 1 };
+  if (a.strategy === "cowboy") return { style: "glass", form: "point", variant: 2 };
+  return { style: floors > 14 ? "curtain" : "brick", form: "slab", variant: 0 };
+}
+function pickFloors(lot, strategy) {
+  const lo = minFloors(lot);
+  if (strategy === "cowboy") return Math.min(CONFIG.MAX_FLOORS, Math.round(lo * 1.8));
+  if (strategy === "institution") return Math.round(lo * 1.35);
+  return lo;
+}
+
+// src/scene.js
+import * as THREE3 from "three";
+
+// src/architecture.js
+import * as THREE from "three";
+var FH = CONFIG.FLOOR_H;
+var TYPES = {
+  brownstone: { pal: ["#8d5b42", "#7b4a36", "#a97a55", "#6f5344"], win: ["#7d90a4", "#2c3138"], mortar: 0.55, cornice: "#6f4433" },
+  loft: { pal: ["#a8705a", "#96604d", "#b07c63", "#8a7f6e"], win: ["#8496a6", "#2a3038"], mortar: 0.4, cornice: "#7a4d3c" },
+  prewar: { pal: ["#b8ab97", "#a99c88", "#c4b7a3", "#9d9384"], win: ["#8ea2b6", "#2e343c"], mortar: 0.3, cornice: "#8f8271" },
+  deco: { pal: ["#a89a84", "#bdb09a", "#9c8f7a", "#cabda4"], win: ["#93a7ba", "#2b3138"], mortar: 0.25, cornice: "#7d7160" },
+  midcentury: { pal: ["#7d8994", "#6e7a86", "#8b97a2", "#9aa39f"], win: ["#9dbdd6", "#33454f"], mortar: 0.1, cornice: "#5e6a76" },
+  glass: { pal: ["#4e6474", "#405767", "#5c7282", "#6b8496"], win: ["#a8cde4", "#243d4f"], mortar: 0.05, cornice: "#3a4f5e" }
+};
+function typologyFor(lot, b) {
+  if (b.style && STYLES[b.style]) return STYLES[b.style].type;
+  const rnd = mulberry32(lot.seed + b.floors * 13);
+  const f = b.floors;
+  const modern = (b.age ?? 60) < 30;
+  if (f <= 5) return rnd() < 0.35 ? "loft" : "brownstone";
+  if (f <= 10) return modern ? "midcentury" : rnd() < 0.5 ? "loft" : "prewar";
+  if (f <= 22) return modern ? rnd() < 0.5 ? "midcentury" : "glass" : rnd() < 0.45 ? "deco" : "prewar";
+  return modern ? "glass" : rnd() < 0.55 ? "deco" : "midcentury";
+}
+var canvasCache = /* @__PURE__ */ new Map();
+function facadeCanvas(type, variant, emissive) {
+  const key = `${type}_${variant}_${emissive ? "e" : "d"}`;
+  if (canvasCache.has(key)) return canvasCache.get(key);
+  const T = TYPES[type];
+  const S = 128;
+  const c = document.createElement("canvas");
+  c.width = c.height = S;
+  const g = c.getContext("2d");
+  const rnd = mulberry32(variant * 7919 + type.length * 131);
+  const cell = S / 4;
+  if (emissive) {
+    g.fillStyle = "#000";
+    g.fillRect(0, 0, S, S);
+  } else {
+    g.fillStyle = T.pal[variant % T.pal.length];
+    g.fillRect(0, 0, S, S);
+    if (T.mortar > 0.2) {
+      for (let y = 0; y < S; y += 4) {
+        g.fillStyle = `rgba(0,0,0,${0.05 + rnd() * 0.05 * T.mortar})`;
+        g.fillRect(0, y, S, 1);
+      }
+      for (let i = 0; i < 90; i++) {
+        g.fillStyle = `rgba(255,255,255,${rnd() * 0.05})`;
+        g.fillRect(rnd() * S, rnd() * S, 6 + rnd() * 10, 3);
+      }
+    } else {
+      for (let y = 0; y < S; y += cell) {
+        g.fillStyle = "rgba(0,0,0,0.16)";
+        g.fillRect(0, y + cell - 5, S, 5);
+      }
+    }
+  }
+  const curtain = T.mortar < 0.2;
+  const wW = curtain ? cell - 6 : cell * 0.52;
+  const wH = curtain ? cell * 0.6 : cell * 0.55;
+  for (let ry = 0; ry < 4; ry++) {
+    for (let rx = 0; rx < 4; rx++) {
+      const x = rx * cell + (cell - wW) / 2;
+      const y = ry * cell + (cell - wH) / 2.4;
+      if (emissive) {
+        if (rnd() < 0.5) continue;
+        const warm = rnd();
+        g.fillStyle = warm < 0.72 ? "#ffca7d" : "#bcd8ff";
+        g.fillRect(x, y, wW, wH);
+      } else {
+        const grad = g.createLinearGradient(0, y, 0, y + wH);
+        grad.addColorStop(0, T.win[0]);
+        grad.addColorStop(0.45, T.win[1]);
+        grad.addColorStop(1, T.win[1]);
+        g.fillStyle = grad;
+        g.fillRect(x, y, wW, wH);
+        g.fillStyle = "rgba(0,0,0,0.3)";
+        g.fillRect(x, y, wW, 2);
+        g.fillStyle = "rgba(255,255,255,0.14)";
+        g.fillRect(x - 1, y + wH, wW + 2, 2);
+        if (!curtain) {
+          g.fillStyle = "rgba(255,255,255,0.10)";
+          g.fillRect(x + wW / 2 - 0.5, y, 1, wH);
+        }
+        g.fillStyle = "rgba(255,255,255,0.16)";
+        g.fillRect(x, y + 2, wW * 0.42, wH * 0.5);
+      }
+    }
+  }
+  canvasCache.set(key, c);
+  return c;
+}
+function makeTexture(type, variant, emissive, rx, ry) {
+  const t = new THREE.CanvasTexture(facadeCanvas(type, variant, emissive));
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.repeat.set(rx, ry);
+  t.anisotropy = 4;
+  return t;
+}
+function facadeMaterial(cache, type, variant, sideM, floors, condition) {
+  const rx = Math.max(1, Math.round(sideM / 13));
+  const ry = Math.max(1, Math.round(floors / 4));
+  const wear = condition < 0.45 ? "w" : condition < 0.75 ? "m" : "g";
+  const key = `f_${type}_${variant}_${rx}_${ry}_${wear}`;
+  if (cache.has(key)) return cache.get(key);
+  const T = TYPES[type];
+  const glassy = type === "glass" || type === "midcentury";
+  const grime = condition < 0.75 ? new THREE.Color(6971477) : new THREE.Color(16777215);
+  const tint = new THREE.Color(16777215).lerp(grime, Math.max(0, 0.8 - condition));
+  const m = new THREE.MeshStandardMaterial({
+    map: makeTexture(type, variant, false, rx, ry),
+    emissiveMap: makeTexture(type, variant, true, rx, ry),
+    emissive: 16777215,
+    emissiveIntensity: 0,
+    color: tint,
+    roughness: glassy ? 0.24 + (1 - condition) * 0.4 : 0.78 + (1 - condition) * 0.15,
+    metalness: glassy ? 0.5 : 0.03
+  });
+  m.userData.litScale = 0.35 + condition * 0.65;
+  cache.set(key, m);
+  return m;
+}
+function solid(cache, key, color, roughness = 0.85, metalness = 0.05, glow = false) {
+  const k = `s_${key}`;
+  if (cache.has(k)) return cache.get(k);
+  const m = new THREE.MeshStandardMaterial({ color, roughness, metalness });
+  if (glow) {
+    m.emissive = new THREE.Color(16758629);
+    m.emissiveIntensity = 0;
+    m.userData.shopGlow = true;
+  }
+  cache.set(k, m);
+  return m;
+}
+function volumes(lot, b, rnd) {
+  const lotW = lot.w * 0.94, lotD = lot.d * 0.94;
+  const side = Math.min(lotW, b.side || Math.sqrt(lot.areaSf * 0.7 / CONFIG.SF_PER_M2));
+  const form = b.form || "stepped";
+  const f = b.floors;
+  const out = [];
+  if (f <= 6) {
+    out.push({ w: lotW, d: lotD, floors: f, y0: 0 });
+    return out;
+  }
+  const baseFloors = form === "point" ? Math.min(f - 2, 4) : Math.min(f - 2, f <= 14 ? 3 : 5);
+  out.push({ w: lotW, d: lotD, floors: baseFloors, y0: 0 });
+  let remaining = f - baseFloors;
+  let y = baseFloors;
+  const startShrink = form === "slab" ? 0.93 : form === "point" ? 0.66 : 0.84;
+  let w = lotW * (startShrink + rnd() * 0.05);
+  let d = lotD * (startShrink + rnd() * 0.05);
+  if (form === "slab") {
+    d *= 0.62;
+    out.push({ w, d, floors: remaining, y0: y });
+    return out;
+  }
+  const setbacks = form === "point" ? f > 26 ? 1 : 0 : f > 34 ? 2 : f > 18 ? 1 : 0;
+  for (let i = 0; i < setbacks; i++) {
+    const chunk = Math.max(3, Math.round(remaining * (0.3 + rnd() * 0.15)));
+    out.push({ w, d, floors: chunk, y0: y });
+    y += chunk;
+    remaining -= chunk;
+    const k = form === "point" ? 0.72 : 0.79;
+    w *= k + rnd() * 0.06;
+    d *= k + rnd() * 0.06;
+  }
+  const floor = form === "point" ? side * 0.62 : side * 0.8;
+  out.push({ w: Math.max(w, floor), d: Math.max(d, floor), floors: remaining, y0: y });
+  return out;
+}
+function makeBuilding(lot, b, cache) {
+  const rnd = mulberry32(lot.seed + 31);
+  const type = typologyFor(lot, b);
+  const variant = b.variant ?? lot.seed % 4;
+  const condition = b.condition ?? 1;
+  const T = TYPES[type];
+  const group = new THREE.Group();
+  const props = [];
+  const vols = volumes(lot, b, rnd);
+  const retailFloors = b.use === "residential" ? 0 : 1;
+  for (let i = 0; i < vols.length; i++) {
+    const v = vols[i];
+    const h = v.floors * FH;
+    const y0 = v.y0 * FH;
+    const mat = facadeMaterial(cache, type, variant, Math.max(v.w, v.d), v.floors, condition);
+    const roofMat = solid(
+      cache,
+      `roof_${condition > 0.5 ? "ok" : "bad"}`,
+      condition > 0.5 ? 3815997 : 3025961,
+      0.97
+    );
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(v.w, h, v.d),
+      [mat, mat, roofMat, roofMat, mat, mat]
+    );
+    mesh.position.set(lot.x, y0 + h / 2 + 0.4, lot.z);
+    mesh.castShadow = mesh.receiveShadow = true;
+    mesh.userData.lotId = lot.id;
+    group.add(mesh);
+    const capH = i === 0 && vols.length > 1 ? 0.5 : 0.8;
+    const over = type === "glass" ? 0.1 : 0.7;
+    const corMat = solid(cache, `cor_${type}_${variant}`, T.cornice, 0.9);
+    const cap = new THREE.Mesh(
+      new THREE.BoxGeometry(v.w + over, capH, v.d + over),
+      [corMat, corMat, roofMat, roofMat, corMat, corMat]
+    );
+    cap.position.set(lot.x, y0 + h + 0.4, lot.z);
+    cap.castShadow = true;
+    cap.userData.lotId = lot.id;
+    group.add(cap);
+  }
+  if (retailFloors) {
+    const base = vols[0];
+    const ok = condition > 0.6;
+    const shop = new THREE.Mesh(
+      new THREE.BoxGeometry(base.w + 0.3, FH * 0.86, base.d + 0.3),
+      solid(cache, `shop_${ok ? "ok" : "bad"}`, ok ? 5858158 : 3486510, 0.35, 0.3, ok)
+    );
+    shop.position.set(lot.x, FH * 0.43 + 0.4, lot.z);
+    shop.userData.lotId = lot.id;
+    shop.receiveShadow = true;
+    group.add(shop);
+    const lively = lot.avenue.famous || lot.street.famous || b.use === "mixed";
+    if (lively && condition > 0.5) {
+      const awnColors = [9187114, 2051386, 2375787, 8018462];
+      const col = awnColors[lot.seed % awnColors.length];
+      for (const [ax, az, rot] of [[0, 1, 0], [1, 0, Math.PI / 2]]) {
+        const aw = new THREE.Mesh(
+          new THREE.BoxGeometry((ax ? base.d : base.w) * 0.55, 0.25, 1.9),
+          solid(cache, `awn_${col}`, col, 0.9)
+        );
+        aw.position.set(lot.x + ax * (base.w / 2 + 0.6), FH * 0.82, lot.z + az * (base.d / 2 + 0.6));
+        aw.rotation.y = rot;
+        aw.castShadow = true;
+        group.add(aw);
+      }
+    }
+  }
+  if ((type === "loft" || type === "brownstone") && b.floors >= 4) {
+    const v = vols[0];
+    const fe = new THREE.Mesh(
+      new THREE.BoxGeometry(v.w * 0.42, b.floors * FH - FH, 0.9),
+      solid(cache, "escape", 3093304, 0.95)
+    );
+    fe.position.set(lot.x, b.floors * FH / 2 + FH * 0.4, lot.z + v.d / 2 + 0.45);
+    fe.castShadow = true;
+    group.add(fe);
+  }
+  const top = vols[vols.length - 1];
+  const roofY = (top.y0 + top.floors) * FH + 1.2;
+  if (b.floors <= 20 && rnd() < 0.75) {
+    props.push({
+      kind: "watertower",
+      x: lot.x + (rnd() - 0.5) * top.w * 0.4,
+      y: roofY,
+      z: lot.z + (rnd() - 0.5) * top.d * 0.4,
+      s: 0.9 + rnd() * 0.3
+    });
+  }
+  props.push({
+    kind: "bulkhead",
+    x: lot.x + (rnd() - 0.5) * top.w * 0.3,
+    y: roofY,
+    z: lot.z + (rnd() - 0.5) * top.d * 0.3,
+    s: 0.8 + rnd() * 0.5
+  });
+  if (b.floors > 26) {
+    props.push({ kind: "mast", x: lot.x, y: roofY, z: lot.z, s: 1 + rnd() * 1.4 });
+  }
+  if (b.floors > 8 && rnd() < 0.5) {
+    props.push({
+      kind: "ac",
+      x: lot.x + (rnd() - 0.5) * top.w * 0.5,
+      y: roofY,
+      z: lot.z + (rnd() - 0.5) * top.d * 0.5,
+      s: 0.7 + rnd() * 0.4
+    });
+  }
+  group.userData = { lotId: lot.id, type, props, height: b.floors * FH };
+  return group;
+}
+function massingVolumes(lot, b) {
+  return volumes(lot, b, mulberry32(lot.seed + 31));
+}
+function roofPropGeometries() {
+  const tank = new THREE.CylinderGeometry(1.5, 1.7, 3.4, 10);
+  tank.translate(0, 5.2, 0);
+  const cone = new THREE.ConeGeometry(1.9, 1.3, 10);
+  cone.translate(0, 7.5, 0);
+  const legs = new THREE.BoxGeometry(2.6, 3.6, 2.6);
+  legs.translate(0, 1.8, 0);
+  return {
+    watertower: [tank, cone, legs],
+    bulkhead: [(() => {
+      const g = new THREE.BoxGeometry(4.2, 3, 3.4);
+      g.translate(0, 1.5, 0);
+      return g;
+    })()],
+    mast: [(() => {
+      const g = new THREE.CylinderGeometry(0.16, 0.3, 14, 6);
+      g.translate(0, 7, 0);
+      return g;
+    })()],
+    ac: [(() => {
+      const g = new THREE.BoxGeometry(2.4, 1.2, 1.8);
+      g.translate(0, 0.6, 0);
+      return g;
+    })()]
+  };
+}
+
+// src/models.js
+import * as THREE2 from "three";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+function box(w, h, d, x = 0, y = 0, z = 0) {
+  const g = new THREE2.BoxGeometry(w, h, d);
+  g.translate(x, y, z);
+  return g;
+}
+function cyl(rt, rb, h, seg, x = 0, y = 0, z = 0, rotZ = 0) {
+  const g = new THREE2.CylinderGeometry(rt, rb, h, seg);
+  if (rotZ) g.rotateZ(rotZ);
+  g.translate(x, y, z);
+  return g;
+}
+var merge = (list) => mergeGeometries(list, false);
+function wheels(halfW, axleF, axleR, r = 0.36) {
+  const w = [];
+  for (const [sx, sz] of [[-1, axleF], [1, axleF], [-1, axleR], [1, axleR]]) {
+    w.push(cyl(r, r, 0.26, 10, sx * halfW, r, sz, Math.PI / 2));
+  }
+  return w;
+}
+function vehicleModels() {
+  const M = {};
+  M.sedan = {
+    body: merge([
+      box(1.86, 0.62, 4.5, 0, 0.66, 0),
+      box(1.72, 0.52, 2.3, 0, 1.18, -0.12),
+      box(1.8, 0.2, 4.4, 0, 0.42, 0)
+    ]),
+    glass: merge([
+      ...wheels(0.93, 1.45, -1.45),
+      box(1.63, 0.42, 1, 0, 1.25, 0.55),
+      box(1.63, 0.42, 0.9, 0, 1.25, -0.85),
+      box(1.66, 0.36, 1.2, 0, 1.25, -0.1)
+    ]),
+    lamps: merge([
+      box(0.34, 0.16, 0.12, -0.66, 0.78, 2.22),
+      box(0.34, 0.16, 0.12, 0.66, 0.78, 2.22),
+      box(0.4, 0.14, 0.1, -0.64, 0.8, -2.24),
+      box(0.4, 0.14, 0.1, 0.64, 0.8, -2.24)
+    ]),
+    scale: 1
+  };
+  M.suv = {
+    body: merge([
+      box(1.98, 0.9, 4.7, 0, 0.86, 0),
+      box(1.9, 0.78, 3, 0, 1.66, -0.3),
+      box(1.94, 0.18, 4.6, 0, 0.5, 0)
+    ]),
+    glass: merge([
+      ...wheels(1, 1.55, -1.5, 0.44),
+      box(1.8, 0.56, 1.1, 0, 1.74, 1.05),
+      box(1.8, 0.56, 1.4, 0, 1.74, -1.25),
+      box(1.84, 0.5, 1.5, 0, 1.74, -0.1)
+    ]),
+    lamps: merge([
+      box(0.36, 0.2, 0.12, -0.7, 1.05, 2.32),
+      box(0.36, 0.2, 0.12, 0.7, 1.05, 2.32),
+      box(0.3, 0.3, 0.1, -0.76, 1.2, -2.34),
+      box(0.3, 0.3, 0.1, 0.76, 1.2, -2.34)
+    ]),
+    scale: 1
+  };
+  M.taxi = {
+    body: merge([
+      box(1.9, 0.66, 4.6, 0, 0.68, 0),
+      box(1.76, 0.58, 2.5, 0, 1.24, -0.1),
+      box(0.9, 0.24, 0.34, 0, 1.64, 0.35)
+    ]),
+    glass: merge([
+      ...wheels(0.95, 1.5, -1.48),
+      box(1.66, 0.46, 1.05, 0, 1.3, 0.6),
+      box(1.66, 0.46, 0.95, 0, 1.3, -0.95),
+      box(1.7, 0.4, 1.3, 0, 1.3, -0.1)
+    ]),
+    lamps: merge([
+      box(0.34, 0.16, 0.12, -0.66, 0.8, 2.28),
+      box(0.34, 0.16, 0.12, 0.66, 0.8, 2.28),
+      box(0.38, 0.14, 0.1, -0.64, 0.82, -2.3),
+      box(0.38, 0.14, 0.1, 0.64, 0.82, -2.3),
+      box(0.86, 0.2, 0.3, 0, 1.64, 0.35)
+    ]),
+    fixedColor: 15906857,
+    scale: 1
+  };
+  M.van = {
+    body: merge([
+      box(2, 1.5, 5.2, 0, 1.2, -0.2),
+      box(1.94, 0.7, 1.5, 0, 0.92, 2.1)
+    ]),
+    glass: merge([
+      ...wheels(1, 1.75, -1.7, 0.4),
+      box(1.8, 0.62, 0.14, 0, 1.4, 2.78),
+      box(0.16, 0.56, 1, -0.98, 1.4, 2),
+      box(0.16, 0.56, 1, 0.98, 1.4, 2)
+    ]),
+    lamps: merge([
+      box(0.34, 0.2, 0.12, -0.72, 0.85, 2.84),
+      box(0.34, 0.2, 0.12, 0.72, 0.85, 2.84),
+      box(0.26, 0.4, 0.1, -0.88, 1.6, -2.82),
+      box(0.26, 0.4, 0.1, 0.88, 1.6, -2.82)
+    ]),
+    scale: 1
+  };
+  M.boxtruck = {
+    body: merge([
+      box(2.28, 2.3, 5, 0, 2, -1),
+      box(2.1, 1.5, 2.2, 0, 1.3, 2.3),
+      box(2.2, 0.3, 7.2, 0, 0.66, 0)
+    ]),
+    glass: merge([
+      ...wheels(1.12, 2.5, -1.9, 0.46),
+      cyl(0.46, 0.46, 0.26, 10, -1.12, 0.46, -3, Math.PI / 2),
+      cyl(0.46, 0.46, 0.26, 10, 1.12, 0.46, -3, Math.PI / 2),
+      box(1.94, 0.72, 0.14, 0, 1.62, 3.34),
+      box(0.16, 0.66, 1.1, -1.04, 1.6, 2.4),
+      box(0.16, 0.66, 1.1, 1.04, 1.6, 2.4)
+    ]),
+    lamps: merge([
+      box(0.32, 0.2, 0.12, -0.8, 0.9, 3.4),
+      box(0.32, 0.2, 0.12, 0.8, 0.9, 3.4),
+      box(0.3, 0.24, 0.1, -0.98, 1, -3.52),
+      box(0.3, 0.24, 0.1, 0.98, 1, -3.52)
+    ]),
+    scale: 1
+  };
+  M.sports = {
+    body: merge([
+      box(1.92, 0.44, 4.3, 0, 0.5, 0),
+      box(1.7, 0.4, 1.9, 0, 0.9, -0.35),
+      box(1.86, 0.16, 4.2, 0, 0.32, 0),
+      box(1.5, 0.12, 0.5, 0, 0.98, -2)
+    ]),
+    glass: merge([
+      ...wheels(0.94, 1.42, -1.42, 0.34),
+      box(1.58, 0.34, 1.6, 0, 0.98, -0.2)
+    ]),
+    lamps: merge([
+      box(0.46, 0.12, 0.1, -0.58, 0.6, 2.12),
+      box(0.46, 0.12, 0.1, 0.58, 0.6, 2.12),
+      box(0.5, 0.12, 0.1, -0.56, 0.62, -2.14),
+      box(0.5, 0.12, 0.1, 0.56, 0.62, -2.14)
+    ]),
+    scale: 1
+  };
+  return M;
+}
+var CAR_PAINT = [
+  1381914,
+  2829619,
+  12172997,
+  15263456,
+  9252650,
+  2047331,
+  3104058,
+  7303286,
+  11095854,
+  4012626,
+  8097433,
+  13222836,
+  5908275,
+  1920850
+];
+function personParts() {
+  const coat = merge([
+    box(0.44, 0.66, 0.26, 0, 0, 0),
+    // torso, pivot at its centre
+    box(0.13, 0.5, 0.15, -0.28, -0.04, 0),
+    // arms
+    box(0.13, 0.5, 0.15, 0.28, -0.04, 0),
+    box(0.4, 0.12, 0.24, 0, 0.36, 0)
+    // shoulders
+  ]);
+  const head = merge([
+    new THREE2.SphereGeometry(0.115, 8, 6),
+    box(0.2, 0.08, 0.22, 0, -0.14, 0)
+    // collar
+  ]);
+  const leg = box(0.155, 0.52, 0.17, 0, -0.26, 0);
+  const bag = box(0.22, 0.26, 0.12, 0, 0, 0);
+  return { coat, head, leg, bag };
+}
+var COAT_COLORS = [
+  2369067,
+  3291466,
+  7167822,
+  8141363,
+  3099196,
+  12170150,
+  4865877,
+  2042419,
+  9075294,
+  4151915,
+  5582906,
+  14078404,
+  2832942,
+  6975352
+];
+var SKIN_TONES = [1578e4, 14263674, 11893843, 9263674, 6504491, 16112061];
+function streetProps() {
+  return {
+    lampPost: merge([
+      cyl(0.1, 0.14, 7.4, 6, 0, 3.7, 0),
+      box(1.5, 0.14, 0.14, 0.7, 7.3, 0)
+    ]),
+    lampHead: merge([box(0.7, 0.2, 0.34, 1.3, 7.2, 0)]),
+    hydrant: merge([
+      cyl(0.16, 0.19, 0.72, 8, 0, 0.36, 0),
+      new THREE2.SphereGeometry(0.17, 8, 6).translate(0, 0.76, 0),
+      box(0.52, 0.12, 0.14, 0, 0.5, 0)
+    ]),
+    trash: merge([
+      new THREE2.SphereGeometry(0.34, 6, 5).translate(0, 0.3, 0),
+      new THREE2.SphereGeometry(0.28, 6, 5).translate(0.42, 0.25, 0.2),
+      new THREE2.SphereGeometry(0.25, 6, 5).translate(-0.3, 0.22, 0.3)
+    ]),
+    trafficLight: merge([
+      cyl(0.09, 0.11, 6.2, 6, 0, 3.1, 0),
+      box(0.26, 0.9, 0.3, 0, 5.6, 0)
+    ]),
+    bench: merge([
+      box(1.8, 0.1, 0.5, 0, 0.45, 0),
+      box(1.8, 0.5, 0.1, 0, 0.7, -0.2),
+      box(0.12, 0.45, 0.45, -0.8, 0.22, 0),
+      box(0.12, 0.45, 0.45, 0.8, 0.22, 0)
+    ])
+  };
+}
+
+// src/scene.js
+var OWNER_TINT = { player: 4906624, r1: 13919818, r2: 14725953, r3: 7317703 };
+var MODEL_MIX = ["sedan", "sedan", "taxi", "suv", "sedan", "van", "sports", "boxtruck", "suv", "taxi"];
+var tmpM = new THREE3.Matrix4();
+var tmpQ = new THREE3.Quaternion();
+var tmpV = new THREE3.Vector3();
+var tmpS = new THREE3.Vector3(1, 1, 1);
+var UP = new THREE3.Vector3(0, 1, 0);
+function textTexture(text, {
+  size = 64,
+  color = "#ffffff",
+  outline = "rgba(0,0,0,0.75)",
+  weight = 700,
+  pad = 14,
+  track = 0
+} = {}) {
+  const font = `${weight} ${size}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  const c = document.createElement("canvas");
+  let g = c.getContext("2d");
+  g.font = font;
+  const label = track ? text.split("").join(String.fromCharCode(8202)) : text;
+  c.width = Math.max(64, Math.ceil(g.measureText(label).width) + pad * 2);
+  c.height = size + pad * 2;
+  g = c.getContext("2d");
+  g.font = font;
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.lineWidth = Math.max(3, size / 10);
+  g.strokeStyle = outline;
+  g.strokeText(label, c.width / 2, c.height / 2);
+  g.fillStyle = color;
+  g.fillText(label, c.width / 2, c.height / 2);
+  const t = new THREE3.CanvasTexture(c);
+  t.colorSpace = THREE3.SRGBColorSpace;
+  t.anisotropy = 8;
+  return { texture: t, aspect: c.width / c.height };
+}
+function freeze(o) {
+  o.updateMatrix();
+  o.matrixAutoUpdate = false;
+  return o;
+}
+var CityScene = class {
+  constructor(state2, canvas2) {
+    this.state = state2;
+    this.city = state2.city;
+    this.matCache = /* @__PURE__ */ new Map();
+    this.renderer = new THREE3.WebGLRenderer({ canvas: canvas2, antialias: true, powerPreference: "high-performance" });
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE3.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE3.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.18;
+    this.scene = new THREE3.Scene();
+    this.camera = new THREE3.PerspectiveCamera(62, 1, 0.4, 6e3);
+    this.collisionGrid = /* @__PURE__ */ new Map();
+    this.clock = 0;
+    this._lights();
+    this._sky();
+    this._water();
+    this._ground();
+    this._streetLabels();
+    this._streetFurniture();
+    this._buildings();
+    this._vehicles();
+    this._crowd();
+    this._highlight();
+    this._vision();
+    this._avatar();
+    this._playerCar();
+    this.rebuildCollision();
+  }
+  // ------------------------------------------------------------------ light
+  _lights() {
+    this.hemi = new THREE3.HemisphereLight(12375295, 3156255, 1);
+    this.scene.add(this.hemi);
+    this.sun = new THREE3.DirectionalLight(16773341, 2.4);
+    this.sun.castShadow = true;
+    this.sun.shadow.mapSize.set(2048, 2048);
+    const s = this.sun.shadow.camera;
+    s.near = 20;
+    s.far = 1400;
+    s.left = -230;
+    s.right = 230;
+    s.top = 320;
+    s.bottom = -230;
+    this.sun.shadow.bias = -9e-4;
+    this.sun.shadow.normalBias = 0.5;
+    this.scene.add(this.sun, this.sun.target);
+    this.scene.fog = new THREE3.FogExp2(10466252, 16e-4);
+  }
+  _sky() {
+    this.skyUniforms = {
+      uTop: { value: new THREE3.Color(4158656) },
+      uMid: { value: new THREE3.Color(10466252) },
+      uBot: { value: new THREE3.Color(14140584) },
+      uSun: { value: new THREE3.Vector3(0.4, 0.5, 0.3) },
+      uSunColor: { value: new THREE3.Color(16767392) }
+    };
+    const mat = new THREE3.ShaderMaterial({
+      uniforms: this.skyUniforms,
+      side: THREE3.BackSide,
+      depthWrite: false,
+      fog: false,
+      vertexShader: `
+        varying vec3 vDir;
+        void main() {
+          vDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec3 uTop, uMid, uBot, uSunColor;
+        uniform vec3 uSun;
+        varying vec3 vDir;
+        void main() {
+          float h = clamp(vDir.y * 1.15 + 0.08, -1.0, 1.0);
+          vec3 c = h > 0.0 ? mix(uMid, uTop, pow(h, 0.7)) : mix(uMid, uBot, pow(-h, 0.55));
+          float d = max(dot(normalize(vDir), normalize(uSun)), 0.0);
+          c += uSunColor * (pow(d, 22.0) * 0.85 + pow(d, 4.0) * 0.16);
+          gl_FragColor = vec4(c, 1.0);
+        }`
+    });
+    this.sky = new THREE3.Mesh(new THREE3.SphereGeometry(3200, 24, 16), mat);
+    this.sky.frustumCulled = false;
+    this.scene.add(this.sky);
+  }
+  _water() {
+    const c = document.createElement("canvas");
+    c.width = c.height = 128;
+    const g = c.getContext("2d");
+    const img = g.createImageData(128, 128);
+    for (let y = 0; y < 128; y++) {
+      for (let x = 0; x < 128; x++) {
+        const i = (y * 128 + x) * 4;
+        const w = Math.sin(x * 0.28) * 0.5 + Math.sin(x * 0.11 + y * 0.19) * 0.5;
+        img.data[i] = 128 + w * 34;
+        img.data[i + 1] = 128 + Math.sin(y * 0.24 + x * 0.05) * 30;
+        img.data[i + 2] = 255;
+        img.data[i + 3] = 255;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    this.waterNormal = new THREE3.CanvasTexture(c);
+    this.waterNormal.wrapS = this.waterNormal.wrapT = THREE3.RepeatWrapping;
+    this.waterNormal.repeat.set(70, 70);
+    const mat = new THREE3.MeshStandardMaterial({
+      color: 1915725,
+      roughness: 0.16,
+      metalness: 0.55,
+      normalMap: this.waterNormal,
+      normalScale: new THREE3.Vector2(0.55, 0.55)
+    });
+    const plane = new THREE3.Mesh(new THREE3.PlaneGeometry(9e3, 9e3), mat);
+    plane.rotation.x = -Math.PI / 2;
+    plane.position.set(1200, -0.55, 1200);
+    plane.receiveShadow = false;
+    this.scene.add(freeze(plane));
+  }
+  // ----------------------------------------------------------------- ground
+  _ground() {
+    const E = CONFIG.EXTENT, B = CONFIG.BLOCK, P = CONFIG.PITCH, half = E / 2;
+    const asphalt = new THREE3.Mesh(
+      new THREE3.PlaneGeometry(E + CONFIG.STREET * 2, E + CONFIG.STREET * 2),
+      new THREE3.MeshStandardMaterial({ color: 3356219, roughness: 0.97 })
+    );
+    asphalt.rotation.x = -Math.PI / 2;
+    asphalt.position.set(
+      (WATER.eastX - (half + CONFIG.STREET)) / 2 - CONFIG.STREET / 2,
+      0,
+      (WATER.southZ - (half + CONFIG.STREET)) / 2 - CONFIG.STREET / 2
+    );
+    asphalt.receiveShadow = true;
+    this.scene.add(freeze(asphalt));
+    const walkMat = new THREE3.MeshStandardMaterial({ color: 9671567, roughness: 0.93 });
+    const curbMat = new THREE3.MeshStandardMaterial({ color: 7303283, roughness: 0.9 });
+    const parkMat = new THREE3.MeshStandardMaterial({ color: 4679994, roughness: 1 });
+    const pathMat = new THREE3.MeshStandardMaterial({ color: 10194807, roughness: 1 });
+    const walkGeo = new THREE3.BoxGeometry(B + 6, 0.36, B + 6);
+    const curbGeo = new THREE3.BoxGeometry(B + 8, 0.2, B + 8);
+    const normals = this.city.blocks.filter((b) => !b.isPark);
+    const curbs = new THREE3.InstancedMesh(curbGeo, curbMat, this.city.blocks.length);
+    const walks = new THREE3.InstancedMesh(walkGeo, walkMat, normals.length);
+    curbs.receiveShadow = walks.receiveShadow = true;
+    let wi = 0, ci = 0;
+    for (const b of this.city.blocks) {
+      tmpM.makeTranslation(b.cx, 0.1, b.cz);
+      curbs.setMatrixAt(ci++, tmpM);
+      if (b.isPark) {
+        this._park(b, parkMat, pathMat);
+        continue;
+      }
+      tmpM.makeTranslation(b.cx, 0.18, b.cz);
+      walks.setMatrixAt(wi++, tmpM);
+    }
+    walks.count = wi;
+    curbs.count = ci;
+    this.scene.add(walks, curbs);
+    const lineMat = new THREE3.MeshBasicMaterial({ color: 13483373 });
+    const zebraMat = new THREE3.MeshBasicMaterial({ color: 14211282 });
+    const lineGeo = new THREE3.PlaneGeometry(0.44, P - B - 2);
+    const lanes = [];
+    for (let i = 0; i <= CONFIG.GRID; i++) {
+      const pos = -half + i * P;
+      if (pos > WATER.eastX && pos > WATER.southZ) continue;
+      for (let j = -1; j <= CONFIG.GRID; j++) {
+        const along = -half + j * P + P / 2;
+        lanes.push([pos, along, 0], [along, pos, Math.PI / 2]);
+      }
+    }
+    const lineMesh = new THREE3.InstancedMesh(new THREE3.PlaneGeometry(0.44, B), lineMat, lanes.length);
+    lanes.forEach(([x, z, rot], i) => {
+      tmpQ.setFromEuler(new THREE3.Euler(-Math.PI / 2, 0, rot));
+      tmpM.compose(tmpV.set(x, 0.06, z), tmpQ, tmpS);
+      lineMesh.setMatrixAt(i, tmpM);
+    });
+    this.scene.add(lineMesh);
+    const zebras = [];
+    for (let i = 0; i <= CONFIG.GRID; i++) {
+      for (let j = 0; j < CONFIG.GRID; j++) {
+        const across = -half + i * P;
+        const along = -half + j * P + P / 2;
+        for (let k = -3; k <= 3; k++) {
+          zebras.push([across + k * 1.5, along - B / 2 - 5.5, 0]);
+          zebras.push([along - B / 2 - 5.5, across + k * 1.5, Math.PI / 2]);
+        }
+      }
+    }
+    const zGeo = new THREE3.PlaneGeometry(0.85, 6.5);
+    const zMesh = new THREE3.InstancedMesh(zGeo, zebraMat, zebras.length);
+    zebras.forEach(([x, z, rot], i) => {
+      tmpQ.setFromEuler(new THREE3.Euler(-Math.PI / 2, 0, rot));
+      tmpM.compose(tmpV.set(x, 0.07, z), tmpQ, tmpS);
+      zMesh.setMatrixAt(i, tmpM);
+    });
+    this.scene.add(zMesh);
+  }
+  _park(block, parkMat, pathMat) {
+    const B = CONFIG.BLOCK;
+    const lawn = new THREE3.Mesh(new THREE3.BoxGeometry(B + 5, 0.3, B + 5), parkMat);
+    lawn.position.set(block.cx, 0.15, block.cz);
+    lawn.receiveShadow = true;
+    this.scene.add(freeze(lawn));
+    for (const rot of [0, Math.PI / 2]) {
+      const path = new THREE3.Mesh(new THREE3.BoxGeometry(B + 5, 0.06, 4), pathMat);
+      path.position.set(block.cx, 0.33, block.cz);
+      path.rotation.y = rot;
+      this.scene.add(freeze(path));
+    }
+    this._trees(block);
+  }
+  _trees(block) {
+    if (!this._treeGeo) {
+      this._treeGeo = {
+        trunk: new THREE3.CylinderGeometry(0.22, 0.34, 3.6, 5),
+        crown: new THREE3.IcosahedronGeometry(1, 0),
+        trunkMat: new THREE3.MeshStandardMaterial({ color: 4930090, roughness: 1 }),
+        crownMat: new THREE3.MeshStandardMaterial({ color: 3959600, roughness: 1 })
+      };
+      this._treeSpots = [];
+    }
+    const rnd = mulberry32(block.bx * 91 + block.by * 17);
+    for (let i = 0; i < 12; i++) {
+      this._treeSpots.push([
+        block.cx + (rnd() - 0.5) * CONFIG.BLOCK * 0.82,
+        block.cz + (rnd() - 0.5) * CONFIG.BLOCK * 0.82,
+        2.2 + rnd() * 1.4
+      ]);
+    }
+  }
+  /** Street names painted down the middle of every road, read from above. */
+  _streetLabels() {
+    this.streetLabels = new THREE3.Group();
+    this.streetLabels.visible = false;
+    this.scene.add(this.streetLabels);
+    const P = CONFIG.PITCH, half = CONFIG.EXTENT / 2, H = 7.5;
+    for (const c of this.city.corridors) {
+      const along = c.axis === "ns" ? "z" : "x";
+      const across = -half + c.index * P;
+      if (across > WATER.eastX || across > WATER.southZ) continue;
+      const { texture, aspect } = textTexture(c.name.toUpperCase(), { size: 58, color: "#f2efe6", track: 1 });
+      const mat = new THREE3.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, fog: false });
+      const geo = new THREE3.PlaneGeometry(H * aspect, H);
+      c._labelMat = mat;
+      for (let j = 0; j < CONFIG.GRID; j++) {
+        const at = -half + j * P + P / 2;
+        if (at > WATER.eastX || at > WATER.southZ) continue;
+        const m = new THREE3.Mesh(geo, mat);
+        m.rotation.x = -Math.PI / 2;
+        m.rotation.z = along === "z" ? Math.PI / 2 : 0;
+        m.position.set(along === "z" ? across : at, 0.09, along === "z" ? at : across);
+        m.renderOrder = 2;
+        this.streetLabels.add(freeze(m));
+      }
+    }
+  }
+  /** Named streets glow once they've become destinations. */
+  refreshCorridorLabels() {
+    for (const c of this.city.corridors) {
+      if (!c._labelMat) continue;
+      c._labelMat.color.set(c.famous ? 16767370 : 15921126);
+      c._labelMat.opacity = c.famous ? 1 : 0.78;
+    }
+  }
+  setBoardMode(on) {
+    this.streetLabels.visible = on;
+  }
+  _streetFurniture() {
+    const P = CONFIG.PITCH, B = CONFIG.BLOCK, half = CONFIG.EXTENT / 2;
+    const props = streetProps();
+    const spots = this._treeSpots || [];
+    for (const b of this.city.blocks) {
+      if (b.isPark) continue;
+      const rnd = mulberry32(b.bx * 313 + b.by * 71);
+      for (let i = 0; i < 4; i++) {
+        const t = -0.32 + i * 0.21;
+        const edge = Math.floor(rnd() * 4);
+        const o = B / 2 + 1.6;
+        const [x, z] = edge === 0 ? [b.cx + t * B, b.cz - o] : edge === 1 ? [b.cx + t * B, b.cz + o] : edge === 2 ? [b.cx - o, b.cz + t * B] : [b.cx + o, b.cz + t * B];
+        if (rnd() < 0.55) spots.push([x, z, 1.8 + rnd() * 1.1]);
+      }
+    }
+    const tg = this._treeGeo;
+    if (tg && spots.length) {
+      const trunks = new THREE3.InstancedMesh(tg.trunk, tg.trunkMat, spots.length);
+      const crowns = new THREE3.InstancedMesh(tg.crown, tg.crownMat, spots.length);
+      crowns.castShadow = true;
+      spots.forEach(([x, z, s], i) => {
+        tmpM.compose(tmpV.set(x, 1.9, z), new THREE3.Quaternion(), tmpS.set(1, 1, 1));
+        trunks.setMatrixAt(i, tmpM);
+        tmpM.compose(tmpV.set(x, 3.6 + s * 0.5, z), new THREE3.Quaternion(), tmpS.set(s, s * 0.9, s));
+        crowns.setMatrixAt(i, tmpM);
+      });
+      tmpS.set(1, 1, 1);
+      this.scene.add(trunks, crowns);
+    }
+    const lamps = [], hydrants = [], trash = [], signals = [];
+    for (const b of this.city.blocks) {
+      const o = B / 2 + 2.2;
+      const rnd = mulberry32(b.bx * 17 + b.by * 907);
+      for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        lamps.push([b.cx + sx * o, b.cz + sz * o, sx > 0 ? Math.PI : 0]);
+        if (rnd() < 0.55) signals.push([b.cx + sx * o * 1.06, b.cz + sz * o * 1.06]);
+      }
+      if (b.isPark) continue;
+      if (rnd() < 0.8) hydrants.push([b.cx + (rnd() - 0.5) * B * 0.7, b.cz + (rnd() < 0.5 ? -1 : 1) * o * 0.92]);
+      for (let i = 0; i < 3; i++) {
+        if (rnd() < 0.5) trash.push([b.cx + (rnd() - 0.5) * B * 0.8, b.cz + (rnd() < 0.5 ? -1 : 1) * o * 0.88]);
+      }
+    }
+    const place = (geo, mat, list, y, cast = true) => {
+      const im = new THREE3.InstancedMesh(geo, mat, list.length);
+      im.castShadow = cast;
+      list.forEach(([x, z, rot = 0], i) => {
+        tmpQ.setFromAxisAngle(UP, rot);
+        tmpM.compose(tmpV.set(x, y, z), tmpQ, tmpS);
+        im.setMatrixAt(i, tmpM);
+      });
+      this.scene.add(im);
+      return im;
+    };
+    const metal = new THREE3.MeshStandardMaterial({ color: 3356476, roughness: 0.7, metalness: 0.4 });
+    place(props.lampPost, metal, lamps, 0.4);
+    this.lampGlow = place(
+      props.lampHead,
+      new THREE3.MeshStandardMaterial({ color: 16769708, emissive: 16765578, emissiveIntensity: 0 }),
+      lamps,
+      0.4,
+      false
+    );
+    place(props.hydrant, new THREE3.MeshStandardMaterial({ color: 11683119, roughness: 0.75 }), hydrants, 0.4);
+    place(props.trash, new THREE3.MeshStandardMaterial({ color: 1776928, roughness: 0.95 }), trash, 0.4);
+    place(props.trafficLight, metal, signals, 0.4);
+  }
+  // -------------------------------------------------------------- buildings
+  _buildings() {
+    this.buildingGroup = new THREE3.Group();
+    this.siteGroup = new THREE3.Group();
+    this.roofGroup = new THREE3.Group();
+    this.scene.add(this.buildingGroup, this.siteGroup, this.roofGroup);
+    this.buildingByLot = /* @__PURE__ */ new Map();
+    this.siteByLot = /* @__PURE__ */ new Map();
+    this.roofGeo = roofPropGeometries();
+    this.roofMats = {
+      watertower: new THREE3.MeshStandardMaterial({ color: 7032632, roughness: 0.95 }),
+      bulkhead: new THREE3.MeshStandardMaterial({ color: 8024681, roughness: 0.9 }),
+      mast: new THREE3.MeshStandardMaterial({ color: 5462110, roughness: 0.6, metalness: 0.5 }),
+      ac: new THREE3.MeshStandardMaterial({ color: 9343641, roughness: 0.7, metalness: 0.3 })
+    };
+    this.syncBuildings();
+  }
+  /** A name on the building, sized to the facade, on the two visible faces. */
+  _addSignage(g, lot) {
+    if (!lot.name) return;
+    const base = g.children.find((c) => c.geometry?.parameters?.width);
+    if (!base) return;
+    const bw = base.geometry.parameters.width;
+    const bd = base.geometry.parameters.depth;
+    const bh = base.geometry.parameters.height;
+    const { texture, aspect } = textTexture(
+      lot.name.toUpperCase(),
+      { size: 72, color: "#f6f1e4", outline: "rgba(0,0,0,0.85)", track: 1 }
+    );
+    const h = Math.min(bw * 0.82 / aspect, bh * 0.3, 3.4);
+    const mat = new THREE3.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, fog: false });
+    const y = Math.min(base.position.y + bh / 2 - h, CONFIG.FLOOR_H * 1.35);
+    const geo = new THREE3.PlaneGeometry(h * aspect, h);
+    const halfW = bw / 2, halfD = bd / 2;
+    for (const [dx, dz, rot] of [[0, halfD + 0.32, 0], [halfW + 0.32, 0, Math.PI / 2]]) {
+      const m = new THREE3.Mesh(geo, mat);
+      m.position.set(lot.x + dx, y, lot.z + dz);
+      m.rotation.y = rot;
+      m.renderOrder = 3;
+      g.add(freeze(m));
+    }
+  }
+  _makeBuilding(lot) {
+    const g = makeBuilding(lot, lot.building, this.matCache);
+    const tint = OWNER_TINT[lot.building.builtBy];
+    for (const child of g.children) {
+      freeze(child);
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      if (tint && mats.some((m) => m && m.emissiveMap)) {
+        child.userData.ownerTint = tint;
+      }
+    }
+    this._addSignage(g, lot);
+    g.matrixAutoUpdate = false;
+    g.updateMatrix();
+    this.buildingGroup.add(g);
+    return g;
+  }
+  syncBuildings() {
+    let changed = false;
+    for (const lot of this.city.lots) {
+      const has = this.buildingByLot.get(lot.id);
+      const b = lot.building;
+      const sig = b ? `${b.floors}_${b.use}_${b.style || "-"}_${b.form || "-"}_${b.variant ?? "-"}_${Math.round((b.condition ?? 1) * 4)}_${lot.name || ""}` : null;
+      if (b && (!has || has.userData.sig !== sig)) {
+        if (has) this.buildingGroup.remove(has);
+        const g = this._makeBuilding(lot);
+        g.userData.sig = sig;
+        this.buildingByLot.set(lot.id, g);
+        changed = true;
+      } else if (!b && has) {
+        this.buildingGroup.remove(has);
+        this.buildingByLot.delete(lot.id);
+        changed = true;
+      }
+      const site = this.siteByLot.get(lot.id);
+      if (lot.project && !site) {
+        this._makeSite(lot);
+        changed = true;
+      } else if (!lot.project && site) {
+        this.siteGroup.remove(site);
+        this.siteByLot.delete(lot.id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this._rebuildRoofProps();
+      this.rebuildCollision();
+      this._lit = void 0;
+    }
+  }
+  _rebuildRoofProps() {
+    this.roofGroup.clear();
+    const buckets = { watertower: [], bulkhead: [], mast: [], ac: [] };
+    for (const g of this.buildingByLot.values()) {
+      for (const p of g.userData.props || []) buckets[p.kind]?.push(p);
+    }
+    for (const kind in buckets) {
+      const list = buckets[kind];
+      if (!list.length) continue;
+      for (const geo of this.roofGeo[kind]) {
+        const im = new THREE3.InstancedMesh(geo, this.roofMats[kind], list.length);
+        im.castShadow = true;
+        list.forEach((p, i) => {
+          tmpM.compose(tmpV.set(p.x, p.y, p.z), new THREE3.Quaternion(), tmpS.set(p.s, p.s, p.s));
+          im.setMatrixAt(i, tmpM);
+        });
+        tmpS.set(1, 1, 1);
+        this.roofGroup.add(im);
+      }
+    }
+  }
+  _makeSite(lot) {
+    const g = new THREE3.Group();
+    const mud = new THREE3.Mesh(
+      new THREE3.BoxGeometry(lot.w * 0.97, 0.8, lot.d * 0.97),
+      new THREE3.MeshStandardMaterial({ color: 6116164, roughness: 1 })
+    );
+    mud.position.set(lot.x, 0.4, lot.z);
+    mud.receiveShadow = true;
+    const fenceMat = new THREE3.MeshStandardMaterial({ color: 3104646, roughness: 0.9 });
+    for (const [sx, sz, w, d] of [[0, -1, lot.w, 0.3], [0, 1, lot.w, 0.3], [-1, 0, 0.3, lot.d], [1, 0, 0.3, lot.d]]) {
+      const f = new THREE3.Mesh(new THREE3.BoxGeometry(w, 2.4, d), fenceMat);
+      f.position.set(lot.x + sx * lot.w / 2, 1.2, lot.z + sz * lot.d / 2);
+      f.castShadow = true;
+      g.add(freeze(f));
+    }
+    const slab = new THREE3.Mesh(
+      new THREE3.BoxGeometry(lot.w * 0.72, 1, lot.d * 0.72),
+      new THREE3.MeshStandardMaterial({ color: 11117204, roughness: 0.92 })
+    );
+    slab.castShadow = slab.receiveShadow = true;
+    const scaffold = new THREE3.Mesh(
+      new THREE3.BoxGeometry(lot.w * 0.76, 1, lot.d * 0.76),
+      new THREE3.MeshStandardMaterial({ color: 13220239, roughness: 0.9, transparent: true, opacity: 0.4, wireframe: true })
+    );
+    const craneMat = new THREE3.MeshStandardMaterial({ color: 14721850, roughness: 0.6, metalness: 0.3 });
+    const mast = new THREE3.Mesh(new THREE3.BoxGeometry(1.1, 40, 1.1), craneMat);
+    const jib = new THREE3.Mesh(new THREE3.BoxGeometry(30, 0.8, 0.8), craneMat);
+    const counter = new THREE3.Mesh(new THREE3.BoxGeometry(7, 1.2, 1.2), craneMat);
+    mast.castShadow = jib.castShadow = true;
+    const craneX = lot.x + lot.w * 0.36, craneZ = lot.z + lot.d * 0.36;
+    g.add(mud, slab, scaffold, mast, jib, counter);
+    g.userData = { lot, slab, scaffold, mast, jib, counter, craneX, craneZ };
+    this.siteGroup.add(g);
+    this.siteByLot.set(lot.id, g);
+    return g;
+  }
+  updateSites(dt) {
+    for (const g of this.siteByLot.values()) {
+      const lot = g.userData.lot;
+      const p = lot.project;
+      if (!p) continue;
+      const t = Math.max(0, Math.min(1, (this.state.day - p.startDay) / (p.endDay - p.startDay)));
+      const full = p.floors * CONFIG.FLOOR_H;
+      const h = Math.max(1.2, t * full);
+      g.userData.slab.scale.y = h;
+      g.userData.slab.position.set(lot.x, h / 2 + 0.8, lot.z);
+      g.userData.scaffold.scale.y = Math.min(full, h + 4);
+      g.userData.scaffold.position.set(lot.x, Math.min(full, h + 4) / 2 + 0.8, lot.z);
+      const craneH = Math.max(46, full + 22);
+      g.userData.mast.scale.y = craneH / 40;
+      g.userData.mast.position.set(g.userData.craneX, craneH / 2, g.userData.craneZ);
+      const spin = this.clock * 0.09 + lot.id;
+      for (const [part, off, len] of [[g.userData.jib, 11, 0], [g.userData.counter, -5, 0]]) {
+        part.position.set(
+          g.userData.craneX + Math.cos(spin) * off,
+          craneH - 2,
+          g.userData.craneZ + Math.sin(spin) * off
+        );
+        part.rotation.y = -spin;
+      }
+    }
+  }
+  // --------------------------------------------------------------- vehicles
+  _vehicles() {
+    const models = vehicleModels();
+    const COUNT = 110;
+    const rnd = mulberry32(4242);
+    const half = CONFIG.EXTENT / 2;
+    this.cars = [];
+    const byModel = {};
+    for (let i = 0; i < COUNT; i++) {
+      const model = MODEL_MIX[Math.floor(rnd() * MODEL_MIX.length)];
+      const axis = rnd() < 0.5 ? "x" : "z";
+      const lane = Math.floor(rnd() * (CONFIG.GRID + 1));
+      const laneCoord = -half + lane * CONFIG.PITCH;
+      const dir = rnd() < 0.5 ? 1 : -1;
+      const car = {
+        model,
+        axis,
+        laneCoord: laneCoord + dir * 4.2,
+        dir,
+        pos: (rnd() - 0.5) * CONFIG.EXTENT,
+        speed: (model === "boxtruck" ? 7 : model === "sports" ? 17 : 11) + rnd() * 7,
+        idx: 0
+      };
+      (byModel[model] ||= []).push(car);
+      this.cars.push(car);
+    }
+    this.carMeshes = [];
+    const glassMat = new THREE3.MeshStandardMaterial({ color: 1316894, roughness: 0.12, metalness: 0.65 });
+    for (const model in byModel) {
+      const list = byModel[model];
+      const spec = models[model];
+      const bodyMat = new THREE3.MeshStandardMaterial({ roughness: 0.38, metalness: 0.45 });
+      const body = new THREE3.InstancedMesh(spec.body, bodyMat, list.length);
+      const glass = new THREE3.InstancedMesh(spec.glass, glassMat, list.length);
+      const lamps = new THREE3.InstancedMesh(
+        spec.lamps,
+        new THREE3.MeshStandardMaterial({ color: 16773844, emissive: 16764815, emissiveIntensity: 0 }),
+        list.length
+      );
+      body.castShadow = true;
+      const c = new THREE3.Color();
+      list.forEach((car, i) => {
+        car.idx = i;
+        c.setHex(spec.fixedColor ?? CAR_PAINT[Math.floor(mulberry32(i * 77 + model.length)() * CAR_PAINT.length)]);
+        body.setColorAt(i, c);
+      });
+      if (body.instanceColor) body.instanceColor.needsUpdate = true;
+      this.scene.add(body, glass, lamps);
+      this.carMeshes.push({ model, list, body, glass, lamps });
+    }
+    this.carLampMats = this.carMeshes.map((m) => m.lamps.material);
+  }
+  updateTraffic(dt) {
+    const half = CONFIG.EXTENT / 2 + 40;
+    for (const car of this.cars) {
+      car.pos += car.speed * car.dir * dt;
+      if (car.pos > half) car.pos = -half;
+      if (car.pos < -half) car.pos = half;
+    }
+    for (const set of this.carMeshes) {
+      for (const car of set.list) {
+        const x = car.axis === "x" ? car.pos : car.laneCoord;
+        const z = car.axis === "x" ? car.laneCoord : car.pos;
+        const yaw = car.axis === "x" ? car.dir > 0 ? -Math.PI / 2 : Math.PI / 2 : car.dir > 0 ? Math.PI : 0;
+        tmpQ.setFromAxisAngle(UP, yaw);
+        tmpM.compose(tmpV.set(x, 0.03, z), tmpQ, tmpS);
+        set.body.setMatrixAt(car.idx, tmpM);
+        set.glass.setMatrixAt(car.idx, tmpM);
+        set.lamps.setMatrixAt(car.idx, tmpM);
+      }
+      set.body.instanceMatrix.needsUpdate = true;
+      set.glass.instanceMatrix.needsUpdate = true;
+      set.lamps.instanceMatrix.needsUpdate = true;
+    }
+  }
+  // ----------------------------------------------------------------- people
+  _crowd() {
+    const COUNT = 240;
+    const parts = personParts();
+    const rnd = mulberry32(909);
+    const coatMat = new THREE3.MeshStandardMaterial({ roughness: 0.88 });
+    const headMat = new THREE3.MeshStandardMaterial({ roughness: 0.85 });
+    const legMat = new THREE3.MeshStandardMaterial({ color: 2434860, roughness: 0.9 });
+    this.pCoat = new THREE3.InstancedMesh(parts.coat, coatMat, COUNT);
+    this.pHead = new THREE3.InstancedMesh(parts.head, headMat, COUNT);
+    this.pLegA = new THREE3.InstancedMesh(parts.leg, legMat, COUNT);
+    this.pLegB = new THREE3.InstancedMesh(parts.leg, legMat, COUNT);
+    this.pCoat.castShadow = true;
+    const c = new THREE3.Color();
+    this.peds = [];
+    for (let i = 0; i < COUNT; i++) {
+      this.peds.push({
+        x: (rnd() - 0.5) * CONFIG.EXTENT,
+        z: (rnd() - 0.5) * CONFIG.EXTENT,
+        dir: rnd() * Math.PI * 2,
+        speed: 1 + rnd() * 1,
+        scale: 0.92 + rnd() * 0.18,
+        phase: rnd() * 6.28,
+        turn: rnd() * 5
+      });
+      c.setHex(COAT_COLORS[Math.floor(rnd() * COAT_COLORS.length)]);
+      this.pCoat.setColorAt(i, c);
+      c.setHex(SKIN_TONES[Math.floor(rnd() * SKIN_TONES.length)]);
+      this.pHead.setColorAt(i, c);
+    }
+    if (this.pCoat.instanceColor) this.pCoat.instanceColor.needsUpdate = true;
+    if (this.pHead.instanceColor) this.pHead.instanceColor.needsUpdate = true;
+    this.scene.add(this.pCoat, this.pHead, this.pLegA, this.pLegB);
+  }
+  /** Pedestrians live near the camera and are recycled in front of you. */
+  updateCrowd(dt, focus) {
+    const halfBlock = CONFIG.BLOCK / 2 + 2.6;
+    const legQ = new THREE3.Quaternion();
+    for (let i = 0; i < this.peds.length; i++) {
+      const p = this.peds[i];
+      p.phase += dt * p.speed * 5.4;
+      p.turn -= dt;
+      p.x += Math.cos(p.dir) * p.speed * dt;
+      p.z += Math.sin(p.dir) * p.speed * dt;
+      if (p.turn < 0) {
+        p.dir += (Math.random() - 0.5) * 1.5;
+        p.turn = 3 + Math.random() * 5;
+      }
+      const dx = p.x - focus.x, dz = p.z - focus.z;
+      if (dx * dx + dz * dz > 170 * 170) {
+        const a = Math.random() * Math.PI * 2, r = 45 + Math.random() * 95;
+        p.x = focus.x + Math.cos(a) * r;
+        p.z = focus.z + Math.sin(a) * r;
+      }
+      const bx = Math.round((p.x + CONFIG.EXTENT / 2 - CONFIG.PITCH / 2) / CONFIG.PITCH);
+      const bz = Math.round((p.z + CONFIG.EXTENT / 2 - CONFIG.PITCH / 2) / CONFIG.PITCH);
+      const cx = -CONFIG.EXTENT / 2 + CONFIG.PITCH / 2 + bx * CONFIG.PITCH;
+      const cz = -CONFIG.EXTENT / 2 + CONFIG.PITCH / 2 + bz * CONFIG.PITCH;
+      const lx = p.x - cx, lz = p.z - cz;
+      if (Math.abs(lx) > halfBlock) {
+        p.x = cx + Math.sign(lx) * halfBlock;
+        p.dir = Math.PI - p.dir;
+      }
+      if (Math.abs(lz) > halfBlock) {
+        p.z = cz + Math.sign(lz) * halfBlock;
+        p.dir = -p.dir;
+      }
+      const s = p.scale;
+      const swing = Math.sin(p.phase) * 0.62;
+      const bob = Math.abs(Math.cos(p.phase)) * 0.035;
+      const yaw = -p.dir + Math.PI / 2;
+      tmpQ.setFromAxisAngle(UP, yaw);
+      tmpS.set(s, s, s);
+      tmpM.compose(tmpV.set(p.x, (1.06 + bob) * s, p.z), tmpQ, tmpS);
+      this.pCoat.setMatrixAt(i, tmpM);
+      tmpM.compose(tmpV.set(p.x, (1.52 + bob) * s, p.z), tmpQ, tmpS);
+      this.pHead.setMatrixAt(i, tmpM);
+      for (const [mesh, sign, off] of [[this.pLegA, 1, -0.09], [this.pLegB, -1, 0.09]]) {
+        legQ.setFromAxisAngle(UP, yaw);
+        legQ.multiply(new THREE3.Quaternion().setFromAxisAngle(new THREE3.Vector3(1, 0, 0), swing * sign));
+        tmpV.set(p.x + Math.cos(yaw) * off * s, 0.74 * s + bob, p.z - Math.sin(yaw) * off * s);
+        tmpM.compose(tmpV, legQ, tmpS);
+        mesh.setMatrixAt(i, tmpM);
+      }
+    }
+    tmpS.set(1, 1, 1);
+    for (const m of [this.pCoat, this.pHead, this.pLegA, this.pLegB]) m.instanceMatrix.needsUpdate = true;
+  }
+  // -------------------------------------------------------------- highlight
+  _highlight() {
+    this.highlightGroup = new THREE3.Group();
+    this.scene.add(this.highlightGroup);
+    this.highlightOwner = null;
+  }
+  /** Light up everything one developer owns, so you can read their position. */
+  setOwnerHighlight(ownerId) {
+    this.highlightOwner = ownerId;
+    for (const c of this.highlightGroup.children) c.geometry.dispose();
+    this.highlightGroup.clear();
+    this.highlightPulse = null;
+    if (!ownerId) return 0;
+    const lots = this.city.lots.filter((l) => l.owner === ownerId);
+    if (!lots.length) return 0;
+    const color = OWNER_TINT[ownerId] ?? 16777215;
+    const padMat = new THREE3.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.34,
+      depthWrite: false,
+      fog: false
+    });
+    const beamMat = new THREE3.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.12,
+      depthWrite: false,
+      fog: false
+    });
+    const pads = new THREE3.InstancedMesh(new THREE3.BoxGeometry(1, 0.5, 1), padMat, lots.length);
+    const beams = new THREE3.InstancedMesh(new THREE3.BoxGeometry(1, 1, 1), beamMat, lots.length);
+    pads.renderOrder = 4;
+    beams.renderOrder = 4;
+    const q = new THREE3.Quaternion();
+    lots.forEach((lot, i) => {
+      tmpM.compose(tmpV.set(lot.x, 0.85, lot.z), q, tmpS.set(lot.w * 1.02, 1, lot.d * 1.02));
+      pads.setMatrixAt(i, tmpM);
+      const floors = lot.building?.floors ?? lot.project?.floors ?? 4;
+      const h = floors * CONFIG.FLOOR_H + 34;
+      tmpM.compose(tmpV.set(lot.x, h / 2, lot.z), q, tmpS.set(lot.w * 0.5, h, lot.d * 0.5));
+      beams.setMatrixAt(i, tmpM);
+    });
+    tmpS.set(1, 1, 1);
+    this.highlightGroup.add(pads, beams);
+    this.highlightPulse = { padMat, beamMat };
+    return lots.length;
+  }
+  updateHighlight() {
+    if (!this.highlightPulse) return;
+    const t = 0.72 + Math.sin(this.clock * 2.4) * 0.28;
+    this.highlightPulse.padMat.opacity = 0.34 * t;
+    this.highlightPulse.beamMat.opacity = 0.14 * t;
+  }
+  // ----------------------------------------------------------------- vision
+  _vision() {
+    this.vision = new THREE3.Group();
+    this.vision.visible = false;
+    const env = new THREE3.Mesh(
+      new THREE3.BoxGeometry(1, 1, 1),
+      new THREE3.MeshBasicMaterial({ color: 5224703, transparent: true, opacity: 0.1, depthWrite: false })
+    );
+    const wire = new THREE3.LineSegments(
+      new THREE3.EdgesGeometry(new THREE3.BoxGeometry(1, 1, 1)),
+      new THREE3.LineBasicMaterial({ color: 9430783, transparent: true, opacity: 0.9 })
+    );
+    const ghost = new THREE3.Mesh(
+      new THREE3.BoxGeometry(1, 1, 1),
+      new THREE3.MeshBasicMaterial({ color: 13496063, transparent: true, opacity: 0.26, depthWrite: false })
+    );
+    const ghostWire = new THREE3.LineSegments(
+      new THREE3.EdgesGeometry(new THREE3.BoxGeometry(1, 1, 1)),
+      new THREE3.LineBasicMaterial({ color: 16777215, transparent: true, opacity: 0.9 })
+    );
+    this.vision.add(env, wire, ghost, ghostWire);
+    this.visionParts = { env, wire, ghost, ghostWire };
+    this.scene.add(this.vision);
+  }
+  showVision(lot, floors) {
+    if (!lot) {
+      this.vision.visible = false;
+      return;
+    }
+    const { env, wire, ghost, ghostWire } = this.visionParts;
+    const minF = Math.max(1, Math.ceil(lot.far / CONFIG.MAX_COVERAGE));
+    const envH = Math.max(minF, floors) * CONFIG.FLOOR_H * 1.02;
+    for (const o of [env, wire]) {
+      o.scale.set(lot.w * 0.96, envH, lot.d * 0.96);
+      o.position.set(lot.x, envH / 2 + 0.5, lot.z);
+    }
+    const entitled = lot.areaSf * lot.far;
+    const perFloor = lot.areaSf * CONFIG.MAX_COVERAGE;
+    const gsf = Math.min(entitled, floors * perFloor);
+    const side = Math.sqrt(gsf / floors / CONFIG.SF_PER_M2);
+    const h = floors * CONFIG.FLOOR_H;
+    for (const o of [ghost, ghostWire]) {
+      o.scale.set(side, h, side);
+      o.position.set(lot.x, h / 2 + 0.5, lot.z);
+    }
+    this.vision.visible = true;
+  }
+  hideVision() {
+    this.vision.visible = false;
+  }
+  // ----------------------------------------------------------------- avatar
+  _avatar() {
+    const parts = personParts();
+    const g = new THREE3.Group();
+    const coat = new THREE3.Mesh(parts.coat, new THREE3.MeshStandardMaterial({ color: 2831424, roughness: 0.8 }));
+    coat.position.y = 1.08;
+    const head = new THREE3.Mesh(parts.head, new THREE3.MeshStandardMaterial({ color: 14265220, roughness: 0.85 }));
+    head.position.y = 1.55;
+    const legMat = new THREE3.MeshStandardMaterial({ color: 2040102, roughness: 0.9 });
+    this.avatarLegs = [
+      new THREE3.Mesh(parts.leg, legMat),
+      new THREE3.Mesh(parts.leg, legMat)
+    ];
+    this.avatarLegs[0].position.set(-0.09, 0.76, 0);
+    this.avatarLegs[1].position.set(0.09, 0.76, 0);
+    coat.castShadow = head.castShadow = true;
+    g.add(coat, head, ...this.avatarLegs);
+    this.avatar = g;
+    this.avatarPhase = 0;
+    this.scene.add(g);
+  }
+  animateAvatar(dt, moving) {
+    this.avatarPhase += dt * (moving ? 9 : 0);
+    const swing = moving ? Math.sin(this.avatarPhase) * 0.6 : 0;
+    this.avatarLegs[0].rotation.x = swing;
+    this.avatarLegs[1].rotation.x = -swing;
+  }
+  _playerCar() {
+    const spec = vehicleModels().sedan;
+    const g = new THREE3.Group();
+    const body = new THREE3.Mesh(spec.body, new THREE3.MeshStandardMaterial({ color: 1316378, roughness: 0.3, metalness: 0.55 }));
+    const glass = new THREE3.Mesh(spec.glass, new THREE3.MeshStandardMaterial({ color: 987929, roughness: 0.1, metalness: 0.7 }));
+    this.playerLamps = new THREE3.Mesh(
+      spec.lamps,
+      new THREE3.MeshStandardMaterial({ color: 16773844, emissive: 16764815, emissiveIntensity: 0 })
+    );
+    body.castShadow = true;
+    g.add(body, glass, this.playerLamps);
+    g.position.y = 0.03;
+    this.playerCar = g;
+    this.scene.add(g);
+  }
+  // -------------------------------------------------------------- collision
+  rebuildCollision() {
+    this.collisionGrid.clear();
+    const add = (key, boxDef) => {
+      if (!this.collisionGrid.has(key)) this.collisionGrid.set(key, []);
+      this.collisionGrid.get(key).push(boxDef);
+    };
+    for (const lot of this.city.lots) {
+      let hw, hd;
+      if (lot.building) {
+        hw = lot.w * 0.94 / 2;
+        hd = lot.d * 0.94 / 2;
+      } else if (lot.project) {
+        hw = lot.w * 0.97 / 2;
+        hd = lot.d * 0.97 / 2;
+      } else continue;
+      add(`${lot.bx},${lot.by}`, { x: lot.x, z: lot.z, hw, hd });
+    }
+  }
+  resolveCollision(x, z, radius = 0.5) {
+    const half = CONFIG.EXTENT / 2;
+    const bx = Math.round((x + half - CONFIG.PITCH / 2) / CONFIG.PITCH);
+    const by = Math.round((z + half - CONFIG.PITCH / 2) / CONFIG.PITCH);
+    let nx = x, nz = z;
+    for (let ix = bx - 1; ix <= bx + 1; ix++) {
+      for (let iy = by - 1; iy <= by + 1; iy++) {
+        const list = this.collisionGrid.get(`${ix},${iy}`);
+        if (!list) continue;
+        for (const b of list) {
+          const dx = nx - b.x, dz = nz - b.z;
+          const ox = b.hw + radius - Math.abs(dx);
+          const oz = b.hd + radius - Math.abs(dz);
+          if (ox > 0 && oz > 0) {
+            if (ox < oz) nx = b.x + Math.sign(dx || 1) * (b.hw + radius);
+            else nz = b.z + Math.sign(dz || 1) * (b.hd + radius);
+          }
+        }
+      }
+    }
+    return [nx, nz];
+  }
+  // -------------------------------------------------------------- day cycle
+  updateSky(hour, focus = { x: 0, z: 0 }, dt = 0) {
+    this.clock += dt;
+    this.waterNormal.offset.x = this.clock * 6e-3;
+    this.waterNormal.offset.y = this.clock * 35e-4;
+    const t = (hour - 5.5) / 13;
+    const elev = Math.sin(Math.max(0, Math.min(1, t)) * Math.PI);
+    const day = Math.max(0, elev);
+    const ang = t * Math.PI;
+    const dir = new THREE3.Vector3(Math.cos(ang) * 0.85, Math.max(0.1, elev), Math.sin(ang) * 0.55 - 0.3).normalize();
+    this.sun.position.set(focus.x + dir.x * 420, dir.y * 480 + 60, focus.z + dir.z * 420);
+    this.sun.target.position.set(focus.x, 0, focus.z);
+    this.sun.target.updateMatrixWorld();
+    this.sun.intensity = 0.25 + day * 3.3;
+    this.sun.color.setHSL(0.09 + (1 - day) * 0.02, 0.45 - day * 0.3, 0.55 + day * 0.28);
+    this.hemi.intensity = 0.3 + day * 1.35;
+    this.hemi.color.setHSL(0.6, 0.3, 0.35 + day * 0.45);
+    const dusk = day > 0 && day < 0.3;
+    this.skyUniforms.uSun.value.copy(dir);
+    this.skyUniforms.uTop.value.setHSL(0.6, 0.55, 0.06 + day * 0.4);
+    this.skyUniforms.uMid.value.setHSL(0.58, 0.4, 0.07 + day * 0.58);
+    this.skyUniforms.uBot.value.setHSL(dusk ? 0.06 : 0.55, dusk ? 0.6 : 0.3, 0.08 + day * 0.62);
+    this.skyUniforms.uSunColor.value.setHSL(0.09, 0.7, 0.2 + day * 0.35);
+    const fogC = this.skyUniforms.uMid.value;
+    this.scene.fog.color.copy(fogC);
+    this.scene.fog.density = 75e-5 + (1 - day) * 8e-4;
+    const lit = 1 - Math.min(1, day * 2.4);
+    if (this._lit === void 0 || Math.abs(lit - this._lit) > 0.02) {
+      this._lit = lit;
+      for (const g of this.buildingByLot.values()) {
+        for (const child of g.children) {
+          for (const m of Array.isArray(child.material) ? child.material : [child.material]) {
+            if (!m) continue;
+            if (m.emissiveMap) m.emissiveIntensity = lit * 0.95 * (m.userData.litScale ?? 1);
+            else if (m.userData.shopGlow) m.emissiveIntensity = lit * 0.55;
+          }
+        }
+      }
+      this.lampGlow.material.emissiveIntensity = lit * 2.4;
+      for (const m of this.carLampMats) m.emissiveIntensity = lit * 2.2;
+      this.playerLamps.material.emissiveIntensity = lit * 2.2;
+    }
+  }
+  resize(w, h) {
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(w, h, false);
+  }
+  render() {
+    this.renderer.render(this.scene, this.camera);
+  }
+};
+
+// src/controls.js
+import * as THREE4 from "three";
+var MODE = { STREET: "street", CAR: "car", BOARD: "board" };
+function isTyping() {
+  const a = document.activeElement;
+  return !!a && (a.tagName === "INPUT" || a.tagName === "SELECT" || a.tagName === "TEXTAREA" || a.isContentEditable);
+}
+function requestLock(el) {
+  try {
+    const r = el.requestPointerLock();
+    if (r && typeof r.catch === "function") r.catch(() => {
+    });
+  } catch {
+  }
+}
+var TRANSITION = 1.1;
+var Controls = class {
+  constructor(scene2, canvas2) {
+    this.s = scene2;
+    this.canvas = canvas2;
+    this.mode = MODE.STREET;
+    this.firstPerson = false;
+    this.pos = new THREE4.Vector3(0, 0, CONFIG.PITCH * 2.2);
+    this.yaw = Math.PI;
+    this.pitch = -0.08;
+    this.vel = new THREE4.Vector3();
+    this.car = {
+      pos: new THREE4.Vector3(CONFIG.PITCH * 0.5 - CONFIG.STREET / 2 - 4, 0, CONFIG.PITCH * 2.2),
+      yaw: 0,
+      speed: 0,
+      active: false
+    };
+    this.board = { target: new THREE4.Vector3(0, 0, 0), dist: 780, yaw: 0.6, pitch: -1.12 };
+    this.keys = /* @__PURE__ */ new Set();
+    this.transition = null;
+    this.locked = false;
+    this._bind();
+  }
+  _bind() {
+    addEventListener("keydown", (e) => {
+      if (isTyping()) {
+        this.keys.clear();
+        return;
+      }
+      if (e.repeat) return;
+      this.keys.add(e.code);
+      if (e.code === "Tab") {
+        e.preventDefault();
+        this.toggleBoard();
+      }
+    });
+    addEventListener("keyup", (e) => this.keys.delete(e.code));
+    addEventListener("blur", () => this.keys.clear());
+    document.addEventListener("focusin", () => {
+      if (!isTyping()) return;
+      this.keys.clear();
+      if (document.pointerLockElement) document.exitPointerLock();
+    });
+    this.canvas.addEventListener("click", () => {
+      if (this.mode !== MODE.BOARD && !this.locked) requestLock(this.canvas);
+    });
+    document.addEventListener("pointerlockchange", () => {
+      this.locked = document.pointerLockElement === this.canvas;
+    });
+    addEventListener("mousemove", (e) => {
+      if (this.mode === MODE.BOARD) {
+        if (this.dragging) {
+          this.board.yaw -= e.movementX * 4e-3;
+          this.board.pitch = Math.max(-1.45, Math.min(-0.18, this.board.pitch - e.movementY * 3e-3));
+        } else if (this.panning) {
+          this.panMoved += Math.abs(e.movementX) + Math.abs(e.movementY);
+          this.panBy(e.movementX, e.movementY);
+        }
+        return;
+      }
+      if (!this.locked && !this.lookDrag) return;
+      this.yaw -= e.movementX * 22e-4;
+      this.pitch = Math.max(-1.05, Math.min(0.95, this.pitch - e.movementY * 22e-4));
+    });
+    this.canvas.addEventListener("mousedown", (e) => {
+      if (this.mode === MODE.BOARD) {
+        if (e.button === 2) this.dragging = true;
+        if (e.button === 0) {
+          this.panning = true;
+          this.panMoved = 0;
+        }
+      } else if (e.button === 0 && !this.locked) this.lookDrag = true;
+    });
+    addEventListener("mouseup", () => {
+      this.dragging = false;
+      this.lookDrag = false;
+      this.panning = false;
+    });
+    this.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    this.canvas.addEventListener("wheel", (e) => {
+      if (this.mode !== MODE.BOARD) return;
+      e.preventDefault();
+      this.board.dist = Math.max(90, Math.min(1400, this.board.dist * (1 + Math.sign(e.deltaY) * 0.12)));
+    }, { passive: false });
+  }
+  /** WASD and the arrow keys, as one forward/right pair. */
+  moveAxis() {
+    const k = this.keys;
+    let fx = 0, fz = 0;
+    if (k.has("KeyW") || k.has("ArrowUp")) fz -= 1;
+    if (k.has("KeyS") || k.has("ArrowDown")) fz += 1;
+    if (k.has("KeyA") || k.has("ArrowLeft")) fx -= 1;
+    if (k.has("KeyD") || k.has("ArrowRight")) fx += 1;
+    return { fx, fz };
+  }
+  get focusPoint() {
+    return this.mode === MODE.CAR ? this.car.pos : this.pos;
+  }
+  toggleBoard() {
+    if (this.transition) return;
+    const goingUp = this.mode !== MODE.BOARD;
+    const from = this.s.camera.position.clone();
+    const fromQ = this.s.camera.quaternion.clone();
+    if (goingUp) {
+      this.prevMode = this.mode;
+      this.board.target.copy(this.focusPoint);
+      this.mode = MODE.BOARD;
+      if (document.pointerLockElement) document.exitPointerLock();
+    } else {
+      this.mode = this.prevMode || MODE.STREET;
+    }
+    this.transition = { t: 0, from, fromQ, goingUp };
+    return goingUp;
+  }
+  /** Move the avatar instantly but at a cost in game time (caller applies it). */
+  travelTo(x, z) {
+    const d = Math.hypot(x - this.pos.x, z - this.pos.z);
+    this.pos.set(x, 0, z + CONFIG.LOT * 0.9);
+    this.car.pos.copy(this.pos);
+    return d;
+  }
+  update(dt, sceneRef) {
+    if (this.mode === MODE.CAR) this._updateCar(dt);
+    else if (this.mode === MODE.STREET) this._updateWalk(dt);
+    this._updateCamera(dt, sceneRef);
+  }
+  _updateWalk(dt) {
+    const run = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+    const speed2 = run ? 9.5 : 4.2;
+    let { fx, fz } = this.moveAxis();
+    const len = Math.hypot(fx, fz) || 1;
+    fx /= len;
+    fz /= len;
+    const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
+    const dx = (fx * cos + fz * sin) * speed2 * dt;
+    const dz = (fz * cos - fx * sin) * speed2 * dt;
+    let nx = this.pos.x + dx, nz = this.pos.z + dz;
+    [nx, nz] = this.s.resolveCollision(nx, nz, 0.6);
+    const lim = CONFIG.EXTENT / 2 + 60;
+    this.pos.x = Math.max(-lim, Math.min(lim, nx));
+    this.pos.z = Math.max(-lim, Math.min(lim, nz));
+    this.moving = Math.hypot(dx, dz) > 1e-3;
+  }
+  _updateCar(dt) {
+    const c = this.car;
+    const k = this.keys;
+    const boost = k.has("ShiftLeft") || k.has("ShiftRight");
+    const fwd = k.has("KeyW") || k.has("ArrowUp");
+    const rev = k.has("KeyS") || k.has("ArrowDown");
+    const accel = fwd ? boost ? 62 : 42 : rev ? -30 : 0;
+    c.speed += accel * dt;
+    c.speed *= 1 - 0.55 * dt;
+    c.speed = Math.max(-18, Math.min(boost ? 82 : 58, c.speed));
+    const steerAuth = Math.min(1, Math.abs(c.speed) / 7) * (1 - Math.min(0.55, Math.abs(c.speed) / 150));
+    const sign = Math.sign(c.speed || 1);
+    if (k.has("KeyA") || k.has("ArrowLeft")) c.yaw += 2.2 * dt * steerAuth * sign;
+    if (k.has("KeyD") || k.has("ArrowRight")) c.yaw -= 2.2 * dt * steerAuth * sign;
+    const nx = c.pos.x - Math.sin(c.yaw) * c.speed * dt;
+    const nz = c.pos.z - Math.cos(c.yaw) * c.speed * dt;
+    const [rx, rz] = this.s.resolveCollision(nx, nz, 1.6);
+    if (Math.abs(rx - nx) > 0.01 || Math.abs(rz - nz) > 0.01) c.speed *= -0.25;
+    const lim = CONFIG.EXTENT / 2 + 60;
+    c.pos.x = Math.max(-lim, Math.min(lim, rx));
+    c.pos.z = Math.max(-lim, Math.min(lim, rz));
+    this.yaw = c.yaw + Math.PI;
+    this.pos.copy(c.pos);
+  }
+  enterCar() {
+    if (this.mode !== MODE.STREET) return false;
+    if (this.pos.distanceTo(this.s.playerCar.position) > 6) return false;
+    this.car.pos.copy(this.s.playerCar.position);
+    this.mode = MODE.CAR;
+    return true;
+  }
+  exitCar() {
+    if (this.mode !== MODE.CAR) return false;
+    this.mode = MODE.STREET;
+    this.car.speed = 0;
+    let [x, z] = this.s.resolveCollision(this.car.pos.x + 2.6, this.car.pos.z, 0.6);
+    this.pos.set(x, 0, z);
+    return true;
+  }
+  _boardCameraPose() {
+    const b = this.board;
+    const cp = Math.cos(b.pitch), sp = Math.sin(b.pitch);
+    const pos = new THREE4.Vector3(
+      b.target.x + Math.sin(b.yaw) * cp * b.dist,
+      b.target.y - sp * b.dist,
+      b.target.z + Math.cos(b.yaw) * cp * b.dist
+    );
+    const q = new THREE4.Quaternion();
+    const m = new THREE4.Matrix4().lookAt(pos, b.target, new THREE4.Vector3(0, 1, 0));
+    q.setFromRotationMatrix(m);
+    return { pos, q };
+  }
+  _streetCameraPose() {
+    const eye = this.mode === MODE.CAR ? 2 : 1.72;
+    const head = new THREE4.Vector3(this.pos.x, eye, this.pos.z);
+    const q = new THREE4.Quaternion().setFromEuler(new THREE4.Euler(this.pitch, this.yaw, 0, "YXZ"));
+    if (this.firstPerson) return { pos: head, q };
+    const back = new THREE4.Vector3(0, 0, 1).applyQuaternion(q);
+    const dist = this.mode === MODE.CAR ? 9.5 : 5.4;
+    const pos = head.clone().addScaledVector(back, dist).add(new THREE4.Vector3(0, 1.3, 0));
+    if (pos.y < 0.9) {
+      const t = (0.9 - head.y - 1.3) / (back.y * dist || -1);
+      pos.copy(head).addScaledVector(back, Math.max(1.2, dist * Math.max(0, Math.min(1, t)))).add(new THREE4.Vector3(0, 1.3, 0));
+      pos.y = Math.max(pos.y, 0.9);
+    }
+    const [cx, cz] = this.s.resolveCollision(pos.x, pos.z, 0.4);
+    pos.x = cx;
+    pos.z = cz;
+    return { pos, q };
+  }
+  /**
+   * Drag the city around. The ground under the cursor stays under the cursor,
+   * so the map follows the hand rather than the camera.
+   */
+  panBy(dx, dy) {
+    const b = this.board;
+    const k = b.dist * 21e-4;
+    const sin = Math.sin(b.yaw), cos = Math.cos(b.yaw);
+    const right = { x: cos, z: -sin };
+    const fwd = { x: -sin, z: -cos };
+    b.target.x += (-right.x * dx + fwd.x * dy) * k;
+    b.target.z += (-right.z * dx + fwd.z * dy) * k;
+    const lim = CONFIG.EXTENT * 0.85;
+    b.target.x = Math.max(-lim, Math.min(lim, b.target.x));
+    b.target.z = Math.max(-lim, Math.min(lim, b.target.z));
+  }
+  _boardPan(dt) {
+    const sp = 260 * dt * (this.board.dist / 600);
+    const sin = Math.sin(this.board.yaw), cos = Math.cos(this.board.yaw);
+    const { fx, fz } = this.moveAxis();
+    if (!fx && !fz) return;
+    this.board.target.x += (fx * cos + fz * sin) * sp;
+    this.board.target.z += (fz * cos - fx * sin) * sp;
+    const lim = CONFIG.EXTENT * 0.8;
+    this.board.target.x = Math.max(-lim, Math.min(lim, this.board.target.x));
+    this.board.target.z = Math.max(-lim, Math.min(lim, this.board.target.z));
+  }
+  _updateCamera(dt, s) {
+    const cam = s.camera;
+    if (this.mode === MODE.BOARD && !this.transition) this._boardPan(dt);
+    const target = this.mode === MODE.BOARD ? this._boardCameraPose() : this._streetCameraPose();
+    if (this.transition) {
+      const tr = this.transition;
+      tr.t += dt / TRANSITION;
+      const k = Math.min(1, tr.t);
+      const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+      cam.position.lerpVectors(tr.from, target.pos, e);
+      cam.quaternion.copy(tr.fromQ).slerp(target.q, e);
+      cam.fov = 62 + Math.sin(e * Math.PI) * 8;
+      cam.updateProjectionMatrix();
+      if (k >= 1) this.transition = null;
+    } else {
+      cam.position.copy(target.pos);
+      cam.quaternion.copy(target.q);
+      if (cam.fov !== 62) {
+        cam.fov = 62;
+        cam.updateProjectionMatrix();
+      }
+    }
+    s.avatar.position.set(this.pos.x, 0, this.pos.z);
+    s.avatar.rotation.y = this.yaw + Math.PI;
+    s.avatar.visible = !(this.firstPerson && this.mode === MODE.STREET && !this.transition) && this.mode !== MODE.CAR;
+    if (this.mode === MODE.CAR) {
+      s.playerCar.position.copy(this.car.pos);
+      s.playerCar.rotation.y = this.car.yaw;
+    }
+  }
+  /** Which lot is the player standing on (or nearest to)? */
+  currentLot(city2) {
+    return lotAt(city2, this.focusPoint.x, this.focusPoint.z);
+  }
+};
+
+// src/ui.js
+import * as THREE5 from "three";
+var $ = (id) => document.getElementById(id);
+var pct = (n) => `${Math.round(n * 100)}%`;
+function drawPlate(canvas2, story, city2) {
+  if (!canvas2) return;
+  const g = canvas2.getContext("2d");
+  const W = canvas2.width, H = canvas2.height;
+  const INK = "#24211b", PAPER = "#ded6c2", SKY = "#cfc7b1";
+  g.fillStyle = PAPER;
+  g.fillRect(0, 0, W, H);
+  g.fillStyle = SKY;
+  g.fillRect(0, 0, W, H * 0.88);
+  g.fillStyle = "rgba(36,33,27,0.10)";
+  for (let y = 2; y < H * 0.88; y += 4) {
+    for (let x = y / 4 % 2 ? 2 : 4; x < W; x += 4) g.fillRect(x, y, 1, 1);
+  }
+  const ground = H * 0.88;
+  g.fillStyle = INK;
+  g.fillRect(0, ground, W, 1.5);
+  const lot = story.lotId != null ? city2.lots[story.lotId] : null;
+  if (!lot || !story.snapshot) {
+    const bars = [0.34, 0.55, 0.42, 0.72, 0.5, 0.63, 0.38];
+    const bw = W / bars.length;
+    g.fillStyle = INK;
+    bars.forEach((t, i) => g.fillRect(i * bw + 3, ground - ground * t, bw - 6, ground * t));
+    g.fillStyle = SKY;
+    bars.forEach((t, i) => {
+      for (let y = ground - ground * t + 7; y < ground - 6; y += 9) {
+        for (let x = i * bw + 8; x < (i + 1) * bw - 10; x += 8) g.fillRect(x, y, 3, 4);
+      }
+    });
+    return;
+  }
+  const b = story.snapshot;
+  const vols = massingVolumes(lot, b);
+  const totalH = b.floors * CONFIG.FLOOR_H;
+  const widest = Math.max(...vols.map((v) => v.w));
+  const scale = Math.min(W * 0.44 / widest, (ground - 10) / totalH);
+  const cx = W * 0.5;
+  g.fillStyle = "rgba(36,33,27,0.45)";
+  const nh = Math.min(ground * 0.36, totalH * scale * 0.5);
+  g.fillRect(cx - widest * scale / 2 - 46, ground - nh, 42, nh);
+  g.fillRect(cx + widest * scale / 2 + 4, ground - nh * 0.82, 42, nh * 0.82);
+  for (const v of vols) {
+    const w = v.w * scale;
+    const h = v.floors * CONFIG.FLOOR_H * scale;
+    const y = ground - (v.y0 * CONFIG.FLOOR_H + v.floors * CONFIG.FLOOR_H) * scale;
+    g.fillStyle = INK;
+    g.fillRect(cx - w / 2, y, w, h);
+    g.fillStyle = SKY;
+    const rows = Math.max(1, Math.round(v.floors));
+    const step = h / rows;
+    if (step > 2.2) {
+      for (let r = 0; r < rows; r++) {
+        const wy = y + r * step + step * 0.28;
+        for (let x = cx - w / 2 + 3; x < cx + w / 2 - 4; x += 6) {
+          g.fillRect(x, wy, 2.6, Math.max(1, step * 0.4));
+        }
+      }
+    }
+    g.fillStyle = PAPER;
+    g.fillRect(cx - w / 2 - 1, y - 2, w + 2, 2);
+  }
+  g.fillStyle = INK;
+  for (const fx of [cx - widest * scale / 2 - 14, cx + widest * scale / 2 + 20]) {
+    g.fillRect(fx, ground - 9, 2.4, 6);
+    g.beginPath();
+    g.arc(fx + 1.2, ground - 10.6, 1.7, 0, 6.3);
+    g.fill();
+    g.fillRect(fx, ground - 3.5, 1, 3.5);
+    g.fillRect(fx + 1.6, ground - 3.5, 1, 3.5);
+  }
+}
+var UI = class {
+  constructor(state2, controls2) {
+    this.state = state2;
+    this.controls = controls2;
+    this.selected = null;
+    this.onSpeed = () => {
+    };
+    this.onTravel = () => {
+    };
+    this.onDirty = () => {
+    };
+    this.onMassingPreview = () => {
+    };
+    this.onHighlight = () => 0;
+    this.highlightOwner = null;
+    this.design = { style: "masonry", form: "stepped", variant: 1 };
+    $("lot-close").onclick = () => this.closeLot();
+    $("build-close").onclick = () => $("build-panel").classList.add("hidden");
+    $("pf-close").onclick = () => $("portfolio").classList.add("hidden");
+    $("np-more").onclick = () => this.openFullEdition();
+    $("leaderboard").addEventListener("click", (e) => {
+      const li = e.target.closest("li[data-actor]");
+      if (!li) return;
+      const id = li.dataset.actor;
+      this.highlightOwner = this.highlightOwner === id ? null : id;
+      const n = this.onHighlight(this.highlightOwner);
+      this.toast(this.highlightOwner ? `${this.state.actors[id].name}: ${n} ${n === 1 ? "property" : "properties"} lit up on the map.` : "Highlight cleared.");
+      this.refreshBoard();
+    });
+    $("np-close").onclick = () => $("np-full").classList.add("hidden");
+    $("np-full").onclick = (e) => {
+      if (e.target.id === "np-full") $("np-full").classList.add("hidden");
+    };
+    $("s-worth-wrap").onclick = () => this.togglePortfolio();
+    for (const b of document.querySelectorAll(".sp")) b.onclick = () => this.setSpeed(+b.dataset.speed);
+    $("i-floors").oninput = () => this.refreshBuild();
+    $("i-use").onchange = () => this.refreshBuild();
+    $("i-ltc").oninput = () => this.refreshBuild();
+    $("do-build").onclick = () => this.commit();
+    $("i-style").innerHTML = Object.entries(STYLES).map(([k, v]) => `<option value="${k}">${v.name}</option>`).join("");
+    $("i-style").value = this.design.style;
+    $("i-style").onchange = () => {
+      this.design.style = $("i-style").value;
+      this.design.variant = 1;
+      this.renderSwatches();
+      this.refreshBuild();
+    };
+    $("i-form").innerHTML = Object.entries(FORMS).map(([k, v]) => `<button type="button" class="formbtn" data-form="${k}">${v.name}</button>`).join("");
+    for (const b of $("i-form").children) {
+      b.onclick = () => {
+        this.design.form = b.dataset.form;
+        this.refreshBuild();
+      };
+    }
+    this.renderSwatches();
+  }
+  /** Facade colours come straight from the chosen style's palette. */
+  renderSwatches() {
+    const pal = TYPES[STYLES[this.design.style].type].pal;
+    $("i-colors").innerHTML = pal.map((hex, i) => `<button type="button" class="swatch" data-v="${i}" style="background:${hex}"></button>`).join("");
+    for (const b of $("i-colors").children) {
+      b.onclick = () => {
+        this.design.variant = +b.dataset.v;
+        this.refreshBuild();
+      };
+    }
+  }
+  setSpeed(n) {
+    this.speed = n;
+    for (const b of document.querySelectorAll(".sp")) b.classList.toggle("on", +b.dataset.speed === n);
+    this.onSpeed(n);
+  }
+  toast(text, warn = false) {
+    const t = $("toast");
+    t.textContent = text;
+    t.classList.toggle("warn", warn);
+    t.classList.add("on");
+    clearTimeout(this._toastT);
+    this._toastT = setTimeout(() => t.classList.remove("on"), 3400);
+  }
+  prompt(text) {
+    const p = $("prompt");
+    if (text) {
+      p.textContent = text;
+      p.classList.add("on");
+    } else p.classList.remove("on");
+  }
+  // -------------------------------------------------------------- top + portfolio
+  refreshTop() {
+    const s = this.state, me = s.actors.player;
+    $("s-date").textContent = formatDate(s);
+    $("s-cash").textContent = money(me.cash);
+    $("s-cash").className = me.cash < 0 ? "bad" : "good";
+    $("s-worth").textContent = money(netWorth(s, "player"));
+    $("s-gsf").textContent = sf(me.gsfBuilt);
+    const c = s.cycle;
+    $("s-cycle").textContent = c > 1.15 ? `Boom ${c.toFixed(2)}` : c < 0.9 ? `Slump ${c.toFixed(2)}` : `Steady ${c.toFixed(2)}`;
+    $("s-cycle").className = c > 1.15 ? "good" : c < 0.9 ? "bad" : "";
+    const rank = leaderboard(s).findIndex((a) => a.isPlayer) + 1;
+    $("s-rank").textContent = `${rank}${["st", "nd", "rd", "th"][Math.min(rank - 1, 3)]} of 4`;
+    if (!$("portfolio").classList.contains("hidden")) this.refreshPortfolio();
+  }
+  togglePortfolio() {
+    const p = $("portfolio");
+    p.classList.toggle("hidden");
+    if (!p.classList.contains("hidden")) this.refreshPortfolio();
+  }
+  refreshPortfolio() {
+    const b = worthBreakdown(this.state);
+    const line = (k, v, cls = "", sep = false) => `<div class="kv${sep ? " sep" : ""}"><span>${k}</span><b class="${cls}">${v}</b></div>`;
+    $("pf-assets").innerHTML = line("Cash", money(b.cash), b.cash < 0 ? "bad" : "good") + line("Land", money(b.land)) + line("Buildings", money(b.buildings)) + line("Work in progress", money(b.wip)) + line("Debt", money(-b.debt), "bad") + line("Net worth", money(b.total), "big", true);
+    $("pf-income").innerHTML = line("Rent (NOI)", `${money(b.noi)}/yr`, "good") + line("Property tax", `${money(-b.tax)}/yr`) + line("Debt service", `${money(-b.debtService)}/yr`, "bad") + line("Net income", `${money(b.netIncome)}/yr`, b.netIncome < 0 ? "bad big" : "good big", true) + line("Per month", `${money(b.netIncome / 12)}`, b.netIncome < 0 ? "bad" : "");
+    $("pf-holdings").textContent = `${b.lots} lots \xB7 ${b.built} buildings \xB7 ${sf(b.gsf)} \xB7 ${this.state.projects.filter((p) => p.owner === "player").length} under construction`;
+  }
+  refreshBoard() {
+    const s = this.state;
+    $("leaderboard").innerHTML = leaderboard(s).map((a) => `
+      <li data-actor="${a.id}" class="${a.isPlayer ? "me" : ""}${this.highlightOwner === a.id ? " lit" : ""}">
+        <span class="dot" style="background:#${a.color.toString(16).padStart(6, "0")}"></span>
+        <span class="nm">${a.name}<br><span class="sub">${sf(a.gsfBuilt)} built</span></span>
+        <span class="wv">${money(a.worth)}</span>
+      </li>`).join("");
+    $("lb-hint").textContent = this.highlightOwner ? "Click again to clear the highlight" : "Click a firm to see what they own";
+  }
+  // -------------------------------------------------------------- the paper
+  /** Front page. Only redrawn when a new story breaks. */
+  refreshNews() {
+    const s = this.state;
+    const top = s.news[0];
+    $("np-date").textContent = formatDate(s);
+    if (!top) {
+      if (!this._emptyPlate) {
+        this._emptyPlate = true;
+        drawPlate($("np-plate"), {}, s.city);
+      }
+      return;
+    }
+    this._emptyPlate = false;
+    if (this._newsDay === top.day + top.headline) return;
+    this._newsDay = top.day + top.headline;
+    $("np-head").textContent = top.headline;
+    $("np-dek").textContent = top.dek;
+    drawPlate($("np-plate"), top, s.city);
+  }
+  openFullEdition() {
+    const s = this.state;
+    $("np-full").classList.remove("hidden");
+    $("np-fulldate").textContent = `${formatDate(s)} \xB7 ${s.mood} market \xB7 ${s.news.length} stories on file`;
+    const host = $("np-stories");
+    host.innerHTML = s.news.slice(0, 14).map((n, i) => `
+      <article class="np-story">
+        <canvas id="plate-${i}" width="352" height="200"></canvas>
+        <div>
+          <div class="when">${n.date}${n.address ? " \xB7 " + n.address : ""}</div>
+          <div class="h">${n.headline}</div>
+          <div class="d">${n.dek}</div>
+        </div>
+      </article>`).join("") || '<p class="d">Nothing has happened yet.</p>';
+    s.news.slice(0, 14).forEach((n, i) => drawPlate($(`plate-${i}`), n, s.city));
+    $("log").innerHTML = s.log.slice(0, 16).map((e) => `<li><b>${e.text.startsWith("\u2014") ? "" : e.name}</b> ${e.text}</li>`).join("") || "<li>Nothing yet.</li>";
+  }
+  // ----------------------------------------------------- the in-world label
+  /**
+   * A panel pinned to a building in the world. Built once per subject and then
+   * updated in place: rebuilding the markup every frame destroyed the button
+   * before a click could ever land on it.
+   */
+  updateWorldLabel(lot, camera) {
+    const el = $("worldlabel");
+    if (!lot || !lot.project && !lot.building) {
+      el.classList.add("hidden");
+      this._wlKey = null;
+      return;
+    }
+    const s = this.state;
+    const isProject = !!lot.project;
+    const mine = lot.owner === "player";
+    const key = `${lot.id}_${isProject}_${mine}_${lot.name || ""}`;
+    const h = (isProject ? lot.project.floors : lot.building.floors) * CONFIG.FLOOR_H;
+    camera.updateMatrixWorld();
+    const v = new THREE5.Vector3(lot.x, Math.min(h, 90) + 6, lot.z).project(camera);
+    if (v.z > 1) {
+      el.classList.add("hidden");
+      return;
+    }
+    el.style.left = `${Math.round((v.x * 0.5 + 0.5) * innerWidth)}px`;
+    el.style.top = `${Math.round((-v.y * 0.5 + 0.5) * innerHeight)}px`;
+    el.classList.remove("hidden");
+    if (this._wlKey !== key) {
+      this._wlKey = key;
+      const title = lot.name || (isProject ? "Under construction" : USES[lot.building.use].name);
+      const rows = isProject ? [["Progress", "p1"], ["Remaining", "p2"], ["Income when done", "p3"], ["Cost to date", "p4"]] : [["Size", "p1"], ["Occupancy", "p2"], ["Condition", "p3"], ["Income", "p4"], ["Value", "p5"]];
+      if (isProject && mine) rows.push(["Overtime (3 mo)", "p5"]);
+      el.innerHTML = `<div class="wl-head">${title}</div><div class="wl-addr">${lot.address} \xB7 at ${lot.crossStreet}</div>` + (isProject ? '<div class="wl-bar"><i id="wl-prog"></i></div>' : "") + rows.map(([k, id]) => `<div class="wl-row"><span>${k}</span><b id="wl-${id}"></b></div>`).join("") + (isProject && mine ? '<button class="wl-btn" id="wl-rush">Pay for overtime</button>' : "");
+      const rush = $("wl-rush");
+      if (rush) rush.onclick = (e) => {
+        e.stopPropagation();
+        const r = rushProject(s, lot, "player", 3);
+        if (!r.ok) return this.toast(r.why, true);
+        this.toast(`Overtime authorised \u2014 ${r.months.toFixed(1)} months pulled forward for ${money(r.cost)}.`);
+        this.refreshTop();
+        if (this.selected === lot) this.select(lot);
+      };
+    }
+    const set = (id, text, cls) => {
+      const node = $(`wl-${id}`);
+      if (!node) return;
+      node.textContent = text;
+      if (cls !== void 0) node.className = cls;
+    };
+    if (isProject) {
+      const pr = lot.project;
+      const done = Math.max(0, Math.min(1, (s.day - pr.startDay) / (pr.endDay - pr.startDay)));
+      const monthsLeft = Math.max(0, (pr.endDay - s.day) / 30);
+      const bar = $("wl-prog");
+      if (bar) bar.style.width = pct(done);
+      set("p1", `${Math.round(done * pr.floors)} / ${pr.floors} floors`);
+      set("p2", `${monthsLeft.toFixed(1)} months`);
+      set("p3", `${money(pr.projectedNOI)}/yr`, "good");
+      set("p4", money(pr.cost));
+      const rush = $("wl-rush");
+      if (rush) {
+        const q = rushQuote(s, pr, 3);
+        const broke = s.actors.player.cash < q.cost;
+        set(
+          "p5",
+          q.months <= 0.05 ? "\u2014" : `${money(q.cost)} \u2192 ${q.months.toFixed(1)} mo`,
+          broke ? "bad" : ""
+        );
+        rush.disabled = q.months <= 0.05 || broke;
+      }
+    } else {
+      const b = lot.building;
+      set("p1", `${b.floors} floors \xB7 ${sf(b.gsf)}`);
+      set("p2", pct(occupancyFor(s, lot)));
+      set("p3", pct(b.condition ?? 1), (b.condition ?? 1) < 0.45 ? "bad" : (b.condition ?? 1) > 0.8 ? "good" : "");
+      set("p4", `${money(buildingNOI(s, lot))}/yr`, mine ? "good" : "");
+      set("p5", money(buildingValue(s, lot)));
+    }
+  }
+  // ----------------------------------------------------------------- lot panel
+  select(lot) {
+    if (!lot) return this.closeLot();
+    const s = this.state;
+    const d = DISTRICTS[lot.district];
+    const owned = lot.owner === "player";
+    const rival = lot.owner && lot.owner !== "npc" && lot.owner !== "player" ? s.actors[lot.owner] : null;
+    const p = premiums(s, lot);
+    const sig = `${lot.id}|${lot.owner}|${!!lot.building}|${!!lot.project}|${this.controls.mode}`;
+    const fresh = sig !== this._lotSig;
+    this._lotSig = sig;
+    this.selected = lot;
+    $("lot-panel").classList.remove("hidden");
+    if (fresh && document.pointerLockElement) document.exitPointerLock();
+    $("lot-title").textContent = lot.name || lot.address;
+    $("lot-meta").innerHTML = `${lot.name ? lot.address + " \xB7 " : ""}at ${lot.crossStreet} \xB7 ${d.name} \xB7 FAR ${lot.far}<br>${sf(buildableSf(lot))} buildable \xB7 <b>${blockCharacter(s, lot.block)}</b>`;
+    const tags = [];
+    if (lot.waterDist < 120) tags.push(["Waterfront", `+${Math.round((p.water - 1) * 100)}%`, "tag-water"]);
+    if (lot.parkFront) tags.push(["Park front", `+${Math.round((p.park - 1) * 100)}%`, "tag-park"]);
+    if (lot.avenue.famous || lot.street.famous) {
+      const c = lot.avenue.famous ? lot.avenue : lot.street;
+      tags.push([`${c.name} retail`, `+${Math.round((p.corridor - 1) * 100)}%`, "tag-retail"]);
+    }
+    if ((lot._blight ?? 0) > 0.35) tags.push(["Blighted block", `${Math.round((p.blight - 1) * 100)}%`, "tag-blight"]);
+    $("lot-tags").innerHTML = tags.map(([n, v, c]) => `<span class="tag ${c}">${n} <b>${v}</b></span>`).join("");
+    const rows = [];
+    const row = (k, v, cls = "") => rows.push(`<div class="kv"><span>${k}</span><b class="${cls}">${v}</b></div>`);
+    row("Owner", owned ? "You" : rival ? rival.name : "On the market", owned ? "good" : rival ? "bad" : "");
+    row("Land value", money(landValue(s, lot)));
+    row("Height limit", `${maxFloors(lot)} floors`);
+    if (lot.project) {
+      const pr = lot.project;
+      const done = Math.max(0, Math.min(1, (s.day - pr.startDay) / (pr.endDay - pr.startDay)));
+      row("Under construction", `${pr.floors} floors \xB7 ${pct(done)}`);
+      row("Months left", ((pr.endDay - s.day) / 30).toFixed(1));
+      row("Income when done", `${money(pr.projectedNOI)}/yr`, "good");
+    } else if (lot.building) {
+      const b = lot.building;
+      row("Built", `${b.floors} floors \xB7 ${sf(b.gsf)}`);
+      row("Use", USES[b.use].name);
+      row("Condition", pct(b.condition ?? 1), (b.condition ?? 1) < 0.45 ? "bad" : "");
+      row("Occupancy", pct(occupancyFor(s, lot)));
+      row("NOI / yr", money(buildingNOI(s, lot)), "good");
+      row("Asset value", money(buildingValue(s, lot)));
+      const unused = buildableSf(lot) - b.gsf;
+      if (unused > buildableSf(lot) * 0.25) row("Unbuilt capacity", sf(unused), "good");
+    } else {
+      row("Status", "Vacant");
+    }
+    if (!owned && !rival) row("Ask", money(askPrice(s, lot)));
+    if (rival) row("Est. value", money(landValue(s, lot) + (lot.building ? buildingValue(s, lot) : 0)));
+    $("lot-rows").innerHTML = rows.join("");
+    if (fresh) this._buildLotControls(lot, { owned, rival });
+    if (this._offerSync) this._offerSync();
+  }
+  /** The half of the lot panel that holds focusable controls. */
+  _buildLotControls(lot, { owned, rival }) {
+    const s = this.state;
+    const nameBox = $("lot-name");
+    if (owned && (lot.building || lot.project)) {
+      nameBox.classList.remove("hidden");
+      $("i-name").value = lot.name || "";
+      $("i-name").placeholder = lot.address;
+      $("do-name").onclick = () => {
+        nameBuilding(s, lot, $("i-name").value);
+        this.toast(lot.name ? `Named "${lot.name}".` : "Name cleared.");
+        this._wlKey = null;
+        this.onDirty();
+        this.select(lot);
+      };
+    } else nameBox.classList.add("hidden");
+    const offerBox = $("lot-offer");
+    this._offerSync = null;
+    if (rival && !lot.project) {
+      offerBox.classList.remove("hidden");
+      const est = landValue(s, lot) + (lot.building ? buildingValue(s, lot) : 0);
+      const slider = $("i-offer");
+      slider.min = Math.round(est * 0.6);
+      slider.max = Math.round(est * 2.2);
+      slider.step = Math.max(1e4, Math.round(est / 200));
+      slider.value = Math.round(est * 1.3);
+      this._offerSync = () => {
+        $("o-offer").textContent = money(+slider.value);
+        const broke = s.actors.player.cash < +slider.value;
+        $("do-offer").disabled = broke;
+        $("do-offer").textContent = broke ? "Not enough cash" : `Offer ${money(+slider.value)}`;
+        $("offer-note").textContent = lot.offerBlockedUntil > s.day ? `${rival.name} won't revisit this for ${Math.ceil(lot.offerBlockedUntil - s.day)} days.` : `${rival.name} isn't advertising it. Everything has a price.`;
+      };
+      slider.oninput = this._offerSync;
+      $("do-offer").onclick = () => {
+        const r = makeOffer(s, lot, "player", +slider.value);
+        if (!r.ok) return this.toast(r.why, true);
+        if (r.accepted) {
+          this.toast(`${r.seller} accepted. ${lot.address} is yours for ${money(r.price)}.`);
+          this.refreshTop();
+          this.refreshBoard();
+          this.onDirty();
+        } else this.toast(r.why, true);
+        this._lotSig = null;
+        this.select(lot);
+      };
+      this._offerSync();
+    } else offerBox.classList.add("hidden");
+    const acts = [];
+    if (!owned && (!lot.owner || lot.owner === "npc")) {
+      acts.push(`<button id="a-buy">Buy \u2014 ${money(askPrice(s, lot))}</button>`);
+    }
+    if (owned && !lot.project) {
+      acts.push(`<button id="a-build" class="primary">${lot.building ? "Redevelop" : "Build"}</button>`);
+      acts.push('<button id="a-sell">Sell</button>');
+    }
+    if (owned && lot.project) acts.push('<button id="a-rush" class="primary">Speed up</button>');
+    if (this.controls.mode === "board") acts.push('<button id="a-travel">Go there</button>');
+    $("lot-actions").innerHTML = acts.join("");
+    const on = (id, fn) => {
+      const el = $(id);
+      if (el) el.onclick = fn;
+    };
+    on("a-buy", () => {
+      const r = buyLot(s, lot, "player");
+      if (!r.ok) return this.toast(r.why, true);
+      this.toast(`Bought ${lot.address} for ${money(r.price)}.`);
+      this._lotSig = null;
+      this.select(lot);
+      this.refreshTop();
+      this.refreshBoard();
+    });
+    on("a-build", () => this.openBuild(lot));
+    on("a-sell", () => {
+      const r = sellLot(s, lot, "player");
+      if (!r.ok) return this.toast(r.why, true);
+      this.toast(`Sold ${lot.address} for ${money(r.price * 0.97)}.`);
+      this._lotSig = null;
+      this.select(lot);
+      this.refreshTop();
+      this.onDirty();
+    });
+    on("a-rush", () => {
+      const r = rushProject(s, lot, "player", 6);
+      if (!r.ok) return this.toast(r.why, true);
+      this.toast(`Paid ${money(r.cost)} for overtime \u2014 ${r.months.toFixed(1)} months sooner.`);
+      this.select(lot);
+      this.refreshTop();
+    });
+    on("a-travel", () => this.onTravel(lot));
+  }
+  closeLot() {
+    this.selected = null;
+    this._lotSig = null;
+    this._offerSync = null;
+    $("lot-panel").classList.add("hidden");
+    $("build-panel").classList.add("hidden");
+  }
+  // -------------------------------------------------------------- build dialog
+  openBuild(lot) {
+    this.buildLot = lot;
+    const lo = minFloors(lot), hi = maxFloors(lot);
+    const inp = $("i-floors");
+    inp.min = lo;
+    inp.max = hi;
+    inp.value = Math.min(hi, Math.max(lo, Math.round(lo * 1.25)));
+    $("build-lot").innerHTML = `${lot.address} \xB7 FAR ${lot.far} \xB7 entitlement ${sf(buildableSf(lot))}<br><span class="dimtext">Zoning allows ${hi} floors here. Past ${floorsWithoutAir(lot)} you must buy air rights from the neighbours.</span>`;
+    $("build-panel").classList.remove("hidden");
+    this.refreshBuild();
+  }
+  refreshBuild() {
+    const lot = this.buildLot;
+    if (!lot) return;
+    const floors = +$("i-floors").value;
+    const use = $("i-use").value;
+    const ltc = +$("i-ltc").value / 100;
+    const needsAir = floors > floorsWithoutAir(lot);
+    $("o-floors").textContent = `${floors} \xB7 ${Math.round(floors * CONFIG.FLOOR_H)}m${needsAir ? " \xB7 air rights" : ""}`;
+    $("o-ltc").textContent = pct(ltc);
+    for (const b of $("i-form").children) b.classList.toggle("on", b.dataset.form === this.design.form);
+    for (const b of $("i-colors").children) b.classList.toggle("on", +b.dataset.v === this.design.variant);
+    const q = quote(this.state, lot, floors, use, ltc, this.design);
+    const cash = this.state.actors.player.cash;
+    const rows = [
+      ["Floor area", sf(q.gsf)],
+      ["Floorplate", `${Math.round(q.footprintSf).toLocaleString()} sf`],
+      ["Hard + soft cost", money(q.hard + q.soft)],
+      ["\u2014 per sf", `$${Math.round((q.hard + q.soft) / Math.max(1, q.gsf))}/sf`],
+      ["Land", q.land > 0 ? money(q.land) : "owned"],
+      ...q.airSf > 0 ? [[`Air rights (${sf(q.airSf)})`, money(q.air)]] : [],
+      ["Total cost", money(q.total), "sep"],
+      ["Rent", `$${rentPerSf(this.state, lot, use, floors).toFixed(0)}/sf`],
+      ["Loan", money(q.loan)],
+      ["Your equity", money(q.equity)],
+      ["Stabilised NOI", money(q.noi), "sep"],
+      ["Debt service", money(-q.debtService)],
+      ["Cash flow / yr", money(q.cashflow)],
+      ["Yield on cost", `${(q.yieldOnCost * 100).toFixed(1)}%`],
+      ["Value on completion", money(q.value)],
+      ["Profit", money(q.value - q.total), "sep"],
+      ["Schedule", `${q.months} months`]
+    ];
+    $("build-figures").innerHTML = rows.map(([k, v, cls]) => `<tr class="${cls || ""}"><td>${k}</td><td>${v}</td></tr>`).join("");
+    const btn = $("do-build");
+    btn.disabled = cash < q.equity;
+    btn.textContent = cash < q.equity ? `Need ${money(q.equity - cash)} more` : `Break ground \u2014 ${money(q.equity)} down`;
+    this.onMassingPreview(lot, floors, use, this.design);
+  }
+  commit() {
+    const lot = this.buildLot;
+    const floors = +$("i-floors").value;
+    const use = $("i-use").value;
+    const ltc = +$("i-ltc").value / 100;
+    const r = startProject(this.state, lot, "player", floors, use, ltc, { ...this.design });
+    if (!r.ok) return this.toast(r.why, true);
+    const nm = $("i-buildname").value.trim();
+    if (nm) nameBuilding(this.state, lot, nm);
+    $("i-buildname").value = "";
+    this.toast(`Broke ground at ${lot.address}: ${floors} floors, ${r.quote.months} months.`);
+    $("build-panel").classList.add("hidden");
+    this.onDirty();
+    this.select(lot);
+    this.refreshTop();
+  }
+};
+
+// src/main.js
+var SPEEDS = [0, 5, 60, 720, 4320];
+var canvas = document.getElementById("view");
+var city = generateCity(7);
+var state = createState(city);
+var scene = new CityScene(state, canvas);
+var controls = new Controls(scene, canvas);
+var ui = new UI(state, controls);
+(function seedPlayer() {
+  const candidates = city.lots.filter((l) => l.district === "edge" && l.building && l.building.floors <= 8);
+  const start = candidates[Math.floor(candidates.length / 2)] || city.lots[0];
+  start.owner = "player";
+  start.building.builtBy = "player";
+  state.actors.player.gsfBuilt += start.building.gsf;
+  controls.pos.set(start.x, 0, start.z + CONFIG.LOT * 1.4);
+  controls.board.target.set(start.x, 0, start.z);
+  scene.playerCar.position.set(start.x + 18, 0, start.z + CONFIG.LOT * 1.4);
+  controls.car.pos.copy(scene.playerCar.position);
+  logEvent(state, "player", `took over ${start.building.floors} floors at #${start.id}`);
+  state._start = start;
+})();
+for (const lot of city.lots) lot._intensity = 0.35;
+scene.syncBuildings();
+var speed = 1;
+ui.setSpeed(1);
+ui.onSpeed = (n) => {
+  speed = n;
+};
+ui.onDirty = () => {
+  scene.syncBuildings();
+  if (ui.highlightOwner) scene.setOwnerHighlight(ui.highlightOwner);
+  ui.refreshBoard();
+};
+ui.onHighlight = (id) => scene.setOwnerHighlight(id);
+ui.onTravel = (lot) => {
+  const dist = controls.travelTo(lot.x, lot.z);
+  advance(state, dist / 900);
+  if (controls.mode === MODE.BOARD) controls.toggleBoard();
+  ui.toast(`Travelled to lot #${lot.id}.`);
+};
+ui.onMassingPreview = (lot, floors) => {
+  if (controls.mode !== MODE.BOARD) scene.showVision(lot, floors);
+};
+var ray = new THREE6.Raycaster();
+var ndc = new THREE6.Vector2();
+var groundPlane = new THREE6.Plane(new THREE6.Vector3(0, 1, 0), 0);
+canvas.addEventListener("pointerup", (e) => {
+  if (controls.mode !== MODE.BOARD || e.button !== 0) return;
+  if (controls.panMoved > 5) return;
+  ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, scene.camera);
+  const hits = ray.intersectObjects(scene.buildingGroup.children, false);
+  let lot = null;
+  if (hits.length && hits[0].object.userData.lotId !== void 0) {
+    lot = city.lots.find((l) => l.id === hits[0].object.userData.lotId);
+  } else {
+    const p = new THREE6.Vector3();
+    if (ray.ray.intersectPlane(groundPlane, p)) {
+      lot = nearestLot(p.x, p.z, 26);
+    }
+  }
+  if (lot) ui.select(lot);
+});
+function nearbyNotable() {
+  const f = controls.focusPoint;
+  let best = null, bd = 85 * 85;
+  for (const l of city.lots) {
+    if (!l.project && !l.building) continue;
+    if (!l.project && l.owner !== "player") continue;
+    const dx = l.x - f.x, dz = l.z - f.z;
+    const d = dx * dx + dz * dz;
+    if (d < bd) {
+      bd = d;
+      best = l;
+    }
+  }
+  return best;
+}
+function nearestLot(x, z, maxD) {
+  let best = null, bd = maxD * maxD;
+  for (const l of city.lots) {
+    const dx = l.x - x, dz = l.z - z;
+    const d = dx * dx + dz * dz;
+    if (d < bd) {
+      bd = d;
+      best = l;
+    }
+  }
+  return best;
+}
+var visionLot = null;
+addEventListener("keydown", (e) => {
+  if (e.repeat || isTyping()) return;
+  switch (e.code) {
+    case "KeyV":
+      toggleVision();
+      break;
+    case "KeyF":
+      if (controls.mode === MODE.STREET) controls.firstPerson = !controls.firstPerson;
+      break;
+    case "KeyE":
+      if (controls.mode === MODE.CAR) {
+        controls.exitCar();
+        ui.toast("Out of the car.");
+      } else if (controls.enterCar()) {
+        ui.toast("Driving. W/S throttle, A/D steer, E to get out.");
+      }
+      break;
+    case "Space":
+      e.preventDefault();
+      ui.setSpeed(speed === 0 ? 1 : 0);
+      break;
+    case "Digit1":
+      ui.setSpeed(1);
+      break;
+    case "Digit2":
+      ui.setSpeed(2);
+      break;
+    case "Digit3":
+      ui.setSpeed(3);
+      break;
+    case "Digit4":
+      ui.setSpeed(4);
+      break;
+    case "Escape":
+      ui.closeLot();
+      scene.hideVision();
+      visionLot = null;
+      break;
+  }
+});
+function toggleVision() {
+  if (controls.mode === MODE.BOARD) return;
+  if (visionLot) {
+    scene.hideVision();
+    visionLot = null;
+    ui.closeLot();
+    return;
+  }
+  const lot = controls.currentLot(city);
+  if (!lot) return ui.toast("Stand on a lot to raise the Vision.", true);
+  visionLot = lot;
+  scene.showVision(lot, minFloors(lot));
+  ui.select(lot);
+}
+var origToggle = controls.toggleBoard.bind(controls);
+controls.toggleBoard = () => {
+  const up = origToggle();
+  document.getElementById("board-panel").classList.toggle("hidden", !up);
+  document.getElementById("crosshair").style.display = up ? "none" : "";
+  document.getElementById("modehint").textContent = up ? "TAB \u2014 drop back to the street  \xB7  click a lot to inspect" : "TAB \u2014 rise to the board";
+  scene.setBoardMode(up);
+  if (up) {
+    scene.hideVision();
+    visionLot = null;
+    ui.refreshBoard();
+    scene.refreshCorridorLabels();
+  }
+  return up;
+};
+var BUILD = true ? "dc850e3 \xB7 2026-09-22 18:41" : "dev";
+document.getElementById("buildstamp").textContent = `build ${BUILD}`;
+console.log(`Air Rights \u2014 build ${BUILD}`);
+document.getElementById("begin").onclick = () => {
+  document.getElementById("start").remove();
+  requestLock(canvas);
+  ui.toast("You own one building. Find something under-built and take it.");
+};
+function resize() {
+  scene.resize(innerWidth, innerHeight);
+}
+addEventListener("resize", resize);
+resize();
+var last = performance.now();
+var uiAccum = 0;
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1e3);
+  last = now;
+  const minutesPerSecond = controls.mode === MODE.BOARD ? SPEEDS[speed] : Math.min(SPEEDS[speed], 5);
+  advance(state, minutesPerSecond * dt / (60 * 24));
+  controls.update(dt, scene);
+  scene.updateTraffic(dt);
+  scene.updateCrowd(dt, controls.focusPoint);
+  scene.updateSites(dt);
+  scene.updateHighlight();
+  scene.animateAvatar(dt, controls.moving && controls.mode === MODE.STREET);
+  const hour = (state.day % 1 * 24 + 11) % 24;
+  scene.updateSky(hour, controls.mode === MODE.BOARD ? controls.board.target : controls.focusPoint, dt);
+  if (state._dirtyGeometry) {
+    state._dirtyGeometry = false;
+    scene.syncBuildings();
+    scene.refreshCorridorLabels();
+    ui.refreshBoard();
+  }
+  if (controls.mode === MODE.STREET && !visionLot) {
+    const lot = controls.currentLot(city);
+    const nearCar = controls.pos.distanceTo(scene.playerCar.position) < 6;
+    if (nearCar) ui.prompt("E \u2014 get in the car");
+    else if (lot) ui.prompt(`V \u2014 raise the Vision on lot #${lot.id}`);
+    else ui.prompt("");
+  } else if (controls.mode === MODE.CAR) {
+    ui.prompt("E \u2014 get out");
+  } else ui.prompt("");
+  const labelLot = controls.mode === MODE.BOARD ? ui.selected : visionLot || nearbyNotable();
+  ui.updateWorldLabel(labelLot, scene.camera);
+  uiAccum += dt;
+  if (uiAccum > 0.25) {
+    uiAccum = 0;
+    ui.refreshTop();
+    ui.refreshNews();
+    if (controls.mode === MODE.BOARD) ui.refreshBoard();
+    if (ui.selected) {
+      const keep = ui.selected;
+      ui.select(keep);
+    }
+    checkMilestones();
+  }
+  scene.render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+var wasLeader = false;
+var warnedCash = false;
+function checkMilestones() {
+  const board = leaderboard(state);
+  const leading = board[0].isPlayer;
+  if (leading && !wasLeader) {
+    ui.toast("You are now the biggest developer in the city.");
+    wasLeader = true;
+  } else if (!leading && wasLeader) {
+    wasLeader = false;
+  }
+  const me = state.actors.player;
+  if (me.cash < 0 && !warnedCash) {
+    warnedCash = true;
+    ui.toast("You are out of cash. Debt service is eating you \u2014 sell something.", true);
+  } else if (me.cash > 5e6) warnedCash = false;
+}
+window.__game = { state, city, scene, controls, ui };
+</script>
