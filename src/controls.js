@@ -102,7 +102,7 @@ export class Controls {
     this.canvas.addEventListener('wheel', (e) => {
       if (this.mode !== MODE.BOARD) return;
       e.preventDefault();
-      this.board.dist = Math.max(90, Math.min(1400, this.board.dist * (1 + Math.sign(e.deltaY) * 0.12)));
+      this.board.dist = Math.max(90, Math.min(2600, this.board.dist * (1 + Math.sign(e.deltaY) * 0.12)));
     }, { passive: false });
   }
 
@@ -166,9 +166,9 @@ export class Controls {
 
     let nx = this.pos.x + dx, nz = this.pos.z + dz;
     [nx, nz] = this.s.resolveCollision(nx, nz, 0.6);
-    const lim = CONFIG.EXTENT / 2 + 60;
-    this.pos.x = Math.max(-lim, Math.min(lim, nx));
-    this.pos.z = Math.max(-lim, Math.min(lim, nz));
+    const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
+    this.pos.x = Math.max(-lx, Math.min(lx, nx));
+    this.pos.z = Math.max(-lz, Math.min(lz, nz));
     this.moving = Math.hypot(dx, dz) > 0.001;
   }
 
@@ -192,9 +192,9 @@ export class Controls {
     const nz = c.pos.z - Math.cos(c.yaw) * c.speed * dt;
     const [rx, rz] = this.s.resolveCollision(nx, nz, 1.6);
     if (Math.abs(rx - nx) > 0.01 || Math.abs(rz - nz) > 0.01) c.speed *= -0.25;   // you hit something
-    const lim = CONFIG.EXTENT / 2 + 60;
-    c.pos.x = Math.max(-lim, Math.min(lim, rx));
-    c.pos.z = Math.max(-lim, Math.min(lim, rz));
+    const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
+    c.pos.x = Math.max(-lx, Math.min(lx, rx));
+    c.pos.z = Math.max(-lz, Math.min(lz, rz));
     this.yaw = c.yaw + Math.PI;
     this.pos.copy(c.pos);
   }
@@ -262,9 +262,9 @@ export class Controls {
     const fwd = { x: -sin, z: -cos };
     b.target.x += (-right.x * dx + fwd.x * dy) * k;
     b.target.z += (-right.z * dx + fwd.z * dy) * k;
-    const lim = CONFIG.EXTENT * 0.85;
-    b.target.x = Math.max(-lim, Math.min(lim, b.target.x));
-    b.target.z = Math.max(-lim, Math.min(lim, b.target.z));
+    const lx = CONFIG.WIDTH * 0.75, lz = CONFIG.DEPTH * 0.65;
+    b.target.x = Math.max(-lx, Math.min(lx, b.target.x));
+    b.target.z = Math.max(-lz, Math.min(lz, b.target.z));
   }
 
   _boardPan(dt) {
@@ -274,9 +274,9 @@ export class Controls {
     if (!fx && !fz) return;
     this.board.target.x += (fx * cos + fz * sin) * sp;
     this.board.target.z += (fz * cos - fx * sin) * sp;
-    const lim = CONFIG.EXTENT * 0.8;
-    this.board.target.x = Math.max(-lim, Math.min(lim, this.board.target.x));
-    this.board.target.z = Math.max(-lim, Math.min(lim, this.board.target.z));
+    const lx = CONFIG.WIDTH * 0.75, lz = CONFIG.DEPTH * 0.65;
+    this.board.target.x = Math.max(-lx, Math.min(lx, this.board.target.x));
+    this.board.target.z = Math.max(-lz, Math.min(lz, this.board.target.z));
   }
 
   _updateCamera(dt, s) {

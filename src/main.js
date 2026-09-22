@@ -1,8 +1,9 @@
 // Bootstrap and the game loop. Wires the sim, the renderer, the controls and the HUD.
 
 import * as THREE from 'three';
-import { generateCity, CONFIG, minFloors } from './world.js';
-import { createState, advance, netWorth, leaderboard, money, logEvent } from './economy.js';
+import { generateCity, CONFIG, cellOf, canReclaim, minFloors } from './world.js';
+import { createState, advance, netWorth, leaderboard, money, logEvent,
+         reclaimCost, startReclaim, canReclaimHere } from './economy.js';
 import { CityScene } from './scene.js';
 import { Controls, MODE, requestLock, isTyping } from './controls.js';
 import { UI } from './ui.js';
@@ -46,7 +47,9 @@ const ui = new UI(state, controls);
 
 // Give the player a foothold so month one isn't a blank sheet.
 (function seedPlayer() {
-  const candidates = city.lots.filter((l) => l.district === 'edge' && l.building && l.building.floors <= 8);
+  // Start in the Village: cheap, walkable, and surrounded by under-built lots.
+  const candidates = city.lots.filter((l) =>
+    l.region === 'manhattan' && l.hood === 'village' && l.building && l.building.floors <= 8);
   const start = candidates[Math.floor(candidates.length / 2)] || city.lots[0];
   start.owner = 'player';
   start.building.builtBy = 'player';
@@ -106,8 +109,42 @@ canvas.addEventListener('pointerup', (e) => {
       lot = nearestLot(p.x, p.z, 26);
     }
   }
-  if (lot) ui.select(lot);
+  if (lot) { ui.select(lot); hideWater(); return; }
+
+  const hit = new THREE.Vector3();
+  if (!ray.ray.intersectPlane(groundPlane, hit)) return;
+  const { col, row } = cellOf(hit.x, hit.z);
+  if (canReclaim(city, col, row)) showWater(col, row);
+  else hideWater();
 });
+
+// --- reclaiming water
+const waterPanel = document.getElementById('water-panel');
+const hideWater = () => waterPanel.classList.add('hidden');
+document.getElementById('water-close').onclick = hideWater;
+
+function showWater(col, row) {
+  ui.closeLot();
+  waterPanel.classList.remove('hidden');
+  const cost = reclaimCost(state, col, row);
+  const why = canReclaimHere(state, 'player', col, row);
+  const pending = state.fills.find((f) => f.col === col && f.row === row);
+  document.getElementById('water-meta').textContent = pending
+    ? `Fill in progress — ${((pending.endDay - state.day) / 30).toFixed(1)} months to go.`
+    : 'Open water beside the shore. Fill it and the lots on top are yours.';
+  document.getElementById('water-cost').textContent = money(cost);
+  const btn = document.getElementById('do-reclaim');
+  btn.disabled = !!why || !!pending;
+  btn.textContent = pending ? 'Already filling' : why ? 'Locked' : `Fill it — ${money(cost)}`;
+  document.getElementById('water-note').textContent = why || '';
+  btn.onclick = () => {
+    const r = startReclaim(state, col, row, 'player');
+    if (!r.ok) return ui.toast(r.why, true);
+    ui.toast(`Barges booked. ${money(r.cost)} for four lots of new ground in two years.`);
+    ui.refreshTop();
+    showWater(col, row);
+  };
+}
 
 /** The building or site worth putting a label on, near where you're standing. */
 function nearbyNotable() {
@@ -230,6 +267,15 @@ resize();
 
 let last = performance.now();
 let uiAccum = 0;
+let displayHour = 11;
+
+/** Signed hours from a to b, taking the short way round the clock face. */
+function shortArc(a, b) {
+  let d = b - a;
+  while (d > 12) d -= 24;
+  while (d < -12) d += 24;
+  return d;
+}
 
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
@@ -248,9 +294,25 @@ function frame(now) {
   scene.updateHighlight();
   scene.animateAvatar(dt, controls.moving && controls.mode === MODE.STREET);
 
-  const hour = ((state.day % 1) * 24 + 11) % 24;   // open late morning
+  // The sun tracks the clock up to the 12h/s setting. Past that a real
+  // day/night cycle just strobes, so the light settles to a steady early
+  // afternoon and eases back to the real hour when you slow down.
+  const liveHour = ((state.day % 1) * 24 + 11) % 24;
+  const compressed = minutesPerSecond > SPEEDS[3];
+  const gap = shortArc(displayHour, compressed ? 13 : liveHour);
+  displayHour = (compressed || Math.abs(gap) > 0.75)
+    ? (displayHour + gap * Math.min(1, dt * 1.6) + 24) % 24
+    : liveHour;
+  const hour = displayHour;
   scene.updateSky(hour, controls.mode === MODE.BOARD ? controls.board.target : controls.focusPoint, dt);
 
+  scene.updateFills(state.fills);
+
+  if (state._dirtyTerrain) {
+    state._dirtyTerrain = false;
+    scene.rebuildTerrain();
+    scene.refreshCorridorLabels();
+  }
   if (state._dirtyGeometry) {
     state._dirtyGeometry = false;
     scene.syncBuildings();
@@ -325,4 +387,4 @@ function checkMilestones() {
 }
 
 // Handy when poking at the running game from the console.
-window.__game = { state, city, scene, controls, ui };
+window.__game = { state, city, scene, controls, ui, showWater, startReclaim, reclaimCost, advance };

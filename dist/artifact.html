@@ -372,6 +372,20 @@ input[type=text]::placeholder { color: #5f6b7a; }
   font-size: 9px; text-transform: uppercase; letter-spacing: .1em;
   color: #e0b341; margin-left: 10px; max-width: 110px; line-height: 1.3;
 }
+
+.tag-locked { border-color: #7d6a3a; color: #e6c983; }
+.hint.locked { color: #e6c983; line-height: 1.5; }
+#pf-gate { margin-top: 12px; font-size: 10.5px; color: var(--dim); line-height: 1.5; }
+.gatebar {
+  height: 5px; border-radius: 3px; background: rgba(255,255,255,.12);
+  overflow: hidden; margin-bottom: 5px;
+}
+.gatebar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #4ade80); }
+.tag-landmark { border-color: #5a8f6a; color: #9fd9b0; }
+input[type=range].maxed { accent-color: #4ade80; }
+
+#water-panel { bottom: 18px; left: 14px; width: 300px; }
+#water-panel #do-reclaim { width: 100%; margin-top: 12px; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -418,6 +432,7 @@ input[type=text]::placeholder { color: #5f6b7a; }
     <div id="pf-assets"></div>
     <h3>Income</h3>
     <div id="pf-income"></div>
+    <div id="pf-gate"></div>
     <p class="hint" id="pf-holdings"></p>
   </div>
 
@@ -451,6 +466,17 @@ input[type=text]::placeholder { color: #5f6b7a; }
         <aside id="np-brief"><h4>In brief</h4><ul id="log"></ul></aside>
       </div>
     </div>
+  </div>
+
+  <div id="water-panel" class="panel hidden">
+    <button id="water-close">×</button>
+    <h3>Open water</h3>
+    <p class="meta" id="water-meta"></p>
+    <div class="kv"><span>Cost to fill</span><b id="water-cost"></b></div>
+    <div class="kv"><span>Time</span><b>24 months</b></div>
+    <div class="kv"><span>You get</span><b>4 lots · FAR 10 · waterfront</b></div>
+    <button id="do-reclaim" class="primary">Fill it</button>
+    <p class="hint" id="water-note"></p>
   </div>
 
   <div id="lot-panel" class="panel hidden">
@@ -516,7 +542,7 @@ input[type=text]::placeholder { color: #5f6b7a; }
 <div id="start">
   <div class="card">
     <h1>AIR RIGHTS</h1>
-    <p class="sub">You have <b>$100,000,000</b> and a city that is under-built. Three rivals have the same idea. Biggest net worth wins.</p>
+    <p class="sub">You have <b>$100,000,000</b> and a Manhattan that is under-built. Three rivals have the same idea. Cross <b>$1B</b> and the boroughs open. Biggest net worth wins.</p>
     <div class="cols">
       <div>
         <h4>On the street</h4>
@@ -530,6 +556,7 @@ input[type=text]::placeholder { color: #5f6b7a; }
         <p><kbd>Tab</kbd> rise up and drop back down</p>
         <p><kbd>Click</kbd> a lot to inspect · <kbd>Right-drag</kbd> orbit · <kbd>Scroll</kbd> zoom</p>
         <p><kbd>1–5</kbd> speed up time (to a month a second) · <kbd>Space</kbd> pause</p>
+        <p>Own all four lots on a block to build past 150 floors</p>
       </div>
     </div>
     <p class="sub small">Buy land. Build on it. Rent pays you monthly and development pulls up the value of everything around it — including your rivals' land. The market runs in cycles; leverage is how you go fast and how you die.</p>
@@ -546,8 +573,8 @@ import * as THREE6 from "three";
 
 // src/world.js
 var CONFIG = {
-  GRID: 8,
-  // blocks per side
+  COLS: 13,
+  ROWS: 20,
   BLOCK: 60,
   // metres
   STREET: 18,
@@ -558,41 +585,408 @@ var CONFIG = {
   // metres per storey
   SF_PER_M2: 10.7639,
   MAX_COVERAGE: 0.85,
-  // share of lot the footprint may cover
-  MAX_FLOORS: 150
+  MAX_FLOORS: 300
 };
-var MIN_PLATE_SF = 4200;
-var HEIGHT_CAP = { res: 25, edge: 50, mid: 90, core: 150 };
-var WATER = { southZ: 0, eastX: 0 };
 CONFIG.PITCH = CONFIG.BLOCK + CONFIG.STREET;
-CONFIG.EXTENT = CONFIG.GRID * CONFIG.PITCH;
-WATER.southZ = CONFIG.EXTENT / 2 + 4;
-WATER.eastX = CONFIG.EXTENT / 2 + 4;
-function waterDistance(x, z) {
-  return Math.min(WATER.southZ - z, WATER.eastX - x);
+CONFIG.WIDTH = CONFIG.COLS * CONFIG.PITCH;
+CONFIG.DEPTH = CONFIG.ROWS * CONFIG.PITCH;
+CONFIG.EXTENT = Math.max(CONFIG.WIDTH, CONFIG.DEPTH);
+function cellCenter(col, row) {
+  return {
+    x: -CONFIG.WIDTH / 2 + CONFIG.PITCH / 2 + col * CONFIG.PITCH,
+    z: CONFIG.DEPTH / 2 - CONFIG.PITCH / 2 - row * CONFIG.PITCH
+  };
 }
-var AVENUE_NAMES = [
-  "Harrow Ave",
-  "Kestrel Ave",
-  "Dutch Ave",
-  "Pell Ave",
-  "Vandam Ave",
-  "Orchard Ave",
-  "Bowery Ave",
-  "Meridian Ave",
-  "Harbor Ave"
+var MIN_PLATE_SF = 4200;
+var MANHATTAN_ROWS = [
+  [3, 4],
+  [3, 5],
+  [2, 5],
+  [2, 6],
+  [2, 6],
+  [1, 6],
+  [1, 6],
+  [1, 6],
+  [1, 6],
+  [0, 6],
+  [0, 6],
+  [0, 6],
+  [0, 6],
+  [0, 6],
+  [1, 6],
+  [1, 6],
+  [1, 6],
+  [1, 5],
+  [2, 5],
+  [2, 4]
 ];
-function streetName(i) {
-  const n = i + 1;
-  const s = ["th", "st", "nd", "rd"][n % 100 > 10 && n % 100 < 14 ? 0 : Math.min(n % 10, 4) % 4] || "th";
-  return `${n}${s} St`;
+var CENTRAL_PARK = { rows: [14, 16], cols: [2, 4] };
+var BROOKLYN = { rows: [1, 5], cols: [8, 11] };
+var QUEENS = { rows: [9, 12], cols: [8, 10] };
+var inBox = (b, col, row) => row >= b.rows[0] && row <= b.rows[1] && col >= b.cols[0] && col <= b.cols[1];
+function regionAt(col, row) {
+  if (inBox(BROOKLYN, col, row)) return "brooklyn";
+  if (inBox(QUEENS, col, row)) return "queens";
+  const span = MANHATTAN_ROWS[row];
+  if (span && col >= span[0] && col <= span[1]) return "manhattan";
+  return null;
+}
+var isParkCell = (col, row) => inBox(CENTRAL_PARK, col, row);
+var REGIONS = {
+  manhattan: { name: "Manhattan", unlockAt: 0 },
+  brooklyn: { name: "Brooklyn", unlockAt: 1e9 },
+  queens: { name: "Queens", unlockAt: 1e9 }
+};
+var HOODS = {
+  financial: { name: "Financial District", tier: "core" },
+  tribeca: { name: "Tribeca", tier: "mid" },
+  village: { name: "The Village", tier: "edge" },
+  chelsea: { name: "Chelsea", tier: "mid" },
+  midtown: { name: "Midtown", tier: "core" },
+  upperWest: { name: "Upper West Side", tier: "mid" },
+  upperEast: { name: "Upper East Side", tier: "mid" },
+  harlem: { name: "Harlem", tier: "res" },
+  landfill: { name: "Reclaimed Land", tier: "mid" },
+  heights: { name: "Brooklyn Heights", tier: "edge" },
+  lic: { name: "Long Island City", tier: "res" }
+};
+function hoodAt(col, row, region) {
+  if (region === "brooklyn") return "heights";
+  if (region === "queens") return "lic";
+  if (row <= 1) return "financial";
+  if (row <= 3) return "tribeca";
+  if (row <= 6) return "village";
+  if (row <= 9) return "chelsea";
+  if (row <= 13) return "midtown";
+  if (row <= 17) return col <= 2 ? "upperWest" : "upperEast";
+  return "harlem";
 }
 var DISTRICTS = {
-  core: { far: 15, landBase: 220, rentMul: 1.15, name: "C6 Core" },
-  mid: { far: 10, landBase: 140, rentMul: 1.05, name: "C5 Midtown" },
-  edge: { far: 6, landBase: 80, rentMul: 0.95, name: "C4 Edge" },
-  res: { far: 3, landBase: 45, rentMul: 0.85, name: "R6 Residential" }
+  core: { far: 15, landBase: 220, rentMul: 1.15, name: "C6" },
+  mid: { far: 10, landBase: 140, rentMul: 1.05, name: "C5" },
+  edge: { far: 6, landBase: 80, rentMul: 0.95, name: "C4" },
+  res: { far: 3, landBase: 45, rentMul: 0.85, name: "R6" }
 };
+var BLOCK_ASSEMBLY_FLOORS = 150;
+var ABSOLUTE_MAX_FLOORS = 300;
+function ownsWholeBlock(lot, actorId) {
+  return !!actorId && lot.block.lots.length > 1 && lot.block.lots.every((l) => l.owner === actorId);
+}
+var AVENUES = {
+  manhattan: ["West St", "10th Ave", "8th Ave", "Broadway", "5th Ave", "Park Ave", "2nd Ave"],
+  brooklyn: ["Furman St", "Henry St", "Clinton St", "Court St"],
+  queens: ["Vernon Blvd", "Jackson Ave", "21st St"]
+};
+var CROSS = {
+  brooklyn: ["Atlantic Ave", "Pacific St", "Dean St", "Bergen St", "Wyckoff St"],
+  queens: ["Borden Ave", "44th Dr", "Queens Plaza", "41st Ave"]
+};
+function ordinal(n) {
+  const s = ["th", "st", "nd", "rd"][n % 100 > 10 && n % 100 < 14 ? 0 : Math.min(n % 10, 4) % 4] || "th";
+  return `${n}${s}`;
+}
+function avenueName(col, region) {
+  const list = AVENUES[region];
+  const base = region === "manhattan" ? 0 : region === "brooklyn" ? BROOKLYN.cols[0] : QUEENS.cols[0];
+  return list[Math.min(col - base, list.length - 1)] ?? list[list.length - 1];
+}
+function crossName(row, region) {
+  if (region === "manhattan") return `${ordinal(1 + row * 5)} St`;
+  const list = CROSS[region];
+  const base = region === "brooklyn" ? BROOKLYN.rows[0] : QUEENS.rows[0];
+  return list[Math.min(row - base, list.length - 1)] ?? list[list.length - 1];
+}
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function() {
+    a = a + 1831565813 >>> 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function buildableSf(lot) {
+  return lot.airSpent ? 0 : lot.areaSf * lot.far;
+}
+function minFloors(lot) {
+  return Math.max(1, Math.ceil(lot.far / CONFIG.MAX_COVERAGE));
+}
+function maxFloors(lot, actorId) {
+  return ownsWholeBlock(lot, actorId) ? ABSOLUTE_MAX_FLOORS : BLOCK_ASSEMBLY_FLOORS;
+}
+function floorsWithoutAir(lot) {
+  return Math.max(1, Math.floor(buildableSf(lot) / MIN_PLATE_SF));
+}
+function massing(lot, floors) {
+  const entitled = buildableSf(lot);
+  const perFloorMax = lot.areaSf * CONFIG.MAX_COVERAGE;
+  let gsf = Math.min(entitled, floors * perFloorMax);
+  let airSf = 0;
+  if (gsf / floors < MIN_PLATE_SF) {
+    const need = Math.min(floors * MIN_PLATE_SF, floors * perFloorMax);
+    airSf = Math.max(0, need - entitled);
+    gsf = entitled + airSf;
+  }
+  const footprintSf = gsf / floors;
+  return {
+    gsf,
+    airSf,
+    footprintSf,
+    coverage: footprintSf / lot.areaSf,
+    side: Math.sqrt(footprintSf / CONFIG.SF_PER_M2),
+    height: floors * CONFIG.FLOOR_H,
+    floors
+  };
+}
+function generateCity(seed = 7) {
+  const rnd = mulberry32(seed);
+  const { COLS, ROWS, BLOCK, PITCH, LOT, SF_PER_M2 } = CONFIG;
+  const land = /* @__PURE__ */ new Map();
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS; col++) {
+      const region = regionAt(col, row);
+      if (region) land.set(`${col},${row}`, region);
+    }
+  }
+  const isLand = (col, row) => land.has(`${col},${row}`);
+  function waterDist(x, z, col, row) {
+    let best = Infinity;
+    for (let dr = -3; dr <= 3; dr++) {
+      for (let dc = -3; dc <= 3; dc++) {
+        const c = col + dc, r = row + dr;
+        if (isLand(c, r)) continue;
+        const p = cellCenter(c, r);
+        const dx = Math.max(0, Math.abs(p.x - x) - PITCH / 2);
+        const dz = Math.max(0, Math.abs(p.z - z) - PITCH / 2);
+        best = Math.min(best, Math.hypot(dx, dz));
+      }
+    }
+    return best;
+  }
+  const lots = [];
+  const blocks = [];
+  const corridors = [];
+  const corridorBy = /* @__PURE__ */ new Map();
+  let nextId = 0;
+  const corridor = (id, name, axis, index, region) => {
+    if (!corridorBy.has(id)) {
+      const c = { id, name, axis, index, region, retail: 0, fame: 0, famous: false, lots: [] };
+      corridorBy.set(id, c);
+      corridors.push(c);
+    }
+    return corridorBy.get(id);
+  };
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS; col++) {
+      const region = regionAt(col, row);
+      if (!region) continue;
+      const { x: cx, z: cz } = cellCenter(col, row);
+      const isPark = isParkCell(col, row);
+      const hoodKey = hoodAt(col, row, region);
+      const block = { col, row, bx: col, by: row, cx, cz, region, isPark, hood: hoodKey, lots: [] };
+      blocks.push(block);
+      if (isPark) continue;
+      const tier = HOODS[hoodKey].tier;
+      const off = BLOCK / 2 - LOT / 2 - 1;
+      for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        const x = cx + sx * off, z = cz + sz * off;
+        const lot = {
+          id: nextId++,
+          col,
+          row,
+          bx: col,
+          by: row,
+          block,
+          x,
+          z,
+          w: LOT,
+          d: LOT,
+          region,
+          hood: hoodKey,
+          tier,
+          district: tier,
+          // the economics still key off tier
+          far: DISTRICTS[tier].far,
+          areaSf: LOT * LOT * SF_PER_M2,
+          owner: null,
+          building: null,
+          project: null,
+          landPerSf: DISTRICTS[tier].landBase * (0.82 + rnd() * 0.36),
+          seed: Math.floor(rnd() * 1e6),
+          name: null
+        };
+        lot.avenue = corridor(`${region}_av${col}`, avenueName(col, region), "ns", col, region);
+        lot.street = corridor(`${region}_st${row}`, crossName(row, region), "ew", row, region);
+        lot.avenue.lots.push(lot);
+        lot.street.lots.push(lot);
+        const num = 40 + row * 40 + (sz < 0 ? 0 : 20) + (sx < 0 ? 1 : 3);
+        lot.address = `${num} ${lot.avenue.name}`;
+        lot.crossStreet = lot.street.name;
+        lot.waterDist = waterDist(x, z, col, row);
+        lots.push(lot);
+        block.lots.push(lot);
+      }
+    }
+  }
+  for (const lot of lots) {
+    const density = lot.tier === "core" ? 0.72 : lot.tier === "mid" ? 0.66 : 0.58;
+    if (rnd() >= density) continue;
+    const cap = Math.max(2, Math.round(minFloors(lot) * (0.15 + rnd() * 0.45)));
+    const floors = Math.min(cap, 26);
+    const m = massing(lot, floors);
+    lot.owner = "npc";
+    lot.building = {
+      floors,
+      gsf: Math.min(m.gsf, floors * lot.areaSf * 0.8),
+      side: Math.sqrt(lot.areaSf * (0.6 + rnd() * 0.25) / SF_PER_M2),
+      use: rnd() < 0.5 ? "residential" : "mixed",
+      quality: 0.45 + rnd() * 0.3,
+      age: Math.floor(20 + rnd() * 70),
+      builtBy: "npc",
+      condition: 0.45 + rnd() * 0.45
+    };
+  }
+  const parkBlocks = blocks.filter((b) => b.isPark);
+  for (const lot of lots) {
+    lot.parkFront = parkBlocks.some((b) => Math.abs(b.cx - lot.x) < PITCH * 1.05 && Math.abs(b.cz - lot.z) < PITCH * 1.05);
+  }
+  const lanes = { ns: /* @__PURE__ */ new Map(), ew: /* @__PURE__ */ new Map() };
+  for (let col = 0; col < COLS; col++) {
+    let lo = null, hi = null;
+    for (let row = 0; row < ROWS; row++) if (isLand(col, row)) {
+      if (lo === null) lo = row;
+      hi = row;
+    }
+    if (lo !== null) lanes.ns.set(col, [cellCenter(col, hi).z - PITCH / 2, cellCenter(col, lo).z + PITCH / 2]);
+  }
+  for (let row = 0; row < ROWS; row++) {
+    let lo = null, hi = null;
+    for (let col = 0; col < COLS; col++) if (isLand(col, row)) {
+      if (lo === null) lo = col;
+      hi = col;
+    }
+    if (lo !== null) lanes.ew.set(row, [cellCenter(lo, row).x - PITCH / 2, cellCenter(hi, row).x + PITCH / 2]);
+  }
+  const city2 = { lots, blocks, corridors, lanes, land, isLand, seed };
+  city2.rebuildLanes = () => {
+    lanes.ns.clear();
+    lanes.ew.clear();
+    for (let col = 0; col < COLS; col++) {
+      let lo = null, hi = null;
+      for (let row = 0; row < ROWS; row++) if (isLand(col, row)) {
+        if (lo === null) lo = row;
+        hi = row;
+      }
+      if (lo !== null) lanes.ns.set(col, [cellCenter(col, hi).z - PITCH / 2, cellCenter(col, lo).z + PITCH / 2]);
+    }
+    for (let row = 0; row < ROWS; row++) {
+      let lo = null, hi = null;
+      for (let col = 0; col < COLS; col++) if (isLand(col, row)) {
+        if (lo === null) lo = col;
+        hi = col;
+      }
+      if (lo !== null) lanes.ew.set(row, [cellCenter(lo, row).x - PITCH / 2, cellCenter(hi, row).x + PITCH / 2]);
+    }
+  };
+  city2.addLandCell = (col, row, ownerId) => {
+    if (land.has(`${col},${row}`)) return [];
+    const near = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dc, dr]) => land.get(`${col + dc},${row + dr}`)).find(Boolean);
+    const region = near || "manhattan";
+    land.set(`${col},${row}`, region);
+    const { x: cx, z: cz } = cellCenter(col, row);
+    const block = {
+      col,
+      row,
+      bx: col,
+      by: row,
+      cx,
+      cz,
+      region,
+      isPark: false,
+      hood: "landfill",
+      reclaimed: true,
+      lots: []
+    };
+    blocks.push(block);
+    const tier = HOODS.landfill.tier;
+    const off = BLOCK / 2 - LOT / 2 - 1;
+    const made = [];
+    for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const x = cx + sx * off, z = cz + sz * off;
+      const lot = {
+        id: nextId++,
+        col,
+        row,
+        bx: col,
+        by: row,
+        block,
+        x,
+        z,
+        w: LOT,
+        d: LOT,
+        region,
+        hood: "landfill",
+        tier,
+        district: tier,
+        far: DISTRICTS[tier].far,
+        areaSf: LOT * LOT * SF_PER_M2,
+        owner: ownerId || null,
+        building: null,
+        project: null,
+        landPerSf: DISTRICTS[tier].landBase,
+        seed: Math.floor(Math.random() * 1e6),
+        name: null,
+        reclaimed: true,
+        parkFront: false
+      };
+      lot.avenue = corridor(`${region}_av${col}`, avenueName(col, region), "ns", col, region);
+      lot.street = corridor(`${region}_st${row}`, crossName(row, region), "ew", row, region);
+      lot.avenue.lots.push(lot);
+      lot.street.lots.push(lot);
+      const num = 40 + row * 40 + (sz < 0 ? 0 : 20) + (sx < 0 ? 1 : 3);
+      lot.address = `${num} ${lot.avenue.name}`;
+      lot.crossStreet = lot.street.name;
+      lots.push(lot);
+      block.lots.push(lot);
+      made.push(lot);
+    }
+    for (const l of lots) {
+      if (Math.abs(l.col - col) <= 4 && Math.abs(l.row - row) <= 4) {
+        l.waterDist = waterDist(l.x, l.z, l.col, l.row);
+      }
+    }
+    city2.rebuildLanes();
+    return made;
+  };
+  return city2;
+}
+function cellOf(x, z) {
+  return {
+    col: Math.round((x + CONFIG.WIDTH / 2 - CONFIG.PITCH / 2) / CONFIG.PITCH),
+    row: Math.round((CONFIG.DEPTH / 2 - CONFIG.PITCH / 2 - z) / CONFIG.PITCH)
+  };
+}
+function canReclaim(city2, col, row) {
+  if (col < 0 || row < 0 || col >= CONFIG.COLS || row >= CONFIG.ROWS) return false;
+  if (city2.isLand(col, row)) return false;
+  return [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dc, dr]) => city2.isLand(col + dc, row + dr));
+}
+function shoreContact(city2, col, row) {
+  return [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dc, dr]) => city2.isLand(col + dc, row + dr)).length;
+}
+function lotAt(city2, x, z) {
+  let best = null, bestD = Infinity;
+  for (const l of city2.lots) {
+    const dx = Math.abs(l.x - x), dz = Math.abs(l.z - z);
+    if (dx > l.w / 2 + 11 || dz > l.d / 2 + 11) continue;
+    const d = dx + dz;
+    if (d < bestD) {
+      bestD = d;
+      best = l;
+    }
+  }
+  return best;
+}
 var STYLES = {
   brick: { name: "Brick", type: "brownstone", cost: 0.9, rent: 0.95 },
   loft: { name: "Industrial", type: "loft", cost: 0.95, rent: 0.99 },
@@ -611,164 +1005,6 @@ var USES = {
   residential: { name: "Residential", rent: 62, cost: 360, opex: 0.3 },
   mixed: { name: "Mixed-use", rent: 70, cost: 385, opex: 0.32 }
 };
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function() {
-    a = a + 1831565813 >>> 0;
-    let t = Math.imul(a ^ a >>> 15, 1 | a);
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  };
-}
-function districtFor(bx, by, grid) {
-  const c = (grid - 1) / 2;
-  const d = Math.max(Math.abs(bx - c), Math.abs(by - c));
-  if (d < 1.2) return "core";
-  if (d < 2.2) return "mid";
-  if (d < 3.2) return "edge";
-  return "res";
-}
-function buildableSf(lot) {
-  return lot.areaSf * lot.far;
-}
-function minFloors(lot) {
-  return Math.max(1, Math.ceil(lot.far / CONFIG.MAX_COVERAGE));
-}
-function maxFloors(lot) {
-  return Math.max(minFloors(lot) + 2, HEIGHT_CAP[lot.district]);
-}
-function floorsWithoutAir(lot) {
-  return Math.max(1, Math.floor(buildableSf(lot) / MIN_PLATE_SF));
-}
-function massing(lot, floors) {
-  const entitled = buildableSf(lot);
-  const perFloorMax = lot.areaSf * CONFIG.MAX_COVERAGE;
-  let gsf = Math.min(entitled, floors * perFloorMax);
-  let airSf = 0;
-  if (gsf / floors < MIN_PLATE_SF) {
-    const need = Math.min(floors * MIN_PLATE_SF, floors * perFloorMax);
-    airSf = Math.max(0, need - entitled);
-    gsf = entitled + airSf;
-  }
-  const footprintSf = gsf / floors;
-  const coverage = footprintSf / lot.areaSf;
-  const side = Math.sqrt(footprintSf / CONFIG.SF_PER_M2);
-  return { gsf, airSf, footprintSf, coverage, side, height: floors * CONFIG.FLOOR_H, floors };
-}
-function generateCity(seed = 7) {
-  const rnd = mulberry32(seed);
-  const { GRID, BLOCK, PITCH, LOT, SF_PER_M2 } = CONFIG;
-  const origin = -CONFIG.EXTENT / 2 + PITCH / 2;
-  const lots = [];
-  const blocks = [];
-  const corridors = [];
-  for (let i = 0; i <= GRID; i++) {
-    corridors.push({
-      id: `av${i}`,
-      axis: "ns",
-      index: i,
-      name: AVENUE_NAMES[i % AVENUE_NAMES.length],
-      retail: 0,
-      fame: 0,
-      famous: false,
-      lots: []
-    });
-    corridors.push({
-      id: `st${i}`,
-      axis: "ew",
-      index: i,
-      name: streetName(i),
-      retail: 0,
-      fame: 0,
-      famous: false,
-      lots: []
-    });
-  }
-  const corridorBy = new Map(corridors.map((c) => [c.id, c]));
-  let id = 0;
-  for (let by = 0; by < GRID; by++) {
-    for (let bx = 0; bx < GRID; bx++) {
-      const cx = origin + bx * PITCH;
-      const cz = origin + by * PITCH;
-      const district = districtFor(bx, by, GRID);
-      const isPark = district !== "core" && rnd() < 0.055;
-      const block = { bx, by, cx, cz, district, isPark, lots: [] };
-      blocks.push(block);
-      if (isPark) continue;
-      const off = BLOCK / 2 - LOT / 2 - 1;
-      for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-        const lot = {
-          id: id++,
-          bx,
-          by,
-          block,
-          x: cx + sx * off,
-          z: cz + sz * off,
-          w: LOT,
-          d: LOT,
-          district,
-          far: DISTRICTS[district].far,
-          areaSf: LOT * LOT * SF_PER_M2,
-          owner: null,
-          // null = on the market, else 'player' or a rival id
-          building: null,
-          project: null,
-          landPerSf: DISTRICTS[district].landBase * (0.82 + rnd() * 0.36),
-          seed: Math.floor(rnd() * 1e6),
-          name: null
-        };
-        lot.avenue = corridorBy.get(`av${sx < 0 ? bx : bx + 1}`);
-        lot.street = corridorBy.get(`st${sz < 0 ? by : by + 1}`);
-        lot.avenue.lots.push(lot);
-        lot.street.lots.push(lot);
-        const num = 100 + by * 100 + (sz < 0 ? 0 : 50) + (sx < 0 ? 1 : 3) + bx % 10 * 4;
-        lot.address = `${num} ${lot.avenue.name}`;
-        lot.crossStreet = lot.street.name;
-        lot.waterDist = waterDistance(lot.x, lot.z);
-        lots.push(lot);
-        block.lots.push(lot);
-      }
-    }
-  }
-  for (const lot of lots) {
-    const r = rnd();
-    const density = lot.district === "core" ? 0.72 : lot.district === "mid" ? 0.66 : 0.58;
-    if (r < density) {
-      const cap = Math.max(2, Math.round(minFloors(lot) * (0.15 + rnd() * 0.45)));
-      const floors = Math.min(cap, 26);
-      const m = massing(lot, floors);
-      lot.owner = "npc";
-      lot.building = {
-        floors,
-        gsf: Math.min(m.gsf, floors * lot.areaSf * 0.8),
-        side: Math.sqrt(lot.areaSf * (0.6 + rnd() * 0.25) / SF_PER_M2),
-        use: rnd() < 0.5 ? "residential" : "mixed",
-        quality: 0.45 + rnd() * 0.3,
-        age: Math.floor(20 + rnd() * 70),
-        builtBy: "npc",
-        condition: 0.45 + rnd() * 0.45
-      };
-    }
-  }
-  const parkBlocks = blocks.filter((b) => b.isPark);
-  for (const lot of lots) {
-    lot.parkFront = parkBlocks.some((b) => Math.abs(b.cx - lot.x) < CONFIG.PITCH * 1.05 && Math.abs(b.cz - lot.z) < CONFIG.PITCH * 1.05);
-  }
-  return { lots, blocks, corridors, seed };
-}
-function lotAt(city2, x, z) {
-  let best = null, bestD = Infinity;
-  for (const l of city2.lots) {
-    const dx = Math.abs(l.x - x), dz = Math.abs(l.z - z);
-    if (dx > l.w / 2 + 11 || dz > l.d / 2 + 11) continue;
-    const d = dx + dz;
-    if (d < bestD) {
-      bestD = d;
-      best = l;
-    }
-  }
-  return best;
-}
 
 // src/economy.js
 var START_CASH = 1e8;
@@ -809,7 +1045,8 @@ function createState(city2, seed = 11) {
       debt: 0,
       gsfBuilt: 0,
       isPlayer: true,
-      history: []
+      history: [],
+      regions: /* @__PURE__ */ new Set(["manhattan"])
     }
   };
   for (const r of RIVALS) {
@@ -819,6 +1056,7 @@ function createState(city2, seed = 11) {
       debt: 0,
       gsfBuilt: 0,
       isPlayer: false,
+      regions: /* @__PURE__ */ new Set(["manhattan"]),
       patience: r.strategy === "institution" ? 3 : r.strategy === "cowboy" ? 0 : 1,
       ltc: r.strategy === "cowboy" ? 0.65 : r.strategy === "institution" ? 0.3 : 0.5,
       cooldown: 0
@@ -833,6 +1071,7 @@ function createState(city2, seed = 11) {
     // market multiplier on rents and land
     cyclePhase: rnd() * Math.PI * 2,
     projects: [],
+    fills: [],
     log: [],
     news: [],
     mood: "steady",
@@ -889,7 +1128,18 @@ function premiums(state2, lot) {
   };
 }
 function landValue(state2, lot) {
-  return lot.landPerSf * buildableSf(lot) * premiums(state2, lot).total * state2.cycle;
+  const rights = buildableSf(lot);
+  const priced = rights > 0 ? rights : lot.areaSf * 0.6;
+  return lot.landPerSf * priced * premiums(state2, lot).total * state2.cycle;
+}
+function blockSpareSf(lot, actorId) {
+  if (!ownsWholeBlock(lot, actorId)) return 0;
+  let spare = 0;
+  for (const other of lot.block.lots) {
+    if (other === lot || other.airSpent) continue;
+    spare += Math.max(0, buildableSf(other) - (other.building ? other.building.gsf : 0));
+  }
+  return spare;
 }
 function askPrice(state2, lot) {
   const base = landValue(state2, lot);
@@ -928,6 +1178,12 @@ function buildingNOI(state2, lot) {
 function buildingValue(state2, lot) {
   return buildingNOI(state2, lot) / CAP_RATE;
 }
+var LANDMARK_FLOORS = 50;
+function demolitionBlock(lot) {
+  const b = lot.building;
+  if (!b || b.floors < LANDMARK_FLOORS) return null;
+  return `${lot.name || lot.address} is ${b.floors} storeys. Nothing over ${LANDMARK_FLOORS} comes down \u2014 it can change hands, but not be cleared.`;
+}
 var DEFAULT_DESIGN = { style: "masonry", form: "stepped", variant: 1 };
 function designMul(design = DEFAULT_DESIGN) {
   const st = STYLES[design.style] || STYLES.masonry;
@@ -938,8 +1194,11 @@ function quote(state2, lot, floors, use, ltc, design = DEFAULT_DESIGN, owner = "
   const m = massing(lot, floors);
   const dm = designMul(design);
   const land = lot.owner === owner ? 0 : askPrice(state2, lot);
-  const airRate = landValue(state2, lot) / Math.max(1, buildableSf(lot));
-  const air = (m.airSf || 0) * airRate * 1.45;
+  const airRate = landValue(state2, lot) / Math.max(1, buildableSf(lot) || lot.areaSf * lot.far);
+  const spare = blockSpareSf(lot, owner);
+  const freeAir = Math.min(m.airSf || 0, spare);
+  const paidAir = (m.airSf || 0) - freeAir;
+  const air = paidAir * airRate * 1.45;
   const hard = m.gsf * costPerSf(lot, use, floors) * dm.cost;
   const soft = hard * 0.14;
   const total = land + air + hard + soft;
@@ -953,6 +1212,9 @@ function quote(state2, lot, floors, use, ltc, design = DEFAULT_DESIGN, owner = "
     ...m,
     land,
     air,
+    freeAir,
+    paidAir,
+    spare,
     hard,
     soft,
     total,
@@ -983,11 +1245,76 @@ function netWorth(state2, actorId) {
 function leaderboard(state2) {
   return Object.values(state2.actors).map((a) => ({ ...a, worth: netWorth(state2, a.id) })).sort((x, y) => y.worth - x.worth);
 }
+function canWorkIn(state2, actorId, region) {
+  const a = state2.actors[actorId];
+  return !!a && a.regions.has(region);
+}
+function regionGate(state2, actorId, lot) {
+  if (canWorkIn(state2, actorId, lot.region)) return null;
+  const need = REGIONS[lot.region].unlockAt;
+  const have = netWorth(state2, actorId);
+  return `${REGIONS[lot.region].name} opens at ${money(need)} net worth \u2014 you're at ${money(have)}.`;
+}
+function checkUnlocks(state2) {
+  for (const id in state2.actors) {
+    const a = state2.actors[id];
+    if (a.regions.size > 1) continue;
+    if (netWorth(state2, id) < REGIONS.brooklyn.unlockAt) continue;
+    a.regions.add("brooklyn");
+    a.regions.add("queens");
+    if (a.isPlayer) {
+      logEvent(state2, id, "\u2014 crossed $1B; Brooklyn and Queens are open");
+      pushNews(
+        state2,
+        "unlock",
+        "THE RIVER IS NO LONGER A WALL",
+        `With a balance sheet past ${money(REGIONS.brooklyn.unlockAt)}, you can now buy and build across the East River. Brooklyn Heights and Long Island City are cheap, under-built and closer to Midtown than anything left on the island.`
+      );
+    } else {
+      logEvent(state2, id, "\u2014 crossed $1B and is looking at the boroughs");
+    }
+  }
+}
+var RECLAIM_BASE = 26e7;
+function reclaimCost(state2, col, row) {
+  const contact = shoreContact(state2.city, col, row);
+  return RECLAIM_BASE * (1 + (4 - contact) * 0.42) * state2.cycle;
+}
+function canReclaimHere(state2, actorId, col, row) {
+  const a = state2.actors[actorId];
+  if (!a) return "Unknown developer.";
+  if (a.regions.size < 2) {
+    return `Reclamation starts at ${money(REGIONS.brooklyn.unlockAt)} net worth \u2014 you're at ${money(netWorth(state2, actorId))}.`;
+  }
+  if (!canReclaim(state2.city, col, row)) return "Nothing to build off here \u2014 pick water beside the shore.";
+  if (state2.fills.some((f) => f.col === col && f.row === row)) return "Already being filled.";
+  return null;
+}
+function startReclaim(state2, col, row, actorId) {
+  const why = canReclaimHere(state2, actorId, col, row);
+  if (why) return { ok: false, why };
+  const a = state2.actors[actorId];
+  const cost = reclaimCost(state2, col, row);
+  if (a.cash < cost) return { ok: false, why: `Filling this costs ${money(cost)}.` };
+  a.cash -= cost;
+  const fill = { col, row, owner: actorId, cost, startDay: state2.day, endDay: state2.day + 24 * 30 };
+  state2.fills.push(fill);
+  logEvent(state2, actorId, `began filling the water at ${col},${row} (${money(cost)})`);
+  pushNews(
+    state2,
+    "reclaim",
+    "BARGES MOVE IN: NEW LAND PLANNED OFF THE SHORE",
+    `${a.name} has committed ${money(cost)} to filling open water and zoning it for development. Two years of rock and fill, and there will be four new lots where there is currently a river.`
+  );
+  return { ok: true, fill, cost };
+}
 function buyLot(state2, lot, actorId) {
   const a = state2.actors[actorId];
   const price = askPrice(state2, lot);
   if (lot.owner === actorId) return { ok: false, why: "You already own this lot." };
   if (lot.owner && lot.owner !== "npc") return { ok: false, why: "Not for sale \u2014 a rival owns it." };
+  const gate = regionGate(state2, actorId, lot);
+  if (gate) return { ok: false, why: gate };
   if (a.cash < price) return { ok: false, why: "Not enough cash." };
   a.cash -= price;
   lot.owner = actorId;
@@ -999,8 +1326,23 @@ function startProject(state2, lot, actorId, floors, use, ltc, design = DEFAULT_D
   const a = state2.actors[actorId];
   if (lot.owner !== actorId) return { ok: false, why: "You do not own this lot." };
   if (lot.project) return { ok: false, why: "Already under construction." };
+  const gate = regionGate(state2, actorId, lot);
+  if (gate) return { ok: false, why: gate };
+  const standing = demolitionBlock(lot);
+  if (standing) return { ok: false, why: standing };
   const q = quote(state2, lot, floors, use, ltc, design, actorId);
   if (a.cash < q.equity) return { ok: false, why: `Need ${money(q.equity)} equity.` };
+  let toConsume = q.freeAir;
+  if (toConsume > 0) {
+    for (const other of lot.block.lots) {
+      if (toConsume <= 0) break;
+      if (other === lot || other.airSpent) continue;
+      const avail = Math.max(0, buildableSf(other) - (other.building ? other.building.gsf : 0));
+      if (avail <= 0) continue;
+      other.airSpent = true;
+      toConsume -= avail;
+    }
+  }
   a.cash -= q.equity;
   a.debt += q.loan;
   const project = {
@@ -1052,6 +1394,8 @@ function makeOffer(state2, lot, actorId, amount) {
   const a = state2.actors[actorId];
   if (lot.owner === actorId) return { ok: false, why: "You already own this." };
   if (lot.project) return { ok: false, why: "Not while it is under construction." };
+  const gate = regionGate(state2, actorId, lot);
+  if (gate) return { ok: false, why: gate };
   if (lot.offerBlockedUntil && state2.day < lot.offerBlockedUntil) {
     const days = Math.ceil(lot.offerBlockedUntil - state2.day);
     return { ok: false, why: `They won't revisit it for another ${days} days.` };
@@ -1234,6 +1578,24 @@ function dayTick(state2) {
       state2._dirtyGeometry = true;
     }
   }
+  for (let i = state2.fills.length - 1; i >= 0; i--) {
+    const f = state2.fills[i];
+    if (state2.day < f.endDay) continue;
+    const made = state2.city.addLandCell(f.col, f.row, f.owner);
+    state2.fills.splice(i, 1);
+    state2._dirtyTerrain = true;
+    state2._dirtyGeometry = true;
+    if (made.length) {
+      logEvent(state2, f.owner, `finished ${made.length} new lots on reclaimed land`);
+      pushNews(
+        state2,
+        "reclaim",
+        "THE SHORELINE MOVES",
+        `${state2.actors[f.owner].name} has made ${made.length} lots of new ground where there was water. Zoned FAR ${made[0].far} and waterfront on three sides, it is the best-positioned land to come onto the market in years \u2014 and it belongs to whoever paid for the fill.`,
+        made[0]
+      );
+    }
+  }
   if (d.getUTCDate() === 1 && state2.monthOfLastTick !== d.getUTCMonth()) {
     state2.monthOfLastTick = d.getUTCMonth();
     monthTick(state2);
@@ -1255,6 +1617,7 @@ function monthTick(state2) {
     a.cash += noi - tax - a.debt * INTEREST / 12;
     a.lastNOI = noi;
   }
+  checkUnlocks(state2);
   for (const r of RIVALS) rivalTurn(state2, state2.actors[r.id]);
   marketStory(state2);
 }
@@ -1400,14 +1763,17 @@ function rivalTurn(state2, a) {
     return;
   }
   const wants = {
-    institution: (l) => l.district === "core" ? 3 : l.district === "mid" ? 2 : 0.3,
+    institution: (l) => l.tier === "core" ? 3 : l.tier === "mid" ? 2 : 0.3,
     cowboy: (l) => 1 + (l._intensity ?? 0.3) * 2,
-    grinder: (l) => l.district === "edge" || l.district === "res" ? 2.5 : 0.5
+    // The grinder is the one who actually wants the boroughs.
+    grinder: (l) => l.region !== "manhattan" ? 3 : l.tier === "edge" || l.tier === "res" ? 2.5 : 0.5
   }[a.strategy];
   let best = null, bestScore = -Infinity;
   for (const lot of state2.city.lots) {
     if (lot.owner === a.id || lot.project) continue;
     if (lot.owner && lot.owner !== "npc") continue;
+    if (!a.regions.has(lot.region)) continue;
+    if (demolitionBlock(lot)) continue;
     const floors = pickFloors(lot, a.strategy);
     const q = quote(
       state2,
@@ -1423,6 +1789,18 @@ function rivalTurn(state2, a) {
     if (score > bestScore) {
       bestScore = score;
       best = { lot, floors, q };
+    }
+  }
+  if (a.regions.size > 1 && a.cash > 9e8 && state2.rnd() < 0.05) {
+    const city2 = state2.city;
+    for (let row = 0; row < CONFIG.ROWS; row++) {
+      for (let col = 0; col < CONFIG.COLS; col++) {
+        if (!canReclaim(city2, col, row)) continue;
+        if (startReclaim(state2, col, row, a.id).ok) {
+          a.cooldown = 3;
+          return;
+        }
+      }
     }
   }
   const threshold = { institution: 8.5, cowboy: 6, grinder: 9 }[a.strategy];
@@ -2053,9 +2431,11 @@ var CityScene = class {
     this.camera = new THREE3.PerspectiveCamera(62, 1, 0.4, 6e3);
     this.collisionGrid = /* @__PURE__ */ new Map();
     this.clock = 0;
+    this.terrain = new THREE3.Group();
     this._lights();
     this._sky();
     this._water();
+    this.scene.add(this.terrain);
     this._ground();
     this._streetLabels();
     this._streetFurniture();
@@ -2085,7 +2465,7 @@ var CityScene = class {
     this.sun.shadow.bias = -9e-4;
     this.sun.shadow.normalBias = 0.5;
     this.scene.add(this.sun, this.sun.target);
-    this.scene.fog = new THREE3.FogExp2(10466252, 16e-4);
+    this.scene.fog = new THREE3.FogExp2(10466252, 4e-4);
   }
   _sky() {
     this.skyUniforms = {
@@ -2140,7 +2520,7 @@ var CityScene = class {
     g.putImageData(img, 0, 0);
     this.waterNormal = new THREE3.CanvasTexture(c);
     this.waterNormal.wrapS = this.waterNormal.wrapT = THREE3.RepeatWrapping;
-    this.waterNormal.repeat.set(70, 70);
+    this.waterNormal.repeat.set(90, 90);
     const mat = new THREE3.MeshStandardMaterial({
       color: 1915725,
       roughness: 0.16,
@@ -2148,101 +2528,150 @@ var CityScene = class {
       normalMap: this.waterNormal,
       normalScale: new THREE3.Vector2(0.55, 0.55)
     });
-    const plane = new THREE3.Mesh(new THREE3.PlaneGeometry(9e3, 9e3), mat);
+    const plane = new THREE3.Mesh(new THREE3.PlaneGeometry(11e3, 11e3), mat);
     plane.rotation.x = -Math.PI / 2;
-    plane.position.set(1200, -0.55, 1200);
-    plane.receiveShadow = false;
+    plane.position.set(0, -0.6, 0);
     this.scene.add(freeze(plane));
   }
   // ----------------------------------------------------------------- ground
   _ground() {
-    const E = CONFIG.EXTENT, B = CONFIG.BLOCK, P = CONFIG.PITCH, half = E / 2;
-    const asphalt = new THREE3.Mesh(
-      new THREE3.PlaneGeometry(E + CONFIG.STREET * 2, E + CONFIG.STREET * 2),
-      new THREE3.MeshStandardMaterial({ color: 3356219, roughness: 0.97 })
+    const { BLOCK, PITCH } = CONFIG;
+    const cells = [...this.city.land.keys()].map((k) => k.split(",").map(Number));
+    const roadMat = new THREE3.MeshStandardMaterial({ color: 3356219, roughness: 0.97 });
+    const roads = new THREE3.InstancedMesh(
+      new THREE3.BoxGeometry(PITCH + 0.4, 0.5, PITCH + 0.4),
+      roadMat,
+      cells.length
     );
-    asphalt.rotation.x = -Math.PI / 2;
-    asphalt.position.set(
-      (WATER.eastX - (half + CONFIG.STREET)) / 2 - CONFIG.STREET / 2,
-      0,
-      (WATER.southZ - (half + CONFIG.STREET)) / 2 - CONFIG.STREET / 2
-    );
-    asphalt.receiveShadow = true;
-    this.scene.add(freeze(asphalt));
+    roads.receiveShadow = true;
+    cells.forEach(([col, row], i) => {
+      const p = cellCenter(col, row);
+      tmpM.makeTranslation(p.x, 0, p.z);
+      roads.setMatrixAt(i, tmpM);
+    });
+    this.terrain.add(roads);
     const walkMat = new THREE3.MeshStandardMaterial({ color: 9671567, roughness: 0.93 });
     const curbMat = new THREE3.MeshStandardMaterial({ color: 7303283, roughness: 0.9 });
     const parkMat = new THREE3.MeshStandardMaterial({ color: 4679994, roughness: 1 });
     const pathMat = new THREE3.MeshStandardMaterial({ color: 10194807, roughness: 1 });
-    const walkGeo = new THREE3.BoxGeometry(B + 6, 0.36, B + 6);
-    const curbGeo = new THREE3.BoxGeometry(B + 8, 0.2, B + 8);
+    const walkGeo = new THREE3.BoxGeometry(BLOCK + 6, 0.36, BLOCK + 6);
+    const curbGeo = new THREE3.BoxGeometry(BLOCK + 8, 0.2, BLOCK + 8);
     const normals = this.city.blocks.filter((b) => !b.isPark);
     const curbs = new THREE3.InstancedMesh(curbGeo, curbMat, this.city.blocks.length);
     const walks = new THREE3.InstancedMesh(walkGeo, walkMat, normals.length);
     curbs.receiveShadow = walks.receiveShadow = true;
     let wi = 0, ci = 0;
     for (const b of this.city.blocks) {
-      tmpM.makeTranslation(b.cx, 0.1, b.cz);
+      tmpM.makeTranslation(b.cx, 0.24, b.cz);
       curbs.setMatrixAt(ci++, tmpM);
       if (b.isPark) {
         this._park(b, parkMat, pathMat);
         continue;
       }
-      tmpM.makeTranslation(b.cx, 0.18, b.cz);
+      tmpM.makeTranslation(b.cx, 0.32, b.cz);
       walks.setMatrixAt(wi++, tmpM);
     }
     walks.count = wi;
     curbs.count = ci;
-    this.scene.add(walks, curbs);
-    const lineMat = new THREE3.MeshBasicMaterial({ color: 13483373 });
-    const zebraMat = new THREE3.MeshBasicMaterial({ color: 14211282 });
-    const lineGeo = new THREE3.PlaneGeometry(0.44, P - B - 2);
-    const lanes = [];
-    for (let i = 0; i <= CONFIG.GRID; i++) {
-      const pos = -half + i * P;
-      if (pos > WATER.eastX && pos > WATER.southZ) continue;
-      for (let j = -1; j <= CONFIG.GRID; j++) {
-        const along = -half + j * P + P / 2;
-        lanes.push([pos, along, 0], [along, pos, Math.PI / 2]);
+    this.terrain.add(walks, curbs);
+    const { STREET } = CONFIG;
+    const lines = [], zebras = [];
+    const STRIPES = [-3, -2, -1, 0, 1, 2, 3];
+    for (const [col, row] of cells) {
+      const p = cellCenter(col, row);
+      if (this.city.isLand(col + 1, row)) {
+        const ax = p.x + PITCH / 2;
+        lines.push([ax, p.z, "ns"]);
+        for (const side of [-1, 1]) {
+          for (const k of STRIPES) {
+            zebras.push([ax, p.z + side * (BLOCK / 2 + 5) + k * 1.5, "ns"]);
+          }
+        }
       }
-    }
-    const lineMesh = new THREE3.InstancedMesh(new THREE3.PlaneGeometry(0.44, B), lineMat, lanes.length);
-    lanes.forEach(([x, z, rot], i) => {
-      tmpQ.setFromEuler(new THREE3.Euler(-Math.PI / 2, 0, rot));
-      tmpM.compose(tmpV.set(x, 0.06, z), tmpQ, tmpS);
-      lineMesh.setMatrixAt(i, tmpM);
-    });
-    this.scene.add(lineMesh);
-    const zebras = [];
-    for (let i = 0; i <= CONFIG.GRID; i++) {
-      for (let j = 0; j < CONFIG.GRID; j++) {
-        const across = -half + i * P;
-        const along = -half + j * P + P / 2;
-        for (let k = -3; k <= 3; k++) {
-          zebras.push([across + k * 1.5, along - B / 2 - 5.5, 0]);
-          zebras.push([along - B / 2 - 5.5, across + k * 1.5, Math.PI / 2]);
+      if (this.city.isLand(col, row + 1)) {
+        const sz = p.z - PITCH / 2;
+        lines.push([p.x, sz, "ew"]);
+        for (const side of [-1, 1]) {
+          for (const k of STRIPES) {
+            zebras.push([p.x + side * (BLOCK / 2 + 5) + k * 1.5, sz, "ew"]);
+          }
         }
       }
     }
-    const zGeo = new THREE3.PlaneGeometry(0.85, 6.5);
-    const zMesh = new THREE3.InstancedMesh(zGeo, zebraMat, zebras.length);
-    zebras.forEach(([x, z, rot], i) => {
-      tmpQ.setFromEuler(new THREE3.Euler(-Math.PI / 2, 0, rot));
-      tmpM.compose(tmpV.set(x, 0.07, z), tmpQ, tmpS);
-      zMesh.setMatrixAt(i, tmpM);
-    });
-    this.scene.add(zMesh);
+    const place = (w, h, color, list, y) => {
+      if (!list.length) return;
+      const im = new THREE3.InstancedMesh(
+        new THREE3.PlaneGeometry(w, h),
+        new THREE3.MeshBasicMaterial({ color }),
+        list.length
+      );
+      list.forEach(([x, z, axis], i) => {
+        tmpQ.setFromEuler(new THREE3.Euler(-Math.PI / 2, 0, axis === "ns" ? 0 : Math.PI / 2));
+        tmpM.compose(tmpV.set(x, y, z), tmpQ, tmpS);
+        im.setMatrixAt(i, tmpM);
+      });
+      this.terrain.add(im);
+    };
+    place(0.44, PITCH, 13483373, lines, 0.28);
+    place(STREET - 2, 0.85, 14211282, zebras, 0.29);
+    this._bridges();
+  }
+  /** Two crossings to the boroughs. They read from the board and from the water. */
+  _bridges() {
+    const { PITCH } = CONFIG;
+    const steel = new THREE3.MeshStandardMaterial({ color: 8225416, roughness: 0.6, metalness: 0.45 });
+    const cableMat = new THREE3.LineBasicMaterial({ color: 10923444 });
+    const deckMat = new THREE3.MeshStandardMaterial({ color: 4869716, roughness: 0.9 });
+    const DECK_Y = 26, TOWER_H = 62;
+    for (const [fromCol, toCol, row] of [[6, 8, 3], [6, 8, 11]]) {
+      const a = cellCenter(fromCol, row), b = cellCenter(toCol, row);
+      const x0 = a.x + PITCH / 2, x1 = b.x - PITCH / 2;
+      const span = x1 - x0, z = a.z;
+      const deck = new THREE3.Mesh(new THREE3.BoxGeometry(span, 1.6, 13), deckMat);
+      deck.position.set((x0 + x1) / 2, DECK_Y, z);
+      deck.castShadow = deck.receiveShadow = true;
+      this.terrain.add(freeze(deck));
+      const towers = [x0 + span * 0.18, x1 - span * 0.18];
+      for (const tx of towers) {
+        const t = new THREE3.Mesh(new THREE3.BoxGeometry(5, TOWER_H, 8), steel);
+        t.position.set(tx, TOWER_H / 2, z);
+        t.castShadow = true;
+        this.terrain.add(freeze(t));
+      }
+      const top = TOWER_H - 2;
+      for (const side of [-6.2, 6.2]) {
+        const pts = [new THREE3.Vector3(x0, DECK_Y + 1, z + side)];
+        pts.push(new THREE3.Vector3(towers[0], top, z + side));
+        const steps = 14;
+        for (let i = 1; i < steps; i++) {
+          const t = i / steps;
+          const sag = 22 * (1 - Math.pow(2 * t - 1, 2));
+          pts.push(new THREE3.Vector3(towers[0] + (towers[1] - towers[0]) * t, top - sag, z + side));
+        }
+        pts.push(new THREE3.Vector3(towers[1], top, z + side));
+        pts.push(new THREE3.Vector3(x1, DECK_Y + 1, z + side));
+        this.terrain.add(new THREE3.Line(new THREE3.BufferGeometry().setFromPoints(pts), cableMat));
+      }
+      for (const [rx, dir] of [[x0, -1], [x1, 1]]) {
+        const ramp = new THREE3.Mesh(new THREE3.BoxGeometry(PITCH, 1.4, 13), deckMat);
+        ramp.position.set(rx + dir * PITCH / 2, DECK_Y / 2, z);
+        ramp.rotation.z = dir * Math.atan2(DECK_Y, PITCH);
+        ramp.castShadow = true;
+        this.terrain.add(freeze(ramp));
+      }
+    }
   }
   _park(block, parkMat, pathMat) {
     const B = CONFIG.BLOCK;
     const lawn = new THREE3.Mesh(new THREE3.BoxGeometry(B + 5, 0.3, B + 5), parkMat);
     lawn.position.set(block.cx, 0.15, block.cz);
     lawn.receiveShadow = true;
-    this.scene.add(freeze(lawn));
+    this.terrain.add(freeze(lawn));
     for (const rot of [0, Math.PI / 2]) {
       const path = new THREE3.Mesh(new THREE3.BoxGeometry(B + 5, 0.06, 4), pathMat);
       path.position.set(block.cx, 0.33, block.cz);
       path.rotation.y = rot;
-      this.scene.add(freeze(path));
+      this.terrain.add(freeze(path));
     }
     this._trees(block);
   }
@@ -2270,25 +2699,88 @@ var CityScene = class {
     this.streetLabels = new THREE3.Group();
     this.streetLabels.visible = false;
     this.scene.add(this.streetLabels);
-    const P = CONFIG.PITCH, half = CONFIG.EXTENT / 2, H = 7.5;
+    const { PITCH } = CONFIG;
+    const H = 7.5;
     for (const c of this.city.corridors) {
-      const along = c.axis === "ns" ? "z" : "x";
-      const across = -half + c.index * P;
-      if (across > WATER.eastX || across > WATER.southZ) continue;
-      const { texture, aspect } = textTexture(c.name.toUpperCase(), { size: 58, color: "#f2efe6", track: 1 });
-      const mat = new THREE3.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, fog: false });
+      if (!c.lots.length) continue;
+      const { texture, aspect } = textTexture(
+        c.name.toUpperCase(),
+        { size: 58, color: "#f2efe6", track: 1 }
+      );
+      const mat = new THREE3.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        depthWrite: false,
+        fog: false
+      });
       const geo = new THREE3.PlaneGeometry(H * aspect, H);
       c._labelMat = mat;
-      for (let j = 0; j < CONFIG.GRID; j++) {
-        const at = -half + j * P + P / 2;
-        if (at > WATER.eastX || at > WATER.southZ) continue;
+      const seen = /* @__PURE__ */ new Set();
+      for (const lot of c.lots) {
+        const key = c.axis === "ns" ? lot.row : lot.col;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const p = cellCenter(lot.col, lot.row);
         const m = new THREE3.Mesh(geo, mat);
         m.rotation.x = -Math.PI / 2;
-        m.rotation.z = along === "z" ? Math.PI / 2 : 0;
-        m.position.set(along === "z" ? across : at, 0.09, along === "z" ? at : across);
+        m.rotation.z = c.axis === "ns" ? Math.PI / 2 : 0;
+        if (c.axis === "ns") m.position.set(p.x + PITCH / 2, 0.33, p.z);
+        else m.position.set(p.x, 0.33, p.z - PITCH / 2);
         m.renderOrder = 2;
         this.streetLabels.add(freeze(m));
       }
+    }
+  }
+  /** New land means new roads, kerbs, trees and signs. Redraw the lot. */
+  rebuildTerrain() {
+    const labelsVisible = this.streetLabels.visible;
+    for (const g of [this.terrain, this.streetLabels]) {
+      g.traverse((o) => {
+        if (o.isMesh || o.isLine) o.geometry?.dispose();
+      });
+      g.clear();
+    }
+    this._treeSpots = [];
+    this._ground();
+    this.scene.remove(this.streetLabels);
+    this._streetLabels();
+    this.streetLabels.visible = labelsVisible;
+    this._streetFurniture();
+    this.rebuildCollision();
+  }
+  /** Landfill in progress: a pad of rock rising out of the water. */
+  updateFills(fills) {
+    if (!this.fillGroup) {
+      this.fillGroup = new THREE3.Group();
+      this.scene.add(this.fillGroup);
+      this.fillByKey = /* @__PURE__ */ new Map();
+    }
+    const live = /* @__PURE__ */ new Set();
+    for (const f of fills) {
+      const key = `${f.col},${f.row}`;
+      live.add(key);
+      let g = this.fillByKey.get(key);
+      if (!g) {
+        const p = cellCenter(f.col, f.row);
+        g = new THREE3.Mesh(
+          new THREE3.BoxGeometry(CONFIG.PITCH - 4, 1, CONFIG.PITCH - 4),
+          new THREE3.MeshStandardMaterial({ color: 7036746, roughness: 1 })
+        );
+        g.position.set(p.x, -4, p.z);
+        g.receiveShadow = true;
+        this.fillGroup.add(g);
+        this.fillByKey.set(key, g);
+      }
+      const t = Math.max(0, Math.min(1, (this.state.day - f.startDay) / (f.endDay - f.startDay)));
+      const h = 0.6 + t * 4.4;
+      g.scale.y = h;
+      g.position.y = -4.6 + h / 2 + t * 4.4;
+    }
+    for (const [key, g] of this.fillByKey) {
+      if (live.has(key)) continue;
+      this.fillGroup.remove(g);
+      g.geometry.dispose();
+      this.fillByKey.delete(key);
     }
   }
   /** Named streets glow once they've become destinations. */
@@ -2303,7 +2795,7 @@ var CityScene = class {
     this.streetLabels.visible = on;
   }
   _streetFurniture() {
-    const P = CONFIG.PITCH, B = CONFIG.BLOCK, half = CONFIG.EXTENT / 2;
+    const B = CONFIG.BLOCK;
     const props = streetProps();
     const spots = this._treeSpots || [];
     for (const b of this.city.blocks) {
@@ -2329,7 +2821,7 @@ var CityScene = class {
         crowns.setMatrixAt(i, tmpM);
       });
       tmpS.set(1, 1, 1);
-      this.scene.add(trunks, crowns);
+      this.terrain.add(trunks, crowns);
     }
     const lamps = [], hydrants = [], trash = [], signals = [];
     for (const b of this.city.blocks) {
@@ -2353,7 +2845,7 @@ var CityScene = class {
         tmpM.compose(tmpV.set(x, y, z), tmpQ, tmpS);
         im.setMatrixAt(i, tmpM);
       });
-      this.scene.add(im);
+      this.terrain.add(im);
       return im;
     };
     const metal = new THREE3.MeshStandardMaterial({ color: 3356476, roughness: 0.7, metalness: 0.4 });
@@ -2548,21 +3040,25 @@ var CityScene = class {
     const models = vehicleModels();
     const COUNT = 110;
     const rnd = mulberry32(4242);
-    const half = CONFIG.EXTENT / 2;
+    const { PITCH } = CONFIG;
+    const ns = [...this.city.lanes.ns.entries()];
+    const ew = [...this.city.lanes.ew.entries()];
     this.cars = [];
     const byModel = {};
     for (let i = 0; i < COUNT; i++) {
       const model = MODEL_MIX[Math.floor(rnd() * MODEL_MIX.length)];
-      const axis = rnd() < 0.5 ? "x" : "z";
-      const lane = Math.floor(rnd() * (CONFIG.GRID + 1));
-      const laneCoord = -half + lane * CONFIG.PITCH;
+      const northSouth = rnd() < 0.55;
+      const pool = northSouth ? ns : ew;
+      const [idx, span] = pool[Math.floor(rnd() * pool.length)];
       const dir = rnd() < 0.5 ? 1 : -1;
+      const lane = northSouth ? cellCenter(idx, 0).x + PITCH / 2 + dir * 4.2 : cellCenter(0, idx).z - PITCH / 2 - dir * 4.2;
       const car = {
         model,
-        axis,
-        laneCoord: laneCoord + dir * 4.2,
+        northSouth,
+        lane,
+        span,
         dir,
-        pos: (rnd() - 0.5) * CONFIG.EXTENT,
+        pos: span[0] + rnd() * (span[1] - span[0]),
         speed: (model === "boxtruck" ? 7 : model === "sports" ? 17 : 11) + rnd() * 7,
         idx: 0
       };
@@ -2574,8 +3070,11 @@ var CityScene = class {
     for (const model in byModel) {
       const list = byModel[model];
       const spec = models[model];
-      const bodyMat = new THREE3.MeshStandardMaterial({ roughness: 0.38, metalness: 0.45 });
-      const body = new THREE3.InstancedMesh(spec.body, bodyMat, list.length);
+      const body = new THREE3.InstancedMesh(
+        spec.body,
+        new THREE3.MeshStandardMaterial({ roughness: 0.38, metalness: 0.45 }),
+        list.length
+      );
       const glass = new THREE3.InstancedMesh(spec.glass, glassMat, list.length);
       const lamps = new THREE3.InstancedMesh(
         spec.lamps,
@@ -2596,17 +3095,17 @@ var CityScene = class {
     this.carLampMats = this.carMeshes.map((m) => m.lamps.material);
   }
   updateTraffic(dt) {
-    const half = CONFIG.EXTENT / 2 + 40;
     for (const car of this.cars) {
       car.pos += car.speed * car.dir * dt;
-      if (car.pos > half) car.pos = -half;
-      if (car.pos < -half) car.pos = half;
+      const [lo, hi] = car.span;
+      if (car.pos > hi) car.pos = lo;
+      if (car.pos < lo) car.pos = hi;
     }
     for (const set of this.carMeshes) {
       for (const car of set.list) {
-        const x = car.axis === "x" ? car.pos : car.laneCoord;
-        const z = car.axis === "x" ? car.laneCoord : car.pos;
-        const yaw = car.axis === "x" ? car.dir > 0 ? -Math.PI / 2 : Math.PI / 2 : car.dir > 0 ? Math.PI : 0;
+        const x = car.northSouth ? car.lane : car.pos;
+        const z = car.northSouth ? car.pos : car.lane;
+        const yaw = car.northSouth ? car.dir > 0 ? Math.PI : 0 : car.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
         tmpQ.setFromAxisAngle(UP, yaw);
         tmpM.compose(tmpV.set(x, 0.03, z), tmpQ, tmpS);
         set.body.setMatrixAt(car.idx, tmpM);
@@ -2632,11 +3131,14 @@ var CityScene = class {
     this.pLegB = new THREE3.InstancedMesh(parts.leg, legMat, COUNT);
     this.pCoat.castShadow = true;
     const c = new THREE3.Color();
+    const cells = [...this.city.land.keys()].map((k) => k.split(",").map(Number));
     this.peds = [];
     for (let i = 0; i < COUNT; i++) {
+      const [col, row] = cells[Math.floor(rnd() * cells.length)];
+      const spot = cellCenter(col, row);
       this.peds.push({
-        x: (rnd() - 0.5) * CONFIG.EXTENT,
-        z: (rnd() - 0.5) * CONFIG.EXTENT,
+        x: spot.x + (rnd() - 0.5) * CONFIG.BLOCK,
+        z: spot.z + (rnd() - 0.5) * CONFIG.BLOCK,
         dir: rnd() * Math.PI * 2,
         speed: 1 + rnd() * 1,
         scale: 0.92 + rnd() * 0.18,
@@ -2667,15 +3169,24 @@ var CityScene = class {
         p.turn = 3 + Math.random() * 5;
       }
       const dx = p.x - focus.x, dz = p.z - focus.z;
-      if (dx * dx + dz * dz > 170 * 170) {
+      const far = dx * dx + dz * dz > 170 * 170;
+      const here = cellOf(p.x, p.z);
+      if (far || !this.city.isLand(here.col, here.row)) {
         const a = Math.random() * Math.PI * 2, r = 45 + Math.random() * 95;
-        p.x = focus.x + Math.cos(a) * r;
-        p.z = focus.z + Math.sin(a) * r;
+        const nx = focus.x + Math.cos(a) * r, nz = focus.z + Math.sin(a) * r;
+        const c = cellOf(nx, nz);
+        if (!this.city.isLand(c.col, c.row)) {
+          const f = cellOf(focus.x, focus.z);
+          p.x = cellCenter(f.col, f.row).x;
+          p.z = cellCenter(f.col, f.row).z;
+        } else {
+          p.x = nx;
+          p.z = nz;
+        }
       }
-      const bx = Math.round((p.x + CONFIG.EXTENT / 2 - CONFIG.PITCH / 2) / CONFIG.PITCH);
-      const bz = Math.round((p.z + CONFIG.EXTENT / 2 - CONFIG.PITCH / 2) / CONFIG.PITCH);
-      const cx = -CONFIG.EXTENT / 2 + CONFIG.PITCH / 2 + bx * CONFIG.PITCH;
-      const cz = -CONFIG.EXTENT / 2 + CONFIG.PITCH / 2 + bz * CONFIG.PITCH;
+      const cell = cellOf(p.x, p.z);
+      const centre = cellCenter(cell.col, cell.row);
+      const cx = centre.x, cz = centre.z;
       const lx = p.x - cx, lz = p.z - cz;
       if (Math.abs(lx) > halfBlock) {
         p.x = cx + Math.sign(lx) * halfBlock;
@@ -2872,9 +3383,7 @@ var CityScene = class {
     }
   }
   resolveCollision(x, z, radius = 0.5) {
-    const half = CONFIG.EXTENT / 2;
-    const bx = Math.round((x + half - CONFIG.PITCH / 2) / CONFIG.PITCH);
-    const by = Math.round((z + half - CONFIG.PITCH / 2) / CONFIG.PITCH);
+    const { col: bx, row: by } = cellOf(x, z);
     let nx = x, nz = z;
     for (let ix = bx - 1; ix <= bx + 1; ix++) {
       for (let iy = by - 1; iy <= by + 1; iy++) {
@@ -2918,7 +3427,7 @@ var CityScene = class {
     this.skyUniforms.uSunColor.value.setHSL(0.09, 0.7, 0.2 + day * 0.35);
     const fogC = this.skyUniforms.uMid.value;
     this.scene.fog.color.copy(fogC);
-    this.scene.fog.density = 75e-5 + (1 - day) * 8e-4;
+    this.scene.fog.density = 3e-4 + (1 - day) * 35e-5;
     const lit = 1 - Math.min(1, day * 2.4);
     if (this._lit === void 0 || Math.abs(lit - this._lit) > 0.02) {
       this._lit = lit;
@@ -3043,7 +3552,7 @@ var Controls = class {
     this.canvas.addEventListener("wheel", (e) => {
       if (this.mode !== MODE.BOARD) return;
       e.preventDefault();
-      this.board.dist = Math.max(90, Math.min(1400, this.board.dist * (1 + Math.sign(e.deltaY) * 0.12)));
+      this.board.dist = Math.max(90, Math.min(2600, this.board.dist * (1 + Math.sign(e.deltaY) * 0.12)));
     }, { passive: false });
   }
   /** WASD and the arrow keys, as one forward/right pair. */
@@ -3099,9 +3608,9 @@ var Controls = class {
     const dz = (fz * cos - fx * sin) * speed2 * dt;
     let nx = this.pos.x + dx, nz = this.pos.z + dz;
     [nx, nz] = this.s.resolveCollision(nx, nz, 0.6);
-    const lim = CONFIG.EXTENT / 2 + 60;
-    this.pos.x = Math.max(-lim, Math.min(lim, nx));
-    this.pos.z = Math.max(-lim, Math.min(lim, nz));
+    const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
+    this.pos.x = Math.max(-lx, Math.min(lx, nx));
+    this.pos.z = Math.max(-lz, Math.min(lz, nz));
     this.moving = Math.hypot(dx, dz) > 1e-3;
   }
   _updateCar(dt) {
@@ -3122,9 +3631,9 @@ var Controls = class {
     const nz = c.pos.z - Math.cos(c.yaw) * c.speed * dt;
     const [rx, rz] = this.s.resolveCollision(nx, nz, 1.6);
     if (Math.abs(rx - nx) > 0.01 || Math.abs(rz - nz) > 0.01) c.speed *= -0.25;
-    const lim = CONFIG.EXTENT / 2 + 60;
-    c.pos.x = Math.max(-lim, Math.min(lim, rx));
-    c.pos.z = Math.max(-lim, Math.min(lim, rz));
+    const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
+    c.pos.x = Math.max(-lx, Math.min(lx, rx));
+    c.pos.z = Math.max(-lz, Math.min(lz, rz));
     this.yaw = c.yaw + Math.PI;
     this.pos.copy(c.pos);
   }
@@ -3186,9 +3695,9 @@ var Controls = class {
     const fwd = { x: -sin, z: -cos };
     b.target.x += (-right.x * dx + fwd.x * dy) * k;
     b.target.z += (-right.z * dx + fwd.z * dy) * k;
-    const lim = CONFIG.EXTENT * 0.85;
-    b.target.x = Math.max(-lim, Math.min(lim, b.target.x));
-    b.target.z = Math.max(-lim, Math.min(lim, b.target.z));
+    const lx = CONFIG.WIDTH * 0.75, lz = CONFIG.DEPTH * 0.65;
+    b.target.x = Math.max(-lx, Math.min(lx, b.target.x));
+    b.target.z = Math.max(-lz, Math.min(lz, b.target.z));
   }
   _boardPan(dt) {
     const sp = 260 * dt * (this.board.dist / 600);
@@ -3197,9 +3706,9 @@ var Controls = class {
     if (!fx && !fz) return;
     this.board.target.x += (fx * cos + fz * sin) * sp;
     this.board.target.z += (fz * cos - fx * sin) * sp;
-    const lim = CONFIG.EXTENT * 0.8;
-    this.board.target.x = Math.max(-lim, Math.min(lim, this.board.target.x));
-    this.board.target.z = Math.max(-lim, Math.min(lim, this.board.target.z));
+    const lx = CONFIG.WIDTH * 0.75, lz = CONFIG.DEPTH * 0.65;
+    this.board.target.x = Math.max(-lx, Math.min(lx, this.board.target.x));
+    this.board.target.z = Math.max(-lz, Math.min(lz, this.board.target.z));
   }
   _updateCamera(dt, s) {
     const cam = s.camera;
@@ -3423,6 +3932,9 @@ var UI = class {
     const line = (k, v, cls = "", sep = false) => `<div class="kv${sep ? " sep" : ""}"><span>${k}</span><b class="${cls}">${v}</b></div>`;
     $("pf-assets").innerHTML = line("Cash", money(b.cash), b.cash < 0 ? "bad" : "good") + line("Land", money(b.land)) + line("Buildings", money(b.buildings)) + line("Work in progress", money(b.wip)) + line("Debt", money(-b.debt), "bad") + line("Net worth", money(b.total), "big", true);
     $("pf-income").innerHTML = line("Rent (NOI)", `${money(b.noi)}/yr`, "good") + line("Property tax", `${money(-b.tax)}/yr`) + line("Debt service", `${money(-b.debtService)}/yr`, "bad") + line("Net income", `${money(b.netIncome)}/yr`, b.netIncome < 0 ? "bad big" : "good big", true) + line("Per month", `${money(b.netIncome / 12)}`, b.netIncome < 0 ? "bad" : "");
+    const gate = REGIONS.brooklyn.unlockAt;
+    const open = canWorkIn(this.state, "player", "brooklyn");
+    $("pf-gate").innerHTML = open ? '<b class="good">Brooklyn and Queens are open.</b>' : `<div class="gatebar"><i style="width:${pct(Math.min(1, b.total / gate))}"></i></div><span>${money(b.total)} of ${money(gate)} \u2014 the boroughs open at a billion</span>`;
     $("pf-holdings").textContent = `${b.lots} lots \xB7 ${b.built} buildings \xB7 ${sf(b.gsf)} \xB7 ${this.state.projects.filter((p) => p.owner === "player").length} under construction`;
   }
   refreshBoard() {
@@ -3565,8 +4077,9 @@ var UI = class {
     this.selected = lot;
     $("lot-panel").classList.remove("hidden");
     if (fresh && document.pointerLockElement) document.exitPointerLock();
+    const locked = !canWorkIn(s, "player", lot.region);
     $("lot-title").textContent = lot.name || lot.address;
-    $("lot-meta").innerHTML = `${lot.name ? lot.address + " \xB7 " : ""}at ${lot.crossStreet} \xB7 ${d.name} \xB7 FAR ${lot.far}<br>${sf(buildableSf(lot))} buildable \xB7 <b>${blockCharacter(s, lot.block)}</b>`;
+    $("lot-meta").innerHTML = `${lot.name ? lot.address + " \xB7 " : ""}at ${lot.crossStreet}<br><b>${HOODS[lot.hood].name}</b>, ${REGIONS[lot.region].name} \xB7 ${d.name} \xB7 FAR ${lot.far}<br>${sf(buildableSf(lot))} buildable \xB7 ${blockCharacter(s, lot.block)}`;
     const tags = [];
     if (lot.waterDist < 120) tags.push(["Waterfront", `+${Math.round((p.water - 1) * 100)}%`, "tag-water"]);
     if (lot.parkFront) tags.push(["Park front", `+${Math.round((p.park - 1) * 100)}%`, "tag-park"]);
@@ -3575,12 +4088,22 @@ var UI = class {
       tags.push([`${c.name} retail`, `+${Math.round((p.corridor - 1) * 100)}%`, "tag-retail"]);
     }
     if ((lot._blight ?? 0) > 0.35) tags.push(["Blighted block", `${Math.round((p.blight - 1) * 100)}%`, "tag-blight"]);
+    if (locked) tags.push([`${REGIONS[lot.region].name} locked`, money(REGIONS[lot.region].unlockAt), "tag-locked"]);
+    if (lot.building && lot.building.floors >= LANDMARK_FLOORS) {
+      tags.push(["Protected", "cannot be cleared", "tag-landmark"]);
+    }
     $("lot-tags").innerHTML = tags.map(([n, v, c]) => `<span class="tag ${c}">${n} <b>${v}</b></span>`).join("");
     const rows = [];
     const row = (k, v, cls = "") => rows.push(`<div class="kv"><span>${k}</span><b class="${cls}">${v}</b></div>`);
     row("Owner", owned ? "You" : rival ? rival.name : "On the market", owned ? "good" : rival ? "bad" : "");
     row("Land value", money(landValue(s, lot)));
-    row("Height limit", `${maxFloors(lot)} floors`);
+    const mine = lot.block.lots.filter((l) => l.owner === "player").length;
+    row(
+      "Block",
+      `${mine} of ${lot.block.lots.length} lots yours`,
+      mine === lot.block.lots.length ? "good" : ""
+    );
+    if (lot.airSpent) row("Development rights", "transferred away", "bad");
     if (lot.project) {
       const pr = lot.project;
       const done = Math.max(0, Math.min(1, (s.day - pr.startDay) / (pr.endDay - pr.startDay)));
@@ -3589,7 +4112,11 @@ var UI = class {
       row("Income when done", `${money(pr.projectedNOI)}/yr`, "good");
     } else if (lot.building) {
       const b = lot.building;
-      row("Built", `${b.floors} floors \xB7 ${sf(b.gsf)}`);
+      row(
+        "Built",
+        `${b.floors} floors \xB7 ${sf(b.gsf)}`,
+        b.floors >= LANDMARK_FLOORS ? "good" : ""
+      );
       row("Use", USES[b.use].name);
       row("Condition", pct(b.condition ?? 1), (b.condition ?? 1) < 0.45 ? "bad" : "");
       row("Occupancy", pct(occupancyFor(s, lot)));
@@ -3603,12 +4130,23 @@ var UI = class {
     if (!owned && !rival) row("Ask", money(askPrice(s, lot)));
     if (rival) row("Est. value", money(landValue(s, lot) + (lot.building ? buildingValue(s, lot) : 0)));
     $("lot-rows").innerHTML = rows.join("");
-    if (fresh) this._buildLotControls(lot, { owned, rival });
+    if (fresh) this._buildLotControls(lot, { owned, rival, locked });
     if (this._offerSync) this._offerSync();
   }
   /** The half of the lot panel that holds focusable controls. */
-  _buildLotControls(lot, { owned, rival }) {
+  _buildLotControls(lot, { owned, rival, locked }) {
     const s = this.state;
+    if (locked) {
+      $("lot-name").classList.add("hidden");
+      $("lot-offer").classList.add("hidden");
+      $("lot-actions").innerHTML = `<p class="hint locked">${regionGate(s, "player", lot)}</p>`;
+      this._offerSync = null;
+      if (this.controls.mode === "board") {
+        $("lot-actions").innerHTML += '<button id="a-travel">Go there</button>';
+        $("a-travel").onclick = () => this.onTravel(lot);
+      }
+      return;
+    }
     const nameBox = $("lot-name");
     if (owned && (lot.building || lot.project)) {
       nameBox.classList.remove("hidden");
@@ -3658,8 +4196,9 @@ var UI = class {
     if (!owned && (!lot.owner || lot.owner === "npc")) {
       acts.push(`<button id="a-buy">Buy \u2014 ${money(askPrice(s, lot))}</button>`);
     }
+    const standing = demolitionBlock(lot);
     if (owned && !lot.project) {
-      acts.push(`<button id="a-build" class="primary">${lot.building ? "Redevelop" : "Build"}</button>`);
+      acts.push(standing ? '<button id="a-build" disabled title="Too tall to clear">Cannot redevelop</button>' : `<button id="a-build" class="primary">${lot.building ? "Redevelop" : "Build"}</button>`);
       acts.push('<button id="a-sell">Sell</button>');
     }
     if (owned && lot.project) acts.push('<button id="a-rush" class="primary">Speed up</button>');
@@ -3678,7 +4217,11 @@ var UI = class {
       this.refreshTop();
       this.refreshBoard();
     });
-    on("a-build", () => this.openBuild(lot));
+    on("a-build", () => {
+      const why = demolitionBlock(lot);
+      if (why) return this.toast(why, true);
+      this.openBuild(lot);
+    });
     on("a-sell", () => {
       const r = sellLot(s, lot, "player");
       if (!r.ok) return this.toast(r.why, true);
@@ -3707,12 +4250,14 @@ var UI = class {
   // -------------------------------------------------------------- build dialog
   openBuild(lot) {
     this.buildLot = lot;
-    const lo = minFloors(lot), hi = maxFloors(lot);
+    const whole = ownsWholeBlock(lot, "player");
+    const lo = minFloors(lot), hi = maxFloors(lot, "player");
     const inp = $("i-floors");
     inp.min = lo;
     inp.max = hi;
     inp.value = Math.min(hi, Math.max(lo, Math.round(lo * 1.25)));
-    $("build-lot").innerHTML = `${lot.address} \xB7 FAR ${lot.far} \xB7 entitlement ${sf(buildableSf(lot))}<br><span class="dimtext">Zoning allows ${hi} floors here. Past ${floorsWithoutAir(lot)} you must buy air rights from the neighbours.</span>`;
+    const owned = lot.block.lots.filter((l) => l.owner === "player").length;
+    $("build-lot").innerHTML = `${lot.address} \xB7 FAR ${lot.far} \xB7 entitlement ${sf(buildableSf(lot))}<br><span class="dimtext">Past ${floorsWithoutAir(lot)} floors you need air rights. ` + (whole ? `You hold the whole block, so its ${sf(blockSpareSf(lot, "player"))} of spare rights move across free and you can go to ${hi} floors.` : `You hold ${owned} of ${lot.block.lots.length} lots on this block \u2014 take all ${lot.block.lots.length} to build past ${BLOCK_ASSEMBLY_FLOORS}.`) + "</span>";
     $("build-panel").classList.remove("hidden");
     this.refreshBuild();
   }
@@ -3724,6 +4269,7 @@ var UI = class {
     const ltc = +$("i-ltc").value / 100;
     const needsAir = floors > floorsWithoutAir(lot);
     $("o-floors").textContent = `${floors} \xB7 ${Math.round(floors * CONFIG.FLOOR_H)}m${needsAir ? " \xB7 air rights" : ""}`;
+    $("i-floors").classList.toggle("maxed", floors >= +$("i-floors").max);
     $("o-ltc").textContent = pct(ltc);
     for (const b of $("i-form").children) b.classList.toggle("on", b.dataset.form === this.design.form);
     for (const b of $("i-colors").children) b.classList.toggle("on", +b.dataset.v === this.design.variant);
@@ -3735,7 +4281,8 @@ var UI = class {
       ["Hard + soft cost", money(q.hard + q.soft)],
       ["\u2014 per sf", `$${Math.round((q.hard + q.soft) / Math.max(1, q.gsf))}/sf`],
       ["Land", q.land > 0 ? money(q.land) : "owned"],
-      ...q.airSf > 0 ? [[`Air rights (${sf(q.airSf)})`, money(q.air)]] : [],
+      ...q.freeAir > 0 ? [[`Rights from your block (${sf(q.freeAir)})`, "free"]] : [],
+      ...q.paidAir > 0 ? [[`Air rights bought (${sf(q.paidAir)})`, money(q.air)]] : [],
       ["Total cost", money(q.total), "sep"],
       ["Rent", `$${rentPerSf(this.state, lot, use, floors).toFixed(0)}/sf`],
       ["Loan", money(q.loan)],
@@ -3804,7 +4351,7 @@ var scene = new CityScene(state, canvas);
 var controls = new Controls(scene, canvas);
 var ui = new UI(state, controls);
 (function seedPlayer() {
-  const candidates = city.lots.filter((l) => l.district === "edge" && l.building && l.building.floors <= 8);
+  const candidates = city.lots.filter((l) => l.region === "manhattan" && l.hood === "village" && l.building && l.building.floors <= 8);
   const start = candidates[Math.floor(candidates.length / 2)] || city.lots[0];
   start.owner = "player";
   start.building.builtBy = "player";
@@ -3856,8 +4403,40 @@ canvas.addEventListener("pointerup", (e) => {
       lot = nearestLot(p.x, p.z, 26);
     }
   }
-  if (lot) ui.select(lot);
+  if (lot) {
+    ui.select(lot);
+    hideWater();
+    return;
+  }
+  const hit = new THREE6.Vector3();
+  if (!ray.ray.intersectPlane(groundPlane, hit)) return;
+  const { col, row } = cellOf(hit.x, hit.z);
+  if (canReclaim(city, col, row)) showWater(col, row);
+  else hideWater();
 });
+var waterPanel = document.getElementById("water-panel");
+var hideWater = () => waterPanel.classList.add("hidden");
+document.getElementById("water-close").onclick = hideWater;
+function showWater(col, row) {
+  ui.closeLot();
+  waterPanel.classList.remove("hidden");
+  const cost = reclaimCost(state, col, row);
+  const why = canReclaimHere(state, "player", col, row);
+  const pending = state.fills.find((f) => f.col === col && f.row === row);
+  document.getElementById("water-meta").textContent = pending ? `Fill in progress \u2014 ${((pending.endDay - state.day) / 30).toFixed(1)} months to go.` : "Open water beside the shore. Fill it and the lots on top are yours.";
+  document.getElementById("water-cost").textContent = money(cost);
+  const btn = document.getElementById("do-reclaim");
+  btn.disabled = !!why || !!pending;
+  btn.textContent = pending ? "Already filling" : why ? "Locked" : `Fill it \u2014 ${money(cost)}`;
+  document.getElementById("water-note").textContent = why || "";
+  btn.onclick = () => {
+    const r = startReclaim(state, col, row, "player");
+    if (!r.ok) return ui.toast(r.why, true);
+    ui.toast(`Barges booked. ${money(r.cost)} for four lots of new ground in two years.`);
+    ui.refreshTop();
+    showWater(col, row);
+  };
+}
 function nearbyNotable() {
   const f = controls.focusPoint;
   let best = null, bd = 85 * 85;
@@ -3959,7 +4538,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "22a71c6 \xB7 2026-09-22 19:17" : "dev";
+var BUILD = true ? "87d7d2b \xB7 2026-09-22 19:58" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
@@ -3992,6 +4571,13 @@ addEventListener("resize", resize);
 resize();
 var last = performance.now();
 var uiAccum = 0;
+var displayHour = 11;
+function shortArc(a, b) {
+  let d = b - a;
+  while (d > 12) d -= 24;
+  while (d < -12) d += 24;
+  return d;
+}
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1e3);
   last = now;
@@ -4003,8 +4589,18 @@ function frame(now) {
   scene.updateSites(dt);
   scene.updateHighlight();
   scene.animateAvatar(dt, controls.moving && controls.mode === MODE.STREET);
-  const hour = (state.day % 1 * 24 + 11) % 24;
+  const liveHour = (state.day % 1 * 24 + 11) % 24;
+  const compressed = minutesPerSecond > SPEEDS[3];
+  const gap = shortArc(displayHour, compressed ? 13 : liveHour);
+  displayHour = compressed || Math.abs(gap) > 0.75 ? (displayHour + gap * Math.min(1, dt * 1.6) + 24) % 24 : liveHour;
+  const hour = displayHour;
   scene.updateSky(hour, controls.mode === MODE.BOARD ? controls.board.target : controls.focusPoint, dt);
+  scene.updateFills(state.fills);
+  if (state._dirtyTerrain) {
+    state._dirtyTerrain = false;
+    scene.rebuildTerrain();
+    scene.refreshCorridorLabels();
+  }
   if (state._dirtyGeometry) {
     state._dirtyGeometry = false;
     scene.syncBuildings();
@@ -4060,5 +4656,5 @@ function checkMilestones() {
     ui.toast("You are out of cash. Debt service is eating you \u2014 sell something.", true);
   } else if (me.cash > 5e6) warnedCash = false;
 }
-window.__game = { state, city, scene, controls, ui };
+window.__game = { state, city, scene, controls, ui, showWater, startReclaim, reclaimCost, advance };
 </script>

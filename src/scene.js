@@ -1,7 +1,7 @@
 // Everything you can see. Reads world + sim state, never writes to it.
 
 import * as THREE from 'three';
-import { CONFIG, WATER, mulberry32 } from './world.js';
+import { CONFIG, cellCenter, cellOf, mulberry32 } from './world.js';
 import { makeBuilding, roofPropGeometries } from './architecture.js';
 import { vehicleModels, CAR_PAINT, personParts, COAT_COLORS, SKIN_TONES, streetProps } from './models.js';
 
@@ -64,9 +64,11 @@ export class CityScene {
     this.collisionGrid = new Map();   // built during _buildings(), so make it first
     this.clock = 0;
 
+    this.terrain = new THREE.Group();
     this._lights();
     this._sky();
     this._water();
+    this.scene.add(this.terrain);
     this._ground();
     this._streetLabels();
     this._streetFurniture();
@@ -96,7 +98,7 @@ export class CityScene {
     this.sun.shadow.normalBias = 0.5;
     this.scene.add(this.sun, this.sun.target);
 
-    this.scene.fog = new THREE.FogExp2(0x9fb3cc, 0.0016);
+    this.scene.fog = new THREE.FogExp2(0x9fb3cc, 0.0004);
   }
 
   _sky() {
@@ -136,7 +138,7 @@ export class CityScene {
   }
 
   _water() {
-    // A scrolling normal map is enough to make a flat plane read as harbour.
+    // A scrolling normal map is enough to make a flat plane read as river.
     const c = document.createElement('canvas');
     c.width = c.height = 128;
     const g = c.getContext('2d');
@@ -154,101 +156,155 @@ export class CityScene {
     g.putImageData(img, 0, 0);
     this.waterNormal = new THREE.CanvasTexture(c);
     this.waterNormal.wrapS = this.waterNormal.wrapT = THREE.RepeatWrapping;
-    this.waterNormal.repeat.set(70, 70);
+    this.waterNormal.repeat.set(90, 90);
 
     const mat = new THREE.MeshStandardMaterial({
       color: 0x1d3b4d, roughness: 0.16, metalness: 0.55,
       normalMap: this.waterNormal, normalScale: new THREE.Vector2(0.55, 0.55),
     });
-    const plane = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000), mat);
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(11000, 11000), mat);
     plane.rotation.x = -Math.PI / 2;
-    plane.position.set(1200, -0.55, 1200);
-    plane.receiveShadow = false;
+    plane.position.set(0, -0.6, 0);
     this.scene.add(freeze(plane));
   }
 
   // ----------------------------------------------------------------- ground
 
   _ground() {
-    const E = CONFIG.EXTENT, B = CONFIG.BLOCK, P = CONFIG.PITCH, half = E / 2;
+    const { BLOCK, PITCH } = CONFIG;
+    const cells = [...this.city.land.keys()].map((k) => k.split(',').map(Number));
 
-    // Asphalt only reaches the water; past that is harbour.
-    const asphalt = new THREE.Mesh(
-      new THREE.PlaneGeometry(E + CONFIG.STREET * 2, E + CONFIG.STREET * 2),
-      new THREE.MeshStandardMaterial({ color: 0x33363b, roughness: 0.97 })
-    );
-    asphalt.rotation.x = -Math.PI / 2;
-    asphalt.position.set(
-      (WATER.eastX - (half + CONFIG.STREET)) / 2 - CONFIG.STREET / 2,
-      0,
-      (WATER.southZ - (half + CONFIG.STREET)) / 2 - CONFIG.STREET / 2
-    );
-    asphalt.receiveShadow = true;
-    this.scene.add(freeze(asphalt));
+    // Asphalt exists only where there is land; everything else is river.
+    const roadMat = new THREE.MeshStandardMaterial({ color: 0x33363b, roughness: 0.97 });
+    const roads = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(PITCH + 0.4, 0.5, PITCH + 0.4), roadMat, cells.length);
+    roads.receiveShadow = true;
+    cells.forEach(([col, row], i) => {
+      const p = cellCenter(col, row);
+      tmpM.makeTranslation(p.x, 0, p.z);
+      roads.setMatrixAt(i, tmpM);
+    });
+    this.terrain.add(roads);
 
     const walkMat = new THREE.MeshStandardMaterial({ color: 0x93938f, roughness: 0.93 });
     const curbMat = new THREE.MeshStandardMaterial({ color: 0x6f7073, roughness: 0.9 });
     const parkMat = new THREE.MeshStandardMaterial({ color: 0x47693a, roughness: 1 });
     const pathMat = new THREE.MeshStandardMaterial({ color: 0x9b8f77, roughness: 1 });
 
-    const walkGeo = new THREE.BoxGeometry(B + 6, 0.36, B + 6);
-    const curbGeo = new THREE.BoxGeometry(B + 8, 0.2, B + 8);
+    const walkGeo = new THREE.BoxGeometry(BLOCK + 6, 0.36, BLOCK + 6);
+    const curbGeo = new THREE.BoxGeometry(BLOCK + 8, 0.2, BLOCK + 8);
     const normals = this.city.blocks.filter((b) => !b.isPark);
-
     const curbs = new THREE.InstancedMesh(curbGeo, curbMat, this.city.blocks.length);
     const walks = new THREE.InstancedMesh(walkGeo, walkMat, normals.length);
     curbs.receiveShadow = walks.receiveShadow = true;
     let wi = 0, ci = 0;
     for (const b of this.city.blocks) {
-      tmpM.makeTranslation(b.cx, 0.1, b.cz);
+      tmpM.makeTranslation(b.cx, 0.24, b.cz);
       curbs.setMatrixAt(ci++, tmpM);
       if (b.isPark) { this._park(b, parkMat, pathMat); continue; }
-      tmpM.makeTranslation(b.cx, 0.18, b.cz);
+      tmpM.makeTranslation(b.cx, 0.32, b.cz);
       walks.setMatrixAt(wi++, tmpM);
     }
     walks.count = wi; curbs.count = ci;
-    this.scene.add(walks, curbs);
+    this.terrain.add(walks, curbs);
 
-    // Lane markings and crosswalks.
-    const lineMat = new THREE.MeshBasicMaterial({ color: 0xcdbd6d });
-    const zebraMat = new THREE.MeshBasicMaterial({ color: 0xd8d8d2 });
-    const lineGeo = new THREE.PlaneGeometry(0.44, P - B - 2);
-    const lanes = [];
-    for (let i = 0; i <= CONFIG.GRID; i++) {
-      const pos = -half + i * P;
-      if (pos > WATER.eastX && pos > WATER.southZ) continue;
-      for (let j = -1; j <= CONFIG.GRID; j++) {
-        const along = -half + j * P + P / 2;
-        lanes.push([pos, along, 0], [along, pos, Math.PI / 2]);
+    // Lane markings and crosswalks, drawn only where two cells actually meet.
+    const { STREET } = CONFIG;
+    const lines = [], zebras = [];
+    const STRIPES = [-3, -2, -1, 0, 1, 2, 3];
+    for (const [col, row] of cells) {
+      const p = cellCenter(col, row);
+      // Avenue running north-south along this cell's eastern edge.
+      if (this.city.isLand(col + 1, row)) {
+        const ax = p.x + PITCH / 2;
+        lines.push([ax, p.z, 'ns']);
+        for (const side of [-1, 1]) {
+          for (const k of STRIPES) {
+            zebras.push([ax, p.z + side * (BLOCK / 2 + 5) + k * 1.5, 'ns']);
+          }
+        }
       }
-    }
-    const lineMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.44, B), lineMat, lanes.length);
-    lanes.forEach(([x, z, rot], i) => {
-      tmpQ.setFromEuler(new THREE.Euler(-Math.PI / 2, 0, rot));
-      tmpM.compose(tmpV.set(x, 0.06, z), tmpQ, tmpS);
-      lineMesh.setMatrixAt(i, tmpM);
-    });
-    this.scene.add(lineMesh);
-
-    const zebras = [];
-    for (let i = 0; i <= CONFIG.GRID; i++) {
-      for (let j = 0; j < CONFIG.GRID; j++) {
-        const across = -half + i * P;
-        const along = -half + j * P + P / 2;
-        for (let k = -3; k <= 3; k++) {
-          zebras.push([across + k * 1.5, along - B / 2 - 5.5, 0]);
-          zebras.push([along - B / 2 - 5.5, across + k * 1.5, Math.PI / 2]);
+      // Cross street running east-west along this cell's southern edge.
+      if (this.city.isLand(col, row + 1)) {
+        const sz = p.z - PITCH / 2;
+        lines.push([p.x, sz, 'ew']);
+        for (const side of [-1, 1]) {
+          for (const k of STRIPES) {
+            zebras.push([p.x + side * (BLOCK / 2 + 5) + k * 1.5, sz, 'ew']);
+          }
         }
       }
     }
-    const zGeo = new THREE.PlaneGeometry(0.85, 6.5);
-    const zMesh = new THREE.InstancedMesh(zGeo, zebraMat, zebras.length);
-    zebras.forEach(([x, z, rot], i) => {
-      tmpQ.setFromEuler(new THREE.Euler(-Math.PI / 2, 0, rot));
-      tmpM.compose(tmpV.set(x, 0.07, z), tmpQ, tmpS);
-      zMesh.setMatrixAt(i, tmpM);
-    });
-    this.scene.add(zMesh);
+
+    const place = (w, h, color, list, y) => {
+      if (!list.length) return;
+      const im = new THREE.InstancedMesh(
+        new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color }), list.length);
+      list.forEach(([x, z, axis], i) => {
+        // The plane lies flat; roll it so its long side runs down the street.
+        tmpQ.setFromEuler(new THREE.Euler(-Math.PI / 2, 0, axis === 'ns' ? 0 : Math.PI / 2));
+        tmpM.compose(tmpV.set(x, y, z), tmpQ, tmpS);
+        im.setMatrixAt(i, tmpM);
+      });
+      this.terrain.add(im);
+    };
+    place(0.44, PITCH, 0xcdbd6d, lines, 0.28);       // centre line, along the street
+    place(STREET - 2, 0.85, 0xd8d8d2, zebras, 0.29); // stripes, across it
+
+    this._bridges();
+  }
+
+  /** Two crossings to the boroughs. They read from the board and from the water. */
+  _bridges() {
+    const { PITCH } = CONFIG;
+    const steel = new THREE.MeshStandardMaterial({ color: 0x7d8288, roughness: 0.6, metalness: 0.45 });
+    const cableMat = new THREE.LineBasicMaterial({ color: 0xa6adb4 });
+    const deckMat = new THREE.MeshStandardMaterial({ color: 0x4a4e54, roughness: 0.9 });
+    const DECK_Y = 26, TOWER_H = 62;
+
+    for (const [fromCol, toCol, row] of [[6, 8, 3], [6, 8, 11]]) {
+      const a = cellCenter(fromCol, row), b = cellCenter(toCol, row);
+      const x0 = a.x + PITCH / 2, x1 = b.x - PITCH / 2;
+      const span = x1 - x0, z = a.z;
+
+      const deck = new THREE.Mesh(new THREE.BoxGeometry(span, 1.6, 13), deckMat);
+      deck.position.set((x0 + x1) / 2, DECK_Y, z);
+      deck.castShadow = deck.receiveShadow = true;
+      this.terrain.add(freeze(deck));
+
+      const towers = [x0 + span * 0.18, x1 - span * 0.18];
+      for (const tx of towers) {
+        const t = new THREE.Mesh(new THREE.BoxGeometry(5, TOWER_H, 8), steel);
+        t.position.set(tx, TOWER_H / 2, z);
+        t.castShadow = true;
+        this.terrain.add(freeze(t));
+      }
+
+      // Main cable: anchored at each shore, over both towers, sagging between.
+      const top = TOWER_H - 2;
+      for (const side of [-6.2, 6.2]) {
+        const pts = [new THREE.Vector3(x0, DECK_Y + 1, z + side)];
+        pts.push(new THREE.Vector3(towers[0], top, z + side));
+        const steps = 14;
+        for (let i = 1; i < steps; i++) {
+          const t = i / steps;                       // 0..1 between the towers
+          const sag = 22 * (1 - Math.pow(2 * t - 1, 2));
+          pts.push(new THREE.Vector3(towers[0] + (towers[1] - towers[0]) * t, top - sag, z + side));
+        }
+        pts.push(new THREE.Vector3(towers[1], top, z + side));
+        pts.push(new THREE.Vector3(x1, DECK_Y + 1, z + side));
+        this.terrain.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), cableMat));
+      }
+
+      // Ramps down to each shore.
+      for (const [rx, dir] of [[x0, -1], [x1, 1]]) {
+        const ramp = new THREE.Mesh(new THREE.BoxGeometry(PITCH, 1.4, 13), deckMat);
+        ramp.position.set(rx + dir * PITCH / 2, DECK_Y / 2, z);
+        ramp.rotation.z = dir * Math.atan2(DECK_Y, PITCH);
+        ramp.castShadow = true;
+        this.terrain.add(freeze(ramp));
+      }
+    }
   }
 
   _park(block, parkMat, pathMat) {
@@ -256,12 +312,12 @@ export class CityScene {
     const lawn = new THREE.Mesh(new THREE.BoxGeometry(B + 5, 0.3, B + 5), parkMat);
     lawn.position.set(block.cx, 0.15, block.cz);
     lawn.receiveShadow = true;
-    this.scene.add(freeze(lawn));
+    this.terrain.add(freeze(lawn));
     for (const rot of [0, Math.PI / 2]) {
       const path = new THREE.Mesh(new THREE.BoxGeometry(B + 5, 0.06, 4), pathMat);
       path.position.set(block.cx, 0.33, block.cz);
       path.rotation.y = rot;
-      this.scene.add(freeze(path));
+      this.terrain.add(freeze(path));
     }
     this._trees(block);
   }
@@ -292,25 +348,83 @@ export class CityScene {
     this.streetLabels.visible = false;
     this.scene.add(this.streetLabels);
 
-    const P = CONFIG.PITCH, half = CONFIG.EXTENT / 2, H = 7.5;
+    const { PITCH } = CONFIG;
+    const H = 7.5;
     for (const c of this.city.corridors) {
-      const along = c.axis === 'ns' ? 'z' : 'x';
-      const across = -half + c.index * P;
-      if (across > WATER.eastX || across > WATER.southZ) continue;
-      const { texture, aspect } = textTexture(c.name.toUpperCase(), { size: 58, color: '#f2efe6', track: 1 });
-      const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, fog: false });
+      if (!c.lots.length) continue;
+      const { texture, aspect } = textTexture(c.name.toUpperCase(),
+        { size: 58, color: '#f2efe6', track: 1 });
+      const mat = new THREE.MeshBasicMaterial({
+        map: texture, transparent: true, depthWrite: false, fog: false });
       const geo = new THREE.PlaneGeometry(H * aspect, H);
       c._labelMat = mat;
-      for (let j = 0; j < CONFIG.GRID; j++) {
-        const at = -half + j * P + P / 2;
-        if (at > WATER.eastX || at > WATER.southZ) continue;
+
+      // One label per cell the corridor passes, laid in the street itself.
+      const seen = new Set();
+      for (const lot of c.lots) {
+        const key = c.axis === 'ns' ? lot.row : lot.col;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const p = cellCenter(lot.col, lot.row);
         const m = new THREE.Mesh(geo, mat);
         m.rotation.x = -Math.PI / 2;
-        m.rotation.z = along === 'z' ? Math.PI / 2 : 0;
-        m.position.set(along === 'z' ? across : at, 0.09, along === 'z' ? at : across);
+        m.rotation.z = c.axis === 'ns' ? Math.PI / 2 : 0;
+        if (c.axis === 'ns') m.position.set(p.x + PITCH / 2, 0.33, p.z);
+        else m.position.set(p.x, 0.33, p.z - PITCH / 2);
         m.renderOrder = 2;
         this.streetLabels.add(freeze(m));
       }
+    }
+  }
+
+  /** New land means new roads, kerbs, trees and signs. Redraw the lot. */
+  rebuildTerrain() {
+    const labelsVisible = this.streetLabels.visible;
+    for (const g of [this.terrain, this.streetLabels]) {
+      g.traverse((o) => { if (o.isMesh || o.isLine) o.geometry?.dispose(); });
+      g.clear();
+    }
+    this._treeSpots = [];
+    this._ground();
+    this.scene.remove(this.streetLabels);
+    this._streetLabels();
+    this.streetLabels.visible = labelsVisible;
+    this._streetFurniture();
+    this.rebuildCollision();
+  }
+
+  /** Landfill in progress: a pad of rock rising out of the water. */
+  updateFills(fills) {
+    if (!this.fillGroup) {
+      this.fillGroup = new THREE.Group();
+      this.scene.add(this.fillGroup);
+      this.fillByKey = new Map();
+    }
+    const live = new Set();
+    for (const f of fills) {
+      const key = `${f.col},${f.row}`;
+      live.add(key);
+      let g = this.fillByKey.get(key);
+      if (!g) {
+        const p = cellCenter(f.col, f.row);
+        g = new THREE.Mesh(
+          new THREE.BoxGeometry(CONFIG.PITCH - 4, 1, CONFIG.PITCH - 4),
+          new THREE.MeshStandardMaterial({ color: 0x6b5f4a, roughness: 1 }));
+        g.position.set(p.x, -4, p.z);
+        g.receiveShadow = true;
+        this.fillGroup.add(g);
+        this.fillByKey.set(key, g);
+      }
+      const t = Math.max(0, Math.min(1, (this.state.day - f.startDay) / (f.endDay - f.startDay)));
+      const h = 0.6 + t * 4.4;
+      g.scale.y = h;
+      g.position.y = -4.6 + h / 2 + t * 4.4;
+    }
+    for (const [key, g] of this.fillByKey) {
+      if (live.has(key)) continue;
+      this.fillGroup.remove(g);
+      g.geometry.dispose();
+      this.fillByKey.delete(key);
     }
   }
 
@@ -328,7 +442,7 @@ export class CityScene {
   }
 
   _streetFurniture() {
-    const P = CONFIG.PITCH, B = CONFIG.BLOCK, half = CONFIG.EXTENT / 2;
+    const B = CONFIG.BLOCK;
     const props = streetProps();
 
     // Street trees along the sidewalks, plus the park trees collected above.
@@ -357,7 +471,7 @@ export class CityScene {
         crowns.setMatrixAt(i, tmpM);
       });
       tmpS.set(1, 1, 1);
-      this.scene.add(trunks, crowns);
+      this.terrain.add(trunks, crowns);
     }
 
     // Lamp posts at every corner, plus hydrants, refuse and traffic signals.
@@ -384,7 +498,7 @@ export class CityScene {
         tmpM.compose(tmpV.set(x, y, z), tmpQ, tmpS);
         im.setMatrixAt(i, tmpM);
       });
-      this.scene.add(im);
+      this.terrain.add(im);
       return im;
     };
 
@@ -592,19 +706,26 @@ export class CityScene {
     const models = vehicleModels();
     const COUNT = 110;
     const rnd = mulberry32(4242);
-    const half = CONFIG.EXTENT / 2;
+    const { PITCH } = CONFIG;
 
+    const ns = [...this.city.lanes.ns.entries()];
+    const ew = [...this.city.lanes.ew.entries()];
     this.cars = [];
     const byModel = {};
+
     for (let i = 0; i < COUNT; i++) {
       const model = MODEL_MIX[Math.floor(rnd() * MODEL_MIX.length)];
-      const axis = rnd() < 0.5 ? 'x' : 'z';
-      const lane = Math.floor(rnd() * (CONFIG.GRID + 1));
-      const laneCoord = -half + lane * CONFIG.PITCH;
+      const northSouth = rnd() < 0.55;
+      const pool = northSouth ? ns : ew;
+      const [idx, span] = pool[Math.floor(rnd() * pool.length)];
       const dir = rnd() < 0.5 ? 1 : -1;
+      // Avenues sit on a cell's eastern edge, cross streets on its southern one.
+      const lane = northSouth
+        ? cellCenter(idx, 0).x + PITCH / 2 + dir * 4.2
+        : cellCenter(0, idx).z - PITCH / 2 - dir * 4.2;
       const car = {
-        model, axis, laneCoord: laneCoord + dir * 4.2, dir,
-        pos: (rnd() - 0.5) * CONFIG.EXTENT,
+        model, northSouth, lane, span, dir,
+        pos: span[0] + rnd() * (span[1] - span[0]),
         speed: (model === 'boxtruck' ? 7 : model === 'sports' ? 17 : 11) + rnd() * 7,
         idx: 0,
       };
@@ -617,8 +738,8 @@ export class CityScene {
     for (const model in byModel) {
       const list = byModel[model];
       const spec = models[model];
-      const bodyMat = new THREE.MeshStandardMaterial({ roughness: 0.38, metalness: 0.45 });
-      const body = new THREE.InstancedMesh(spec.body, bodyMat, list.length);
+      const body = new THREE.InstancedMesh(
+        spec.body, new THREE.MeshStandardMaterial({ roughness: 0.38, metalness: 0.45 }), list.length);
       const glass = new THREE.InstancedMesh(spec.glass, glassMat, list.length);
       const lamps = new THREE.InstancedMesh(spec.lamps,
         new THREE.MeshStandardMaterial({ color: 0xfff2d4, emissive: 0xffcf8f, emissiveIntensity: 0 }),
@@ -627,7 +748,8 @@ export class CityScene {
       const c = new THREE.Color();
       list.forEach((car, i) => {
         car.idx = i;
-        c.setHex(spec.fixedColor ?? CAR_PAINT[Math.floor(mulberry32(i * 77 + model.length)() * CAR_PAINT.length)]);
+        c.setHex(spec.fixedColor
+          ?? CAR_PAINT[Math.floor(mulberry32(i * 77 + model.length)() * CAR_PAINT.length)]);
         body.setColorAt(i, c);
       });
       if (body.instanceColor) body.instanceColor.needsUpdate = true;
@@ -638,20 +760,20 @@ export class CityScene {
   }
 
   updateTraffic(dt) {
-    const half = CONFIG.EXTENT / 2 + 40;
     for (const car of this.cars) {
       car.pos += car.speed * car.dir * dt;
-      if (car.pos > half) car.pos = -half;
-      if (car.pos < -half) car.pos = half;
+      const [lo, hi] = car.span;
+      if (car.pos > hi) car.pos = lo;
+      if (car.pos < lo) car.pos = hi;
     }
     for (const set of this.carMeshes) {
       for (const car of set.list) {
-        const x = car.axis === 'x' ? car.pos : car.laneCoord;
-        const z = car.axis === 'x' ? car.laneCoord : car.pos;
-        // Face along travel; the models point down -Z.
-        const yaw = car.axis === 'x'
-          ? (car.dir > 0 ? -Math.PI / 2 : Math.PI / 2)
-          : (car.dir > 0 ? Math.PI : 0);
+        const x = car.northSouth ? car.lane : car.pos;
+        const z = car.northSouth ? car.pos : car.lane;
+        // The models point down -Z, so face them along travel.
+        const yaw = car.northSouth
+          ? (car.dir > 0 ? Math.PI : 0)
+          : (car.dir > 0 ? -Math.PI / 2 : Math.PI / 2);
         tmpQ.setFromAxisAngle(UP, yaw);
         tmpM.compose(tmpV.set(x, 0.03, z), tmpQ, tmpS);
         set.body.setMatrixAt(car.idx, tmpM);
@@ -682,10 +804,13 @@ export class CityScene {
     this.pCoat.castShadow = true;
 
     const c = new THREE.Color();
+    const cells = [...this.city.land.keys()].map((k) => k.split(',').map(Number));
     this.peds = [];
     for (let i = 0; i < COUNT; i++) {
+      const [col, row] = cells[Math.floor(rnd() * cells.length)];
+      const spot = cellCenter(col, row);
       this.peds.push({
-        x: (rnd() - 0.5) * CONFIG.EXTENT, z: (rnd() - 0.5) * CONFIG.EXTENT,
+        x: spot.x + (rnd() - 0.5) * CONFIG.BLOCK, z: spot.z + (rnd() - 0.5) * CONFIG.BLOCK,
         dir: rnd() * Math.PI * 2, speed: 1.0 + rnd() * 1.0,
         scale: 0.92 + rnd() * 0.18, phase: rnd() * 6.28, turn: rnd() * 5,
       });
@@ -712,16 +837,19 @@ export class CityScene {
       if (p.turn < 0) { p.dir += (Math.random() - 0.5) * 1.5; p.turn = 3 + Math.random() * 5; }
 
       const dx = p.x - focus.x, dz = p.z - focus.z;
-      if (dx * dx + dz * dz > 170 * 170) {
+      const far = dx * dx + dz * dz > 170 * 170;
+      const here = cellOf(p.x, p.z);
+      // Recycle anyone who has drifted too far, or out over the water.
+      if (far || !this.city.isLand(here.col, here.row)) {
         const a = Math.random() * Math.PI * 2, r = 45 + Math.random() * 95;
-        p.x = focus.x + Math.cos(a) * r;
-        p.z = focus.z + Math.sin(a) * r;
+        const nx = focus.x + Math.cos(a) * r, nz = focus.z + Math.sin(a) * r;
+        const c = cellOf(nx, nz);
+        if (!this.city.isLand(c.col, c.row)) { const f = cellOf(focus.x, focus.z); p.x = cellCenter(f.col, f.row).x; p.z = cellCenter(f.col, f.row).z; }
+        else { p.x = nx; p.z = nz; }
       }
-      // Stay on the sidewalk ring of whichever block they belong to.
-      const bx = Math.round((p.x + CONFIG.EXTENT / 2 - CONFIG.PITCH / 2) / CONFIG.PITCH);
-      const bz = Math.round((p.z + CONFIG.EXTENT / 2 - CONFIG.PITCH / 2) / CONFIG.PITCH);
-      const cx = -CONFIG.EXTENT / 2 + CONFIG.PITCH / 2 + bx * CONFIG.PITCH;
-      const cz = -CONFIG.EXTENT / 2 + CONFIG.PITCH / 2 + bz * CONFIG.PITCH;
+      const cell = cellOf(p.x, p.z);
+      const centre = cellCenter(cell.col, cell.row);
+      const cx = centre.x, cz = centre.z;
       const lx = p.x - cx, lz = p.z - cz;
       if (Math.abs(lx) > halfBlock) { p.x = cx + Math.sign(lx) * halfBlock; p.dir = Math.PI - p.dir; }
       if (Math.abs(lz) > halfBlock) { p.z = cz + Math.sign(lz) * halfBlock; p.dir = -p.dir; }
@@ -903,9 +1031,7 @@ export class CityScene {
   }
 
   resolveCollision(x, z, radius = 0.5) {
-    const half = CONFIG.EXTENT / 2;
-    const bx = Math.round((x + half - CONFIG.PITCH / 2) / CONFIG.PITCH);
-    const by = Math.round((z + half - CONFIG.PITCH / 2) / CONFIG.PITCH);
+    const { col: bx, row: by } = cellOf(x, z);
     let nx = x, nz = z;
     for (let ix = bx - 1; ix <= bx + 1; ix++) {
       for (let iy = by - 1; iy <= by + 1; iy++) {
@@ -955,7 +1081,7 @@ export class CityScene {
 
     const fogC = this.skyUniforms.uMid.value;
     this.scene.fog.color.copy(fogC);
-    this.scene.fog.density = 0.00075 + (1 - day) * 0.0008;
+    this.scene.fog.density = 0.00030 + (1 - day) * 0.00035;
 
     const lit = 1 - Math.min(1, day * 2.4);
     if (this._lit === undefined || Math.abs(lit - this._lit) > 0.02) {

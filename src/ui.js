@@ -2,14 +2,16 @@
 // building label, and the standings.
 
 import * as THREE from 'three';
-import { DISTRICTS, USES, STYLES, FORMS, massing, minFloors, maxFloors, buildableSf,
-         floorsWithoutAir, CONFIG } from './world.js';
+import { DISTRICTS, HOODS, REGIONS, USES, STYLES, FORMS, massing, minFloors, maxFloors,
+         buildableSf, floorsWithoutAir, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS,
+         CONFIG } from './world.js';
 import { TYPES, massingVolumes, typologyFor } from './architecture.js';
 import {
   money, sf, askPrice, landValue, buildingNOI, buildingValue, quote, netWorth,
   leaderboard, buyLot, sellLot, startProject, formatDate, occupancyFor, rentPerSf,
   premiums, blockCharacter, rushQuote, rushProject, nameBuilding, worthBreakdown,
-  makeOffer, reservePrice,
+  makeOffer, reservePrice, regionGate, canWorkIn, demolitionBlock, LANDMARK_FLOORS,
+  blockSpareSf,
 } from './economy.js';
 
 const $ = (id) => document.getElementById(id);
@@ -227,6 +229,13 @@ export class UI {
       line('Debt service', `${money(-b.debtService)}/yr`, 'bad') +
       line('Net income', `${money(b.netIncome)}/yr`, b.netIncome < 0 ? 'bad big' : 'good big', true) +
       line('Per month', `${money(b.netIncome / 12)}`, b.netIncome < 0 ? 'bad' : '');
+    // How far off the boroughs are.
+    const gate = REGIONS.brooklyn.unlockAt;
+    const open = canWorkIn(this.state, 'player', 'brooklyn');
+    $('pf-gate').innerHTML = open
+      ? '<b class="good">Brooklyn and Queens are open.</b>'
+      : `<div class="gatebar"><i style="width:${pct(Math.min(1, b.total / gate))}"></i></div>`
+        + `<span>${money(b.total)} of ${money(gate)} — the boroughs open at a billion</span>`;
     $('pf-holdings').textContent =
       `${b.lots} lots · ${b.built} buildings · ${sf(b.gsf)} · ${this.state.projects.filter((p) => p.owner === 'player').length} under construction`;
   }
@@ -399,10 +408,12 @@ export class UI {
     // Panels need the mouse, and pointer lock owns it.
     if (fresh && document.pointerLockElement) document.exitPointerLock();
 
+    const locked = !canWorkIn(s, 'player', lot.region);
     $('lot-title').textContent = lot.name || lot.address;
     $('lot-meta').innerHTML =
-      `${lot.name ? lot.address + ' · ' : ''}at ${lot.crossStreet} · ${d.name} · FAR ${lot.far}<br>`
-      + `${sf(buildableSf(lot))} buildable · <b>${blockCharacter(s, lot.block)}</b>`;
+      `${lot.name ? lot.address + ' · ' : ''}at ${lot.crossStreet}<br>`
+      + `<b>${HOODS[lot.hood].name}</b>, ${REGIONS[lot.region].name} · ${d.name} · FAR ${lot.far}<br>`
+      + `${sf(buildableSf(lot))} buildable · ${blockCharacter(s, lot.block)}`;
 
     const tags = [];
     if (lot.waterDist < 120) tags.push(['Waterfront', `+${Math.round((p.water - 1) * 100)}%`, 'tag-water']);
@@ -412,13 +423,20 @@ export class UI {
       tags.push([`${c.name} retail`, `+${Math.round((p.corridor - 1) * 100)}%`, 'tag-retail']);
     }
     if ((lot._blight ?? 0) > 0.35) tags.push(['Blighted block', `${Math.round((p.blight - 1) * 100)}%`, 'tag-blight']);
+    if (locked) tags.push([`${REGIONS[lot.region].name} locked`, money(REGIONS[lot.region].unlockAt), 'tag-locked']);
+    if (lot.building && lot.building.floors >= LANDMARK_FLOORS) {
+      tags.push(['Protected', 'cannot be cleared', 'tag-landmark']);
+    }
     $('lot-tags').innerHTML = tags.map(([n, v, c]) => `<span class="tag ${c}">${n} <b>${v}</b></span>`).join('');
 
     const rows = [];
     const row = (k, v, cls = '') => rows.push(`<div class="kv"><span>${k}</span><b class="${cls}">${v}</b></div>`);
     row('Owner', owned ? 'You' : rival ? rival.name : 'On the market', owned ? 'good' : rival ? 'bad' : '');
     row('Land value', money(landValue(s, lot)));
-    row('Height limit', `${maxFloors(lot)} floors`);
+    const mine = lot.block.lots.filter((l) => l.owner === 'player').length;
+    row('Block', `${mine} of ${lot.block.lots.length} lots yours`,
+        mine === lot.block.lots.length ? 'good' : '');
+    if (lot.airSpent) row('Development rights', 'transferred away', 'bad');
 
     if (lot.project) {
       const pr = lot.project;
@@ -428,7 +446,8 @@ export class UI {
       row('Income when done', `${money(pr.projectedNOI)}/yr`, 'good');
     } else if (lot.building) {
       const b = lot.building;
-      row('Built', `${b.floors} floors · ${sf(b.gsf)}`);
+      row('Built', `${b.floors} floors · ${sf(b.gsf)}`,
+          b.floors >= LANDMARK_FLOORS ? 'good' : '');
       row('Use', USES[b.use].name);
       row('Condition', pct(b.condition ?? 1), (b.condition ?? 1) < 0.45 ? 'bad' : '');
       row('Occupancy', pct(occupancyFor(s, lot)));
@@ -443,13 +462,26 @@ export class UI {
     if (rival) row('Est. value', money(landValue(s, lot) + (lot.building ? buildingValue(s, lot) : 0)));
     $('lot-rows').innerHTML = rows.join('');
 
-    if (fresh) this._buildLotControls(lot, { owned, rival });
+    if (fresh) this._buildLotControls(lot, { owned, rival, locked });
     if (this._offerSync) this._offerSync();
   }
 
   /** The half of the lot panel that holds focusable controls. */
-  _buildLotControls(lot, { owned, rival }) {
+  _buildLotControls(lot, { owned, rival, locked }) {
     const s = this.state;
+    if (locked) {
+      // Nothing here is for sale until the balance sheet says otherwise.
+      $('lot-name').classList.add('hidden');
+      $('lot-offer').classList.add('hidden');
+      $('lot-actions').innerHTML =
+        `<p class="hint locked">${regionGate(s, 'player', lot)}</p>`;
+      this._offerSync = null;
+      if (this.controls.mode === 'board') {
+        $('lot-actions').innerHTML += '<button id="a-travel">Go there</button>';
+        $('a-travel').onclick = () => this.onTravel(lot);
+      }
+      return;
+    }
 
     const nameBox = $('lot-name');
     if (owned && (lot.building || lot.project)) {
@@ -502,8 +534,11 @@ export class UI {
     if (!owned && (!lot.owner || lot.owner === 'npc')) {
       acts.push(`<button id="a-buy">Buy — ${money(askPrice(s, lot))}</button>`);
     }
+    const standing = demolitionBlock(lot);
     if (owned && !lot.project) {
-      acts.push(`<button id="a-build" class="primary">${lot.building ? 'Redevelop' : 'Build'}</button>`);
+      acts.push(standing
+        ? '<button id="a-build" disabled title="Too tall to clear">Cannot redevelop</button>'
+        : `<button id="a-build" class="primary">${lot.building ? 'Redevelop' : 'Build'}</button>`);
       acts.push('<button id="a-sell">Sell</button>');
     }
     if (owned && lot.project) acts.push('<button id="a-rush" class="primary">Speed up</button>');
@@ -518,7 +553,11 @@ export class UI {
       this._lotSig = null;
       this.select(lot); this.refreshTop(); this.refreshBoard();
     });
-    on('a-build', () => this.openBuild(lot));
+    on('a-build', () => {
+      const why = demolitionBlock(lot);
+      if (why) return this.toast(why, true);
+      this.openBuild(lot);
+    });
     on('a-sell', () => {
       const r = sellLot(s, lot, 'player');
       if (!r.ok) return this.toast(r.why, true);
@@ -547,14 +586,21 @@ export class UI {
 
   openBuild(lot) {
     this.buildLot = lot;
-    const lo = minFloors(lot), hi = maxFloors(lot);
+    const whole = ownsWholeBlock(lot, 'player');
+    const lo = minFloors(lot), hi = maxFloors(lot, 'player');
     const inp = $('i-floors');
     inp.min = lo; inp.max = hi;
     inp.value = Math.min(hi, Math.max(lo, Math.round(lo * 1.25)));
+    const owned = lot.block.lots.filter((l) => l.owner === 'player').length;
     $('build-lot').innerHTML =
       `${lot.address} · FAR ${lot.far} · entitlement ${sf(buildableSf(lot))}<br>`
-      + `<span class="dimtext">Zoning allows ${hi} floors here. Past `
-      + `${floorsWithoutAir(lot)} you must buy air rights from the neighbours.</span>`;
+      + `<span class="dimtext">Past ${floorsWithoutAir(lot)} floors you need air rights. `
+      + (whole
+          ? `You hold the whole block, so its ${sf(blockSpareSf(lot, 'player'))} of spare rights `
+            + `move across free and you can go to ${hi} floors.`
+          : `You hold ${owned} of ${lot.block.lots.length} lots on this block — take all `
+            + `${lot.block.lots.length} to build past ${BLOCK_ASSEMBLY_FLOORS}.`)
+      + '</span>';
     $('build-panel').classList.remove('hidden');
     this.refreshBuild();
   }
@@ -568,6 +614,7 @@ export class UI {
     const needsAir = floors > floorsWithoutAir(lot);
     $('o-floors').textContent =
       `${floors} · ${Math.round(floors * CONFIG.FLOOR_H)}m${needsAir ? ' · air rights' : ''}`;
+    $('i-floors').classList.toggle('maxed', floors >= +$('i-floors').max);
     $('o-ltc').textContent = pct(ltc);
     for (const b of $('i-form').children) b.classList.toggle('on', b.dataset.form === this.design.form);
     for (const b of $('i-colors').children) b.classList.toggle('on', +b.dataset.v === this.design.variant);
@@ -580,7 +627,8 @@ export class UI {
       ['Hard + soft cost', money(q.hard + q.soft)],
       ['— per sf', `$${Math.round((q.hard + q.soft) / Math.max(1, q.gsf))}/sf`],
       ['Land', q.land > 0 ? money(q.land) : 'owned'],
-      ...(q.airSf > 0 ? [[`Air rights (${sf(q.airSf)})`, money(q.air)]] : []),
+      ...(q.freeAir > 0 ? [[`Rights from your block (${sf(q.freeAir)})`, 'free']] : []),
+      ...(q.paidAir > 0 ? [[`Air rights bought (${sf(q.paidAir)})`, money(q.air)]] : []),
       ['Total cost', money(q.total), 'sep'],
       ['Rent', `$${rentPerSf(this.state, lot, use, floors).toFixed(0)}/sf`],
       ['Loan', money(q.loan)],

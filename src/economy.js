@@ -1,8 +1,9 @@
 // The simulation: money, land value, construction, the market cycle, and the
 // rival developers you're racing. Runs on a day tick. No rendering in here.
 
-import { CONFIG, DISTRICTS, USES, STYLES, FORMS, buildableSf, massing, minFloors,
-         maxFloors, mulberry32 } from './world.js';
+import { CONFIG, DISTRICTS, USES, STYLES, FORMS, REGIONS, HOODS, buildableSf, massing,
+         minFloors, maxFloors, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS, canReclaim,
+         shoreContact, mulberry32 } from './world.js';
 
 export const START_CASH = 100_000_000;
 export const CAP_RATE = 0.055;        // what a stabilised building is worth per $ of NOI
@@ -25,11 +26,13 @@ export function createState(city, seed = 11) {
     player: {
       id: 'player', name: 'You', color: 0x4ade80,
       cash: START_CASH, debt: 0, gsfBuilt: 0, isPlayer: true, history: [],
+      regions: new Set(['manhattan']),
     },
   };
   for (const r of RIVALS) {
     actors[r.id] = {
       ...r, cash: START_CASH, debt: 0, gsfBuilt: 0, isPlayer: false,
+      regions: new Set(['manhattan']),
       patience: r.strategy === 'institution' ? 3 : r.strategy === 'cowboy' ? 0 : 1,
       ltc: r.strategy === 'cowboy' ? 0.65 : r.strategy === 'institution' ? 0.3 : 0.5,
       cooldown: 0,
@@ -44,6 +47,7 @@ export function createState(city, seed = 11) {
     cycle: 1.0,          // market multiplier on rents and land
     cyclePhase: rnd() * Math.PI * 2,
     projects: [],
+    fills: [],
     log: [],
     news: [],
     mood: 'steady',
@@ -110,7 +114,25 @@ export function premiums(state, lot) {
 }
 
 export function landValue(state, lot) {
-  return lot.landPerSf * buildableSf(lot) * premiums(state, lot).total * state.cycle;
+  // A lot whose rights have been transferred is still land, just not a site.
+  const rights = buildableSf(lot);
+  const priced = rights > 0 ? rights : lot.areaSf * 0.6;
+  return lot.landPerSf * priced * premiums(state, lot).total * state.cycle;
+}
+
+/**
+ * Unused entitlement sitting on the rest of a block you already own. Moving it
+ * onto one lot costs paperwork, not money — which is exactly why assembling a
+ * whole block is worth doing.
+ */
+export function blockSpareSf(lot, actorId) {
+  if (!ownsWholeBlock(lot, actorId)) return 0;
+  let spare = 0;
+  for (const other of lot.block.lots) {
+    if (other === lot || other.airSpent) continue;
+    spare += Math.max(0, buildableSf(other) - (other.building ? other.building.gsf : 0));
+  }
+  return spare;
 }
 
 export function askPrice(state, lot) {
@@ -168,6 +190,21 @@ export function buildingValue(state, lot) {
   return buildingNOI(state, lot) / CAP_RATE;
 }
 
+/** Storeys above which a finished building is part of the skyline for good. */
+export const LANDMARK_FLOORS = 50;
+
+/**
+ * You can trade a tower, but you cannot simply erase one. Anything this tall
+ * is somebody's address, and knocking it down to rebuild slightly bigger is
+ * not a move the city allows.
+ */
+export function demolitionBlock(lot) {
+  const b = lot.building;
+  if (!b || b.floors < LANDMARK_FLOORS) return null;
+  return `${lot.name || lot.address} is ${b.floors} storeys. Nothing over `
+       + `${LANDMARK_FLOORS} comes down — it can change hands, but not be cleared.`;
+}
+
 export const DEFAULT_DESIGN = { style: 'masonry', form: 'stepped', variant: 1 };
 
 export function designMul(design = DEFAULT_DESIGN) {
@@ -182,8 +219,11 @@ export function quote(state, lot, floors, use, ltc, design = DEFAULT_DESIGN, own
   const land = lot.owner === owner ? 0 : askPrice(state, lot);
   // Floor area beyond your entitlement has to be bought from the neighbours,
   // and they know exactly why you want it.
-  const airRate = landValue(state, lot) / Math.max(1, buildableSf(lot));
-  const air = (m.airSf || 0) * airRate * 1.45;
+  const airRate = landValue(state, lot) / Math.max(1, buildableSf(lot) || lot.areaSf * lot.far);
+  const spare = blockSpareSf(lot, owner);
+  const freeAir = Math.min(m.airSf || 0, spare);         // moved from your own block
+  const paidAir = (m.airSf || 0) - freeAir;              // bought from the neighbours
+  const air = paidAir * airRate * 1.45;
   const hard = m.gsf * costPerSf(lot, use, floors) * dm.cost;
   const soft = hard * 0.14;
   const total = land + air + hard + soft;
@@ -193,7 +233,7 @@ export function quote(state, lot, floors, use, ltc, design = DEFAULT_DESIGN, own
   const noi = gross * occupancyFor(state, lot) * (1 - USES[use].opex);
   const debtService = loan * INTEREST;
   const months = Math.round(8 + floors * 0.42 + Math.pow(floors / 34, 2));
-  return { ...m, land, air, hard, soft, total, loan, equity, gross, noi,
+  return { ...m, land, air, freeAir, paidAir, spare, hard, soft, total, loan, equity, gross, noi,
            debtService, cashflow: noi - debtService,
            yieldOnCost: noi / Math.max(total, 1), value: noi / CAP_RATE, months };
 }
@@ -218,6 +258,83 @@ export function leaderboard(state) {
     .sort((x, y) => y.worth - x.worth);
 }
 
+// ---------------------------------------------------------- where you may work
+
+/**
+ * The outer boroughs need a balance sheet Manhattan alone doesn't. Until a
+ * developer is worth a billion, the river is a wall.
+ */
+export function canWorkIn(state, actorId, region) {
+  const a = state.actors[actorId];
+  return !!a && a.regions.has(region);
+}
+
+export function regionGate(state, actorId, lot) {
+  if (canWorkIn(state, actorId, lot.region)) return null;
+  const need = REGIONS[lot.region].unlockAt;
+  const have = netWorth(state, actorId);
+  return `${REGIONS[lot.region].name} opens at ${money(need)} net worth — you're at ${money(have)}.`;
+}
+
+/** Crossing a billion opens the rest of the city. */
+function checkUnlocks(state) {
+  for (const id in state.actors) {
+    const a = state.actors[id];
+    if (a.regions.size > 1) continue;
+    if (netWorth(state, id) < REGIONS.brooklyn.unlockAt) continue;
+    a.regions.add('brooklyn');
+    a.regions.add('queens');
+    if (a.isPlayer) {
+      logEvent(state, id, '— crossed $1B; Brooklyn and Queens are open');
+      pushNews(state, 'unlock', 'THE RIVER IS NO LONGER A WALL',
+        `With a balance sheet past ${money(REGIONS.brooklyn.unlockAt)}, you can now buy and build `
+        + `across the East River. Brooklyn Heights and Long Island City are cheap, under-built and `
+        + `closer to Midtown than anything left on the island.`);
+    } else {
+      logEvent(state, id, '— crossed $1B and is looking at the boroughs');
+    }
+  }
+}
+
+// ------------------------------------------------------------- making land
+
+export const RECLAIM_BASE = 260_000_000;
+
+/** Less shoreline to build off means more fill, more cofferdam, more money. */
+export function reclaimCost(state, col, row) {
+  const contact = shoreContact(state.city, col, row);
+  return RECLAIM_BASE * (1 + (4 - contact) * 0.42) * state.cycle;
+}
+
+export function canReclaimHere(state, actorId, col, row) {
+  const a = state.actors[actorId];
+  if (!a) return 'Unknown developer.';
+  if (a.regions.size < 2) {
+    return `Reclamation starts at ${money(REGIONS.brooklyn.unlockAt)} net worth — `
+         + `you're at ${money(netWorth(state, actorId))}.`;
+  }
+  if (!canReclaim(state.city, col, row)) return 'Nothing to build off here — pick water beside the shore.';
+  if (state.fills.some((f) => f.col === col && f.row === row)) return 'Already being filled.';
+  return null;
+}
+
+/** Buy the water. Two years of barges later, it is land, and it is yours. */
+export function startReclaim(state, col, row, actorId) {
+  const why = canReclaimHere(state, actorId, col, row);
+  if (why) return { ok: false, why };
+  const a = state.actors[actorId];
+  const cost = reclaimCost(state, col, row);
+  if (a.cash < cost) return { ok: false, why: `Filling this costs ${money(cost)}.` };
+  a.cash -= cost;
+  const fill = { col, row, owner: actorId, cost, startDay: state.day, endDay: state.day + 24 * 30 };
+  state.fills.push(fill);
+  logEvent(state, actorId, `began filling the water at ${col},${row} (${money(cost)})`);
+  pushNews(state, 'reclaim', 'BARGES MOVE IN: NEW LAND PLANNED OFF THE SHORE',
+    `${a.name} has committed ${money(cost)} to filling open water and zoning it for development. `
+    + `Two years of rock and fill, and there will be four new lots where there is currently a river.`);
+  return { ok: true, fill, cost };
+}
+
 // ---------------------------------------------------------------- actions
 
 export function buyLot(state, lot, actorId) {
@@ -225,6 +342,8 @@ export function buyLot(state, lot, actorId) {
   const price = askPrice(state, lot);
   if (lot.owner === actorId) return { ok: false, why: 'You already own this lot.' };
   if (lot.owner && lot.owner !== 'npc') return { ok: false, why: 'Not for sale — a rival owns it.' };
+  const gate = regionGate(state, actorId, lot);
+  if (gate) return { ok: false, why: gate };
   if (a.cash < price) return { ok: false, why: 'Not enough cash.' };
   a.cash -= price;
   lot.owner = actorId;
@@ -237,8 +356,25 @@ export function startProject(state, lot, actorId, floors, use, ltc, design = DEF
   const a = state.actors[actorId];
   if (lot.owner !== actorId) return { ok: false, why: 'You do not own this lot.' };
   if (lot.project) return { ok: false, why: 'Already under construction.' };
+  const gate = regionGate(state, actorId, lot);
+  if (gate) return { ok: false, why: gate };
+  const standing = demolitionBlock(lot);
+  if (standing) return { ok: false, why: standing };
   const q = quote(state, lot, floors, use, ltc, design, actorId);
   if (a.cash < q.equity) return { ok: false, why: `Need ${money(q.equity)} equity.` };
+
+  // Rights moved off the rest of the block are gone for good.
+  let toConsume = q.freeAir;
+  if (toConsume > 0) {
+    for (const other of lot.block.lots) {
+      if (toConsume <= 0) break;
+      if (other === lot || other.airSpent) continue;
+      const avail = Math.max(0, buildableSf(other) - (other.building ? other.building.gsf : 0));
+      if (avail <= 0) continue;
+      other.airSpent = true;
+      toConsume -= avail;
+    }
+  }
 
   a.cash -= q.equity;
   a.debt += q.loan;
@@ -295,6 +431,8 @@ export function makeOffer(state, lot, actorId, amount) {
   const a = state.actors[actorId];
   if (lot.owner === actorId) return { ok: false, why: 'You already own this.' };
   if (lot.project) return { ok: false, why: 'Not while it is under construction.' };
+  const gate = regionGate(state, actorId, lot);
+  if (gate) return { ok: false, why: gate };
   if (lot.offerBlockedUntil && state.day < lot.offerBlockedUntil) {
     const days = Math.ceil(lot.offerBlockedUntil - state.day);
     return { ok: false, why: `They won't revisit it for another ${days} days.` };
@@ -468,6 +606,24 @@ function dayTick(state) {
     }
   }
 
+  // Finished landfill becomes real ground.
+  for (let i = state.fills.length - 1; i >= 0; i--) {
+    const f = state.fills[i];
+    if (state.day < f.endDay) continue;
+    const made = state.city.addLandCell(f.col, f.row, f.owner);
+    state.fills.splice(i, 1);
+    state._dirtyTerrain = true;
+    state._dirtyGeometry = true;
+    if (made.length) {
+      logEvent(state, f.owner, `finished ${made.length} new lots on reclaimed land`);
+      pushNews(state, 'reclaim', 'THE SHORELINE MOVES',
+        `${state.actors[f.owner].name} has made ${made.length} lots of new ground where there was `
+        + `water. Zoned FAR ${made[0].far} and waterfront on three sides, it is the best-positioned `
+        + `land to come onto the market in years — and it belongs to whoever paid for the fill.`,
+        made[0]);
+    }
+  }
+
   if (d.getUTCDate() === 1 && state.monthOfLastTick !== d.getUTCMonth()) {
     state.monthOfLastTick = d.getUTCMonth();
     monthTick(state);
@@ -493,6 +649,7 @@ function monthTick(state) {
     a.lastNOI = noi;
   }
 
+  checkUnlocks(state);
   for (const r of RIVALS) rivalTurn(state, state.actors[r.id]);
   marketStory(state);
 }
@@ -644,21 +801,35 @@ function rivalTurn(state, a) {
   }
 
   const wants = {
-    institution: (l) => (l.district === 'core' ? 3 : l.district === 'mid' ? 2 : 0.3),
+    institution: (l) => (l.tier === 'core' ? 3 : l.tier === 'mid' ? 2 : 0.3),
     cowboy:      (l) => 1 + (l._intensity ?? 0.3) * 2,
-    grinder:     (l) => (l.district === 'edge' || l.district === 'res' ? 2.5 : 0.5),
+    // The grinder is the one who actually wants the boroughs.
+    grinder:     (l) => (l.region !== 'manhattan' ? 3 : l.tier === 'edge' || l.tier === 'res' ? 2.5 : 0.5),
   }[a.strategy];
 
   let best = null, bestScore = -Infinity;
   for (const lot of state.city.lots) {
     if (lot.owner === a.id || lot.project) continue;
     if (lot.owner && lot.owner !== 'npc') continue;
+    if (!a.regions.has(lot.region)) continue;
+    if (demolitionBlock(lot)) continue;
     const floors = pickFloors(lot, a.strategy);
     const q = quote(state, lot, floors, a.strategy === 'grinder' ? 'residential' : 'office',
                     a.ltc, rivalDesign(a, lot, floors), a.id);
     if (q.equity > a.cash * 0.6) continue;
     const score = q.yieldOnCost * 100 * wants(lot) - (a.strategy === 'institution' ? q.equity / 9e7 : 0);
     if (score > bestScore) { bestScore = score; best = { lot, floors, q }; }
+  }
+
+  // A rival past a billion will occasionally just make more city.
+  if (a.regions.size > 1 && a.cash > 900e6 && state.rnd() < 0.05) {
+    const city = state.city;
+    for (let row = 0; row < CONFIG.ROWS; row++) {
+      for (let col = 0; col < CONFIG.COLS; col++) {
+        if (!canReclaim(city, col, row)) continue;
+        if (startReclaim(state, col, row, a.id).ok) { a.cooldown = 3; return; }
+      }
+    }
   }
 
   const threshold = { institution: 8.5, cowboy: 6, grinder: 9 }[a.strategy];
