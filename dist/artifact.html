@@ -1,3 +1,5 @@
+<title>Air Rights</title>
+<style>
 :root {
   --bg: #0e1116;
   --panel: rgba(16, 20, 27, 0.93);
@@ -163,3 +165,101 @@ button.big { margin-top: 20px; padding: 12px 26px; font-size: 14px; flex: none; 
   #touch-warning h2 { font-size: 22px; letter-spacing: .14em; margin: 0 0 10px; }
   #touch-warning p { color: var(--dim); font-size: 13px; line-height: 1.6; }
 }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+
+<canvas id="view"></canvas>
+
+<div id="hud">
+  <div id="topbar">
+    <div class="stat"><label>Date</label><b id="s-date">—</b></div>
+    <div class="stat"><label>Cash</label><b id="s-cash" class="good">—</b></div>
+    <div class="stat"><label>Net worth</label><b id="s-worth">—</b></div>
+    <div class="stat"><label>Debt</label><b id="s-debt" class="bad">—</b></div>
+    <div class="stat"><label>Built</label><b id="s-gsf">—</b></div>
+    <div class="stat"><label>Market</label><b id="s-cycle">—</b></div>
+    <div id="speeds">
+      <button data-speed="0" class="sp">❚❚</button>
+      <button data-speed="1" class="sp on">1×</button>
+      <button data-speed="2" class="sp">10×</button>
+      <button data-speed="3" class="sp">60×</button>
+      <button data-speed="4" class="sp">300×</button>
+    </div>
+  </div>
+
+  <div id="board-panel" class="panel hidden">
+    <h3>Standings</h3>
+    <ol id="leaderboard"></ol>
+    <h3>The wire</h3>
+    <ul id="log"></ul>
+  </div>
+
+  <div id="lot-panel" class="panel hidden">
+    <button id="lot-close">×</button>
+    <h3 id="lot-title">Lot</h3>
+    <div id="lot-meta" class="meta"></div>
+    <div id="lot-rows"></div>
+    <div id="lot-actions"></div>
+  </div>
+
+  <div id="build-panel" class="panel hidden">
+    <button id="build-close">×</button>
+    <h3>Massing</h3>
+    <div class="meta" id="build-lot"></div>
+    <label class="ctl">Storeys <output id="o-floors"></output>
+      <input type="range" id="i-floors" min="1" max="90" value="10"></label>
+    <label class="ctl">Use
+      <select id="i-use">
+        <option value="office">Office</option>
+        <option value="residential">Residential</option>
+        <option value="mixed">Mixed-use</option>
+      </select></label>
+    <label class="ctl">Leverage <output id="o-ltc"></output>
+      <input type="range" id="i-ltc" min="0" max="65" value="55"></label>
+    <table id="build-figures"></table>
+    <div class="row">
+      <button id="do-build" class="primary">Break ground</button>
+    </div>
+    <p class="hint">Taller than the minimum doesn't add floor area — FAR caps that — but a slimmer tower rents for more per square foot and costs more to build.</p>
+  </div>
+
+  <div id="crosshair"></div>
+  <div id="prompt"></div>
+  <div id="toast"></div>
+  <div id="modehint">TAB — rise to the board</div>
+</div>
+
+<div id="touch-warning">
+  <div>
+    <h2>AIR RIGHTS</h2>
+    <p>This one needs a keyboard and a mouse — you walk the city with <b>WASD</b>, look with the mouse, and rise to the management board with <b>Tab</b>.</p>
+    <p>Open it on a desktop or laptop to play.</p>
+  </div>
+</div>
+
+<div id="start">
+  <div class="card">
+    <h1>AIR RIGHTS</h1>
+    <p class="sub">You have <b>$100,000,000</b> and a city that is under-built. Three rivals have the same idea. Biggest net worth wins.</p>
+    <div class="cols">
+      <div>
+        <h4>On the street</h4>
+        <p><kbd>W A S D</kbd> walk · <kbd>Shift</kbd> run · <kbd>Mouse</kbd> look</p>
+        <p><kbd>V</kbd> raise the Vision on the lot you're standing on</p>
+        <p><kbd>E</kbd> enter / leave your car · <kbd>F</kbd> first person</p>
+      </div>
+      <div>
+        <h4>On the board</h4>
+        <p><kbd>Tab</kbd> rise up and drop back down</p>
+        <p><kbd>Click</kbd> a lot to inspect · <kbd>Right-drag</kbd> orbit · <kbd>Scroll</kbd> zoom</p>
+        <p><kbd>1–4</kbd> speed up time · <kbd>Space</kbd> pause</p>
+      </div>
+    </div>
+    <p class="sub small">Buy land. Build on it. Rent pays you monthly and development pulls up the value of everything around it — including your rivals' land. The market runs in cycles; leverage is how you go fast and how you die.</p>
+    <button id="begin" class="primary big">Break ground</button>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>

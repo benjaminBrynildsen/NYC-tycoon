@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { generateCity, CONFIG, minFloors } from './world.js';
 import { createState, advance, netWorth, leaderboard, money, logEvent } from './economy.js';
 import { CityScene } from './scene.js';
-import { Controls, MODE } from './controls.js';
+import { Controls, MODE, requestLock } from './controls.js';
 import { UI } from './ui.js';
 
 // Game minutes that pass per real second, by speed setting.
@@ -141,7 +141,7 @@ controls.toggleBoard = () => {
 
 document.getElementById('begin').onclick = () => {
   document.getElementById('start').remove();
-  canvas.requestPointerLock();
+  requestLock(canvas);
   ui.toast('You own one building. Find something under-built and take it.');
 };
 

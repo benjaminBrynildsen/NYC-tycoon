@@ -6,6 +6,14 @@ import { CONFIG, lotAt } from './world.js';
 
 export const MODE = { STREET: 'street', CAR: 'car', BOARD: 'board' };
 
+/** Pointer lock is optional — some embedded views refuse it. Never let that throw. */
+export function requestLock(el) {
+  try {
+    const r = el.requestPointerLock();
+    if (r && typeof r.catch === 'function') r.catch(() => {});
+  } catch { /* drag-to-look takes over */ }
+}
+
 const TRANSITION = 1.1;   // seconds, each way
 
 export class Controls {
@@ -45,7 +53,7 @@ export class Controls {
     addEventListener('blur', () => this.keys.clear());
 
     this.canvas.addEventListener('click', () => {
-      if (this.mode !== MODE.BOARD && !this.locked) this.canvas.requestPointerLock();
+      if (this.mode !== MODE.BOARD && !this.locked) requestLock(this.canvas);
     });
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === this.canvas;
@@ -58,15 +66,16 @@ export class Controls {
         }
         return;
       }
-      if (!this.locked) return;
+      if (!this.locked && !this.lookDrag) return;
       this.yaw -= e.movementX * 0.0022;
       this.pitch = Math.max(-1.2, Math.min(1.1, this.pitch - e.movementY * 0.0022));
     });
 
     this.canvas.addEventListener('mousedown', (e) => {
       if (this.mode === MODE.BOARD && e.button === 2) this.dragging = true;
+      if (this.mode !== MODE.BOARD && e.button === 0 && !this.locked) this.lookDrag = true;
     });
-    addEventListener('mouseup', () => { this.dragging = false; });
+    addEventListener('mouseup', () => { this.dragging = false; this.lookDrag = false; });
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     this.canvas.addEventListener('wheel', (e) => {
       if (this.mode !== MODE.BOARD) return;
