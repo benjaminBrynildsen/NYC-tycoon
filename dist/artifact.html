@@ -758,7 +758,7 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
 
 <script type="module">
 // src/main.js
-import * as THREE6 from "three";
+import * as THREE7 from "three";
 
 // src/world.js
 var CONFIG = {
@@ -2198,7 +2198,7 @@ function pickFloors(lot, strategy, state2) {
 }
 
 // src/scene.js
-import * as THREE3 from "three";
+import * as THREE4 from "three";
 
 // src/architecture.js
 import * as THREE from "three";
@@ -2562,16 +2562,68 @@ function roofPropGeometries() {
   };
 }
 
-// src/models.js
+// src/post.js
 import * as THREE2 from "three";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+var Post = class {
+  constructor(renderer, scene2, camera, quality) {
+    this.renderer = renderer;
+    this.q = quality;
+    const size = renderer.getSize(new THREE2.Vector2());
+    const dpr = renderer.getPixelRatio();
+    const target = new THREE2.WebGLRenderTarget(size.width * dpr, size.height * dpr, {
+      type: THREE2.HalfFloatType,
+      samples: quality.msaa || 0
+    });
+    this.composer = new EffectComposer(renderer, target);
+    this.composer.addPass(new RenderPass(scene2, camera));
+    this.bloom = new UnrealBloomPass(new THREE2.Vector2(size.width, size.height), 0.5, 0.62, 1);
+    const scale = quality.bloomScale ?? 1;
+    if (scale !== 1) {
+      const base = this.bloom.setSize.bind(this.bloom);
+      this.bloom.setSize = (w, h) => base(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)));
+    }
+    this.composer.addPass(this.bloom);
+    this.composer.addPass(new OutputPass());
+    this.setNight(0);
+  }
+  /**
+   * 0 is noon, 1 is the middle of the night. By day the threshold sits above
+   * white so only a hot specular highlight blooms; after dark it drops under
+   * the lit windows and the whole grid starts to glow.
+   */
+  setNight(n) {
+    const k = Math.max(0, Math.min(1, n));
+    this.bloom.threshold = 1.05 - k * 0.25;
+    this.bloom.strength = 0.1 + k * 0.22;
+    this.bloom.radius = 0.42 + k * 0.06;
+  }
+  setSize(w, h) {
+    this.composer.setSize(w, h);
+  }
+  render() {
+    this.composer.render();
+  }
+  dispose() {
+    this.composer.renderTarget1.dispose();
+    this.composer.renderTarget2.dispose();
+    this.bloom.dispose?.();
+  }
+};
+
+// src/models.js
+import * as THREE3 from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 function box(w, h, d, x = 0, y = 0, z = 0) {
-  const g = new THREE2.BoxGeometry(w, h, d);
+  const g = new THREE3.BoxGeometry(w, h, d);
   g.translate(x, y, z);
   return g;
 }
 function cyl(rt, rb, h, seg, x = 0, y = 0, z = 0, rotZ = 0) {
-  const g = new THREE2.CylinderGeometry(rt, rb, h, seg);
+  const g = new THREE3.CylinderGeometry(rt, rb, h, seg);
   if (rotZ) g.rotateZ(rotZ);
   g.translate(x, y, z);
   return g;
@@ -2737,7 +2789,7 @@ function personParts() {
     // shoulders
   ]);
   const head = merge([
-    new THREE2.SphereGeometry(0.115, 8, 6),
+    new THREE3.SphereGeometry(0.115, 8, 6),
     box(0.2, 0.08, 0.22, 0, -0.14, 0)
     // collar
   ]);
@@ -2763,14 +2815,14 @@ var COAT_COLORS = [
 ];
 var SKIN_TONES = [1578e4, 14263674, 11893843, 9263674, 6504491, 16112061];
 function airshipParts() {
-  const hull = new THREE2.SphereGeometry(10, 18, 12);
+  const hull = new THREE3.SphereGeometry(10, 18, 12);
   hull.scale(1, 1, 4.4);
-  const nose = new THREE2.ConeGeometry(4.2, 9, 12);
+  const nose = new THREE3.ConeGeometry(4.2, 9, 12);
   nose.rotateX(Math.PI / 2);
   nose.translate(0, 0, 47);
   const fins = [];
   for (const rot of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
-    const f = new THREE2.BoxGeometry(1.1, 13, 12);
+    const f = new THREE3.BoxGeometry(1.1, 13, 12);
     f.translate(0, 10, -36);
     f.rotateZ(rot);
     fins.push(f);
@@ -2797,13 +2849,13 @@ function streetProps() {
     lampHead: merge([box(0.7, 0.2, 0.34, 1.3, 7.2, 0)]),
     hydrant: merge([
       cyl(0.16, 0.19, 0.72, 8, 0, 0.36, 0),
-      new THREE2.SphereGeometry(0.17, 8, 6).translate(0, 0.76, 0),
+      new THREE3.SphereGeometry(0.17, 8, 6).translate(0, 0.76, 0),
       box(0.52, 0.12, 0.14, 0, 0.5, 0)
     ]),
     trash: merge([
-      new THREE2.SphereGeometry(0.34, 6, 5).translate(0, 0.3, 0),
-      new THREE2.SphereGeometry(0.28, 6, 5).translate(0.42, 0.25, 0.2),
-      new THREE2.SphereGeometry(0.25, 6, 5).translate(-0.3, 0.22, 0.3)
+      new THREE3.SphereGeometry(0.34, 6, 5).translate(0, 0.3, 0),
+      new THREE3.SphereGeometry(0.28, 6, 5).translate(0.42, 0.25, 0.2),
+      new THREE3.SphereGeometry(0.25, 6, 5).translate(-0.3, 0.22, 0.3)
     ]),
     trafficLight: merge([
       cyl(0.09, 0.11, 6.2, 6, 0, 3.1, 0),
@@ -2821,11 +2873,11 @@ function streetProps() {
 // src/scene.js
 var OWNER_TINT = { player: 4906624, r1: 13919818, r2: 14725953, r3: 7317703 };
 var MODEL_MIX = ["sedan", "sedan", "taxi", "suv", "sedan", "van", "sports", "boxtruck", "suv", "taxi"];
-var tmpM = new THREE3.Matrix4();
-var tmpQ = new THREE3.Quaternion();
-var tmpV = new THREE3.Vector3();
-var tmpS = new THREE3.Vector3(1, 1, 1);
-var UP = new THREE3.Vector3(0, 1, 0);
+var tmpM = new THREE4.Matrix4();
+var tmpQ = new THREE4.Quaternion();
+var tmpV = new THREE4.Vector3();
+var tmpS = new THREE4.Vector3(1, 1, 1);
+var UP = new THREE4.Vector3(0, 1, 0);
 function textTexture(text, {
   size = 64,
   color = "#ffffff",
@@ -2850,8 +2902,8 @@ function textTexture(text, {
   g.strokeText(label, c.width / 2, c.height / 2);
   g.fillStyle = color;
   g.fillText(label, c.width / 2, c.height / 2);
-  const t = new THREE3.CanvasTexture(c);
-  t.colorSpace = THREE3.SRGBColorSpace;
+  const t = new THREE4.CanvasTexture(c);
+  t.colorSpace = THREE4.SRGBColorSpace;
   t.anisotropy = 8;
   return { texture: t, aspect: c.width / c.height };
 }
@@ -2861,8 +2913,28 @@ function freeze(o) {
   return o;
 }
 var QUALITY = {
-  high: { peds: 430, cars: 110, clouds: 46, shadows: true, dpr: 1.75, shadowMap: 2048 },
-  low: { peds: 120, cars: 38, clouds: 20, shadows: false, dpr: 1.2, shadowMap: 1024 }
+  high: {
+    peds: 430,
+    cars: 110,
+    clouds: 46,
+    shadows: true,
+    dpr: 1.75,
+    shadowMap: 2048,
+    bloom: true,
+    bloomScale: 1,
+    msaa: 4
+  },
+  low: {
+    peds: 120,
+    cars: 38,
+    clouds: 20,
+    shadows: false,
+    dpr: 1.2,
+    shadowMap: 1024,
+    bloom: true,
+    bloomScale: 0.5,
+    msaa: 0
+  }
 };
 var CityScene = class {
   constructor(state2, canvas2, quality = QUALITY.high) {
@@ -2870,21 +2942,21 @@ var CityScene = class {
     this.city = state2.city;
     this.matCache = /* @__PURE__ */ new Map();
     this.q = quality;
-    this.renderer = new THREE3.WebGLRenderer({
+    this.renderer = new THREE4.WebGLRenderer({
       canvas: canvas2,
       antialias: quality.shadows,
       powerPreference: "high-performance"
     });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, quality.dpr));
     this.renderer.shadowMap.enabled = quality.shadows;
-    this.renderer.shadowMap.type = THREE3.PCFSoftShadowMap;
-    this.renderer.toneMapping = THREE3.ACESFilmicToneMapping;
+    this.renderer.shadowMap.type = THREE4.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE4.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.18;
-    this.scene = new THREE3.Scene();
-    this.camera = new THREE3.PerspectiveCamera(62, 1, 0.4, 6e3);
+    this.scene = new THREE4.Scene();
+    this.camera = new THREE4.PerspectiveCamera(62, 1, 0.4, 6e3);
     this.collisionGrid = /* @__PURE__ */ new Map();
     this.clock = 0;
-    this.terrain = new THREE3.Group();
+    this.terrain = new THREE4.Group();
     this._lights();
     this._sky();
     this._water();
@@ -2902,12 +2974,13 @@ var CityScene = class {
     this._avatar();
     this._playerCar();
     this.rebuildCollision();
+    if (quality.bloom) this.post = new Post(this.renderer, this.scene, this.camera, quality);
   }
   // ------------------------------------------------------------------ light
   _lights() {
-    this.hemi = new THREE3.HemisphereLight(12375295, 3156255, 1);
+    this.hemi = new THREE4.HemisphereLight(12375295, 3156255, 1);
     this.scene.add(this.hemi);
-    this.sun = new THREE3.DirectionalLight(16773341, 2.4);
+    this.sun = new THREE4.DirectionalLight(16773341, 2.4);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(this.q.shadowMap, this.q.shadowMap);
     const s = this.sun.shadow.camera;
@@ -2920,19 +2993,19 @@ var CityScene = class {
     this.sun.shadow.bias = -9e-4;
     this.sun.shadow.normalBias = 0.5;
     this.scene.add(this.sun, this.sun.target);
-    this.scene.fog = new THREE3.FogExp2(10466252, 4e-4);
+    this.scene.fog = new THREE4.FogExp2(10466252, 4e-4);
   }
   _sky() {
     this.skyUniforms = {
-      uTop: { value: new THREE3.Color(4158656) },
-      uMid: { value: new THREE3.Color(10466252) },
-      uBot: { value: new THREE3.Color(14140584) },
-      uSun: { value: new THREE3.Vector3(0.4, 0.5, 0.3) },
-      uSunColor: { value: new THREE3.Color(16767392) }
+      uTop: { value: new THREE4.Color(4158656) },
+      uMid: { value: new THREE4.Color(10466252) },
+      uBot: { value: new THREE4.Color(14140584) },
+      uSun: { value: new THREE4.Vector3(0.4, 0.5, 0.3) },
+      uSunColor: { value: new THREE4.Color(16767392) }
     };
-    const mat = new THREE3.ShaderMaterial({
+    const mat = new THREE4.ShaderMaterial({
       uniforms: this.skyUniforms,
-      side: THREE3.BackSide,
+      side: THREE4.BackSide,
       depthWrite: false,
       fog: false,
       vertexShader: `
@@ -2953,7 +3026,7 @@ var CityScene = class {
           gl_FragColor = vec4(c, 1.0);
         }`
     });
-    this.sky = new THREE3.Mesh(new THREE3.SphereGeometry(3200, 24, 16), mat);
+    this.sky = new THREE4.Mesh(new THREE4.SphereGeometry(3200, 24, 16), mat);
     this.sky.frustumCulled = false;
     this.scene.add(this.sky);
   }
@@ -2973,17 +3046,17 @@ var CityScene = class {
       }
     }
     g.putImageData(img, 0, 0);
-    this.waterNormal = new THREE3.CanvasTexture(c);
-    this.waterNormal.wrapS = this.waterNormal.wrapT = THREE3.RepeatWrapping;
+    this.waterNormal = new THREE4.CanvasTexture(c);
+    this.waterNormal.wrapS = this.waterNormal.wrapT = THREE4.RepeatWrapping;
     this.waterNormal.repeat.set(90, 90);
-    const mat = new THREE3.MeshStandardMaterial({
+    const mat = new THREE4.MeshStandardMaterial({
       color: 1915725,
       roughness: 0.16,
       metalness: 0.55,
       normalMap: this.waterNormal,
-      normalScale: new THREE3.Vector2(0.55, 0.55)
+      normalScale: new THREE4.Vector2(0.55, 0.55)
     });
-    const plane = new THREE3.Mesh(new THREE3.PlaneGeometry(11e3, 11e3), mat);
+    const plane = new THREE4.Mesh(new THREE4.PlaneGeometry(11e3, 11e3), mat);
     plane.rotation.x = -Math.PI / 2;
     plane.position.set(0, -0.6, 0);
     this.scene.add(freeze(plane));
@@ -2992,9 +3065,9 @@ var CityScene = class {
   _ground() {
     const { BLOCK, PITCH } = CONFIG;
     const cells = [...this.city.land.keys()].map((k) => k.split(",").map(Number));
-    const roadMat = new THREE3.MeshStandardMaterial({ color: 3356219, roughness: 0.97 });
-    const roads = new THREE3.InstancedMesh(
-      new THREE3.BoxGeometry(PITCH + 0.4, 0.5, PITCH + 0.4),
+    const roadMat = new THREE4.MeshStandardMaterial({ color: 3356219, roughness: 0.97 });
+    const roads = new THREE4.InstancedMesh(
+      new THREE4.BoxGeometry(PITCH + 0.4, 0.5, PITCH + 0.4),
       roadMat,
       cells.length
     );
@@ -3005,15 +3078,15 @@ var CityScene = class {
       roads.setMatrixAt(i, tmpM);
     });
     this.terrain.add(roads);
-    const walkMat = new THREE3.MeshStandardMaterial({ color: 9671567, roughness: 0.93 });
-    const curbMat = new THREE3.MeshStandardMaterial({ color: 7303283, roughness: 0.9 });
-    const parkMat = new THREE3.MeshStandardMaterial({ color: 4679994, roughness: 1 });
-    const pathMat = new THREE3.MeshStandardMaterial({ color: 10194807, roughness: 1 });
-    const walkGeo = new THREE3.BoxGeometry(BLOCK + 6, 0.36, BLOCK + 6);
-    const curbGeo = new THREE3.BoxGeometry(BLOCK + 8, 0.2, BLOCK + 8);
+    const walkMat = new THREE4.MeshStandardMaterial({ color: 9671567, roughness: 0.93 });
+    const curbMat = new THREE4.MeshStandardMaterial({ color: 7303283, roughness: 0.9 });
+    const parkMat = new THREE4.MeshStandardMaterial({ color: 4679994, roughness: 1 });
+    const pathMat = new THREE4.MeshStandardMaterial({ color: 10194807, roughness: 1 });
+    const walkGeo = new THREE4.BoxGeometry(BLOCK + 6, 0.36, BLOCK + 6);
+    const curbGeo = new THREE4.BoxGeometry(BLOCK + 8, 0.2, BLOCK + 8);
     const normals = this.city.blocks.filter((b) => !b.isPark);
-    const curbs = new THREE3.InstancedMesh(curbGeo, curbMat, this.city.blocks.length);
-    const walks = new THREE3.InstancedMesh(walkGeo, walkMat, normals.length);
+    const curbs = new THREE4.InstancedMesh(curbGeo, curbMat, this.city.blocks.length);
+    const walks = new THREE4.InstancedMesh(walkGeo, walkMat, normals.length);
     curbs.receiveShadow = walks.receiveShadow = true;
     let wi = 0, ci = 0;
     for (const b of this.city.blocks) {
@@ -3055,13 +3128,13 @@ var CityScene = class {
     }
     const place = (w, h, color, list, y) => {
       if (!list.length) return;
-      const im = new THREE3.InstancedMesh(
-        new THREE3.PlaneGeometry(w, h),
-        new THREE3.MeshBasicMaterial({ color }),
+      const im = new THREE4.InstancedMesh(
+        new THREE4.PlaneGeometry(w, h),
+        new THREE4.MeshBasicMaterial({ color }),
         list.length
       );
       list.forEach(([x, z, axis], i) => {
-        tmpQ.setFromEuler(new THREE3.Euler(-Math.PI / 2, 0, axis === "ns" ? 0 : Math.PI / 2));
+        tmpQ.setFromEuler(new THREE4.Euler(-Math.PI / 2, 0, axis === "ns" ? 0 : Math.PI / 2));
         tmpM.compose(tmpV.set(x, y, z), tmpQ, tmpS);
         im.setMatrixAt(i, tmpM);
       });
@@ -3074,41 +3147,41 @@ var CityScene = class {
   /** Two crossings to the boroughs. They read from the board and from the water. */
   _bridges() {
     const { PITCH } = CONFIG;
-    const steel = new THREE3.MeshStandardMaterial({ color: 8225416, roughness: 0.6, metalness: 0.45 });
-    const cableMat = new THREE3.LineBasicMaterial({ color: 10923444 });
-    const deckMat = new THREE3.MeshStandardMaterial({ color: 4869716, roughness: 0.9 });
+    const steel = new THREE4.MeshStandardMaterial({ color: 8225416, roughness: 0.6, metalness: 0.45 });
+    const cableMat = new THREE4.LineBasicMaterial({ color: 10923444 });
+    const deckMat = new THREE4.MeshStandardMaterial({ color: 4869716, roughness: 0.9 });
     const DECK_Y = 26, TOWER_H = 62;
     for (const [fromCol, toCol, row] of [[6, 8, 3], [6, 8, 11]]) {
       const a = cellCenter(fromCol, row), b = cellCenter(toCol, row);
       const x0 = a.x + PITCH / 2, x1 = b.x - PITCH / 2;
       const span = x1 - x0, z = a.z;
-      const deck = new THREE3.Mesh(new THREE3.BoxGeometry(span, 1.6, 13), deckMat);
+      const deck = new THREE4.Mesh(new THREE4.BoxGeometry(span, 1.6, 13), deckMat);
       deck.position.set((x0 + x1) / 2, DECK_Y, z);
       deck.castShadow = deck.receiveShadow = true;
       this.terrain.add(freeze(deck));
       const towers = [x0 + span * 0.18, x1 - span * 0.18];
       for (const tx of towers) {
-        const t = new THREE3.Mesh(new THREE3.BoxGeometry(5, TOWER_H, 8), steel);
+        const t = new THREE4.Mesh(new THREE4.BoxGeometry(5, TOWER_H, 8), steel);
         t.position.set(tx, TOWER_H / 2, z);
         t.castShadow = true;
         this.terrain.add(freeze(t));
       }
       const top = TOWER_H - 2;
       for (const side of [-6.2, 6.2]) {
-        const pts = [new THREE3.Vector3(x0, DECK_Y + 1, z + side)];
-        pts.push(new THREE3.Vector3(towers[0], top, z + side));
+        const pts = [new THREE4.Vector3(x0, DECK_Y + 1, z + side)];
+        pts.push(new THREE4.Vector3(towers[0], top, z + side));
         const steps = 14;
         for (let i = 1; i < steps; i++) {
           const t = i / steps;
           const sag = 22 * (1 - Math.pow(2 * t - 1, 2));
-          pts.push(new THREE3.Vector3(towers[0] + (towers[1] - towers[0]) * t, top - sag, z + side));
+          pts.push(new THREE4.Vector3(towers[0] + (towers[1] - towers[0]) * t, top - sag, z + side));
         }
-        pts.push(new THREE3.Vector3(towers[1], top, z + side));
-        pts.push(new THREE3.Vector3(x1, DECK_Y + 1, z + side));
-        this.terrain.add(new THREE3.Line(new THREE3.BufferGeometry().setFromPoints(pts), cableMat));
+        pts.push(new THREE4.Vector3(towers[1], top, z + side));
+        pts.push(new THREE4.Vector3(x1, DECK_Y + 1, z + side));
+        this.terrain.add(new THREE4.Line(new THREE4.BufferGeometry().setFromPoints(pts), cableMat));
       }
       for (const [rx, dir] of [[x0, -1], [x1, 1]]) {
-        const ramp = new THREE3.Mesh(new THREE3.BoxGeometry(PITCH, 1.4, 13), deckMat);
+        const ramp = new THREE4.Mesh(new THREE4.BoxGeometry(PITCH, 1.4, 13), deckMat);
         ramp.position.set(rx + dir * PITCH / 2, DECK_Y / 2, z);
         ramp.rotation.z = dir * Math.atan2(DECK_Y, PITCH);
         ramp.castShadow = true;
@@ -3118,12 +3191,12 @@ var CityScene = class {
   }
   _park(block, parkMat, pathMat) {
     const B = CONFIG.BLOCK;
-    const lawn = new THREE3.Mesh(new THREE3.BoxGeometry(B + 5, 0.3, B + 5), parkMat);
+    const lawn = new THREE4.Mesh(new THREE4.BoxGeometry(B + 5, 0.3, B + 5), parkMat);
     lawn.position.set(block.cx, 0.15, block.cz);
     lawn.receiveShadow = true;
     this.terrain.add(freeze(lawn));
     for (const rot of [0, Math.PI / 2]) {
-      const path = new THREE3.Mesh(new THREE3.BoxGeometry(B + 5, 0.06, 4), pathMat);
+      const path = new THREE4.Mesh(new THREE4.BoxGeometry(B + 5, 0.06, 4), pathMat);
       path.position.set(block.cx, 0.33, block.cz);
       path.rotation.y = rot;
       this.terrain.add(freeze(path));
@@ -3133,10 +3206,10 @@ var CityScene = class {
   _trees(block) {
     if (!this._treeGeo) {
       this._treeGeo = {
-        trunk: new THREE3.CylinderGeometry(0.22, 0.34, 3.6, 5),
-        crown: new THREE3.IcosahedronGeometry(1, 0),
-        trunkMat: new THREE3.MeshStandardMaterial({ color: 4930090, roughness: 1 }),
-        crownMat: new THREE3.MeshStandardMaterial({ color: 3959600, roughness: 1 })
+        trunk: new THREE4.CylinderGeometry(0.22, 0.34, 3.6, 5),
+        crown: new THREE4.IcosahedronGeometry(1, 0),
+        trunkMat: new THREE4.MeshStandardMaterial({ color: 4930090, roughness: 1 }),
+        crownMat: new THREE4.MeshStandardMaterial({ color: 3959600, roughness: 1 })
       };
       this._treeSpots = [];
     }
@@ -3151,7 +3224,7 @@ var CityScene = class {
   }
   /** Street names painted down the middle of every road, read from above. */
   _streetLabels() {
-    this.streetLabels = new THREE3.Group();
+    this.streetLabels = new THREE4.Group();
     this.streetLabels.visible = false;
     this.scene.add(this.streetLabels);
     const { PITCH } = CONFIG;
@@ -3162,13 +3235,13 @@ var CityScene = class {
         c.name.toUpperCase(),
         { size: 58, color: "#f2efe6", track: 1 }
       );
-      const mat = new THREE3.MeshBasicMaterial({
+      const mat = new THREE4.MeshBasicMaterial({
         map: texture,
         transparent: true,
         depthWrite: false,
         fog: false
       });
-      const geo = new THREE3.PlaneGeometry(H * aspect, H);
+      const geo = new THREE4.PlaneGeometry(H * aspect, H);
       c._labelMat = mat;
       const seen = /* @__PURE__ */ new Set();
       for (const lot of c.lots) {
@@ -3176,7 +3249,7 @@ var CityScene = class {
         if (seen.has(key)) continue;
         seen.add(key);
         const p = cellCenter(lot.col, lot.row);
-        const m = new THREE3.Mesh(geo, mat);
+        const m = new THREE4.Mesh(geo, mat);
         m.rotation.x = -Math.PI / 2;
         m.rotation.z = c.axis === "ns" ? Math.PI / 2 : 0;
         if (c.axis === "ns") m.position.set(p.x + PITCH / 2, 0.33, p.z);
@@ -3206,7 +3279,7 @@ var CityScene = class {
   /** Landfill in progress: a pad of rock rising out of the water. */
   updateFills(fills) {
     if (!this.fillGroup) {
-      this.fillGroup = new THREE3.Group();
+      this.fillGroup = new THREE4.Group();
       this.scene.add(this.fillGroup);
       this.fillByKey = /* @__PURE__ */ new Map();
     }
@@ -3217,9 +3290,9 @@ var CityScene = class {
       let g = this.fillByKey.get(key);
       if (!g) {
         const p = cellCenter(f.col, f.row);
-        g = new THREE3.Mesh(
-          new THREE3.BoxGeometry(CONFIG.PITCH - 4, 1, CONFIG.PITCH - 4),
-          new THREE3.MeshStandardMaterial({ color: 7036746, roughness: 1 })
+        g = new THREE4.Mesh(
+          new THREE4.BoxGeometry(CONFIG.PITCH - 4, 1, CONFIG.PITCH - 4),
+          new THREE4.MeshStandardMaterial({ color: 7036746, roughness: 1 })
         );
         g.position.set(p.x, -4, p.z);
         g.receiveShadow = true;
@@ -3266,13 +3339,13 @@ var CityScene = class {
     }
     const tg = this._treeGeo;
     if (tg && spots.length) {
-      const trunks = new THREE3.InstancedMesh(tg.trunk, tg.trunkMat, spots.length);
-      const crowns = new THREE3.InstancedMesh(tg.crown, tg.crownMat, spots.length);
+      const trunks = new THREE4.InstancedMesh(tg.trunk, tg.trunkMat, spots.length);
+      const crowns = new THREE4.InstancedMesh(tg.crown, tg.crownMat, spots.length);
       crowns.castShadow = true;
       spots.forEach(([x, z, s], i) => {
-        tmpM.compose(tmpV.set(x, 1.9, z), new THREE3.Quaternion(), tmpS.set(1, 1, 1));
+        tmpM.compose(tmpV.set(x, 1.9, z), new THREE4.Quaternion(), tmpS.set(1, 1, 1));
         trunks.setMatrixAt(i, tmpM);
-        tmpM.compose(tmpV.set(x, 3.6 + s * 0.5, z), new THREE3.Quaternion(), tmpS.set(s, s * 0.9, s));
+        tmpM.compose(tmpV.set(x, 3.6 + s * 0.5, z), new THREE4.Quaternion(), tmpS.set(s, s * 0.9, s));
         crowns.setMatrixAt(i, tmpM);
       });
       tmpS.set(1, 1, 1);
@@ -3293,7 +3366,7 @@ var CityScene = class {
       }
     }
     const place = (geo, mat, list, y, cast = true) => {
-      const im = new THREE3.InstancedMesh(geo, mat, list.length);
+      const im = new THREE4.InstancedMesh(geo, mat, list.length);
       im.castShadow = cast;
       list.forEach(([x, z, rot = 0], i) => {
         tmpQ.setFromAxisAngle(UP, rot);
@@ -3303,34 +3376,34 @@ var CityScene = class {
       this.terrain.add(im);
       return im;
     };
-    const metal = new THREE3.MeshStandardMaterial({ color: 3356476, roughness: 0.7, metalness: 0.4 });
+    const metal = new THREE4.MeshStandardMaterial({ color: 3356476, roughness: 0.7, metalness: 0.4 });
     place(props.lampPost, metal, lamps, 0.4);
     this.lampGlow = place(
       props.lampHead,
-      new THREE3.MeshStandardMaterial({ color: 16769708, emissive: 16765578, emissiveIntensity: 0 }),
+      new THREE4.MeshStandardMaterial({ color: 16769708, emissive: 16765578, emissiveIntensity: 0 }),
       lamps,
       0.4,
       false
     );
-    place(props.hydrant, new THREE3.MeshStandardMaterial({ color: 11683119, roughness: 0.75 }), hydrants, 0.4);
-    place(props.trash, new THREE3.MeshStandardMaterial({ color: 1776928, roughness: 0.95 }), trash, 0.4);
+    place(props.hydrant, new THREE4.MeshStandardMaterial({ color: 11683119, roughness: 0.75 }), hydrants, 0.4);
+    place(props.trash, new THREE4.MeshStandardMaterial({ color: 1776928, roughness: 0.95 }), trash, 0.4);
     place(props.trafficLight, metal, signals, 0.4);
   }
   // -------------------------------------------------------------- buildings
   _buildings() {
-    this.buildingGroup = new THREE3.Group();
-    this.siteGroup = new THREE3.Group();
-    this.roofGroup = new THREE3.Group();
+    this.buildingGroup = new THREE4.Group();
+    this.siteGroup = new THREE4.Group();
+    this.roofGroup = new THREE4.Group();
     this.scene.add(this.buildingGroup, this.siteGroup, this.roofGroup);
     this.buildingByLot = /* @__PURE__ */ new Map();
     this.siteByLot = /* @__PURE__ */ new Map();
     this.roofGeo = roofPropGeometries();
     this.roofMats = {
-      watertower: new THREE3.MeshStandardMaterial({ color: 7032632, roughness: 0.95 }),
-      bulkhead: new THREE3.MeshStandardMaterial({ color: 8024681, roughness: 0.9 }),
-      mast: new THREE3.MeshStandardMaterial({ color: 5462110, roughness: 0.6, metalness: 0.5 }),
-      mooringMast: new THREE3.MeshStandardMaterial({ color: 10134187, roughness: 0.42, metalness: 0.7 }),
-      ac: new THREE3.MeshStandardMaterial({ color: 9343641, roughness: 0.7, metalness: 0.3 })
+      watertower: new THREE4.MeshStandardMaterial({ color: 7032632, roughness: 0.95 }),
+      bulkhead: new THREE4.MeshStandardMaterial({ color: 8024681, roughness: 0.9 }),
+      mast: new THREE4.MeshStandardMaterial({ color: 5462110, roughness: 0.6, metalness: 0.5 }),
+      mooringMast: new THREE4.MeshStandardMaterial({ color: 10134187, roughness: 0.42, metalness: 0.7 }),
+      ac: new THREE4.MeshStandardMaterial({ color: 9343641, roughness: 0.7, metalness: 0.3 })
     };
     this.syncBuildings();
   }
@@ -3347,12 +3420,12 @@ var CityScene = class {
       { size: 72, color: "#f6f1e4", outline: "rgba(0,0,0,0.85)", track: 1 }
     );
     const h = Math.min(bw * 0.82 / aspect, bh * 0.3, 3.4);
-    const mat = new THREE3.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, fog: false });
+    const mat = new THREE4.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, fog: false });
     const y = Math.min(base.position.y + bh / 2 - h, CONFIG.FLOOR_H * 1.35);
-    const geo = new THREE3.PlaneGeometry(h * aspect, h);
+    const geo = new THREE4.PlaneGeometry(h * aspect, h);
     const halfW = bw / 2, halfD = bd / 2;
     for (const [dx, dz, rot] of [[0, halfD + 0.32, 0], [halfW + 0.32, 0, Math.PI / 2]]) {
-      const m = new THREE3.Mesh(geo, mat);
+      const m = new THREE4.Mesh(geo, mat);
       m.position.set(lot.x + dx, y, lot.z + dz);
       m.rotation.y = rot;
       m.renderOrder = 3;
@@ -3418,10 +3491,10 @@ var CityScene = class {
       const list = buckets[kind];
       if (!list.length) continue;
       for (const geo of this.roofGeo[kind]) {
-        const im = new THREE3.InstancedMesh(geo, this.roofMats[kind], list.length);
+        const im = new THREE4.InstancedMesh(geo, this.roofMats[kind], list.length);
         im.castShadow = true;
         list.forEach((p, i) => {
-          tmpM.compose(tmpV.set(p.x, p.y, p.z), new THREE3.Quaternion(), tmpS.set(p.s, p.s, p.s));
+          tmpM.compose(tmpV.set(p.x, p.y, p.z), new THREE4.Quaternion(), tmpS.set(p.s, p.s, p.s));
           im.setMatrixAt(i, tmpM);
         });
         tmpS.set(1, 1, 1);
@@ -3430,33 +3503,33 @@ var CityScene = class {
     }
   }
   _makeSite(lot) {
-    const g = new THREE3.Group();
-    const mud = new THREE3.Mesh(
-      new THREE3.BoxGeometry(lot.w * 0.97, 0.8, lot.d * 0.97),
-      new THREE3.MeshStandardMaterial({ color: 6116164, roughness: 1 })
+    const g = new THREE4.Group();
+    const mud = new THREE4.Mesh(
+      new THREE4.BoxGeometry(lot.w * 0.97, 0.8, lot.d * 0.97),
+      new THREE4.MeshStandardMaterial({ color: 6116164, roughness: 1 })
     );
     mud.position.set(lot.x, 0.4, lot.z);
     mud.receiveShadow = true;
-    const fenceMat = new THREE3.MeshStandardMaterial({ color: 3104646, roughness: 0.9 });
+    const fenceMat = new THREE4.MeshStandardMaterial({ color: 3104646, roughness: 0.9 });
     for (const [sx, sz, w, d] of [[0, -1, lot.w, 0.3], [0, 1, lot.w, 0.3], [-1, 0, 0.3, lot.d], [1, 0, 0.3, lot.d]]) {
-      const f = new THREE3.Mesh(new THREE3.BoxGeometry(w, 2.4, d), fenceMat);
+      const f = new THREE4.Mesh(new THREE4.BoxGeometry(w, 2.4, d), fenceMat);
       f.position.set(lot.x + sx * lot.w / 2, 1.2, lot.z + sz * lot.d / 2);
       f.castShadow = true;
       g.add(freeze(f));
     }
-    const slab = new THREE3.Mesh(
-      new THREE3.BoxGeometry(lot.w * 0.72, 1, lot.d * 0.72),
-      new THREE3.MeshStandardMaterial({ color: 11117204, roughness: 0.92 })
+    const slab = new THREE4.Mesh(
+      new THREE4.BoxGeometry(lot.w * 0.72, 1, lot.d * 0.72),
+      new THREE4.MeshStandardMaterial({ color: 11117204, roughness: 0.92 })
     );
     slab.castShadow = slab.receiveShadow = true;
-    const scaffold = new THREE3.Mesh(
-      new THREE3.BoxGeometry(lot.w * 0.76, 1, lot.d * 0.76),
-      new THREE3.MeshStandardMaterial({ color: 13220239, roughness: 0.9, transparent: true, opacity: 0.4, wireframe: true })
+    const scaffold = new THREE4.Mesh(
+      new THREE4.BoxGeometry(lot.w * 0.76, 1, lot.d * 0.76),
+      new THREE4.MeshStandardMaterial({ color: 13220239, roughness: 0.9, transparent: true, opacity: 0.4, wireframe: true })
     );
-    const craneMat = new THREE3.MeshStandardMaterial({ color: 14721850, roughness: 0.6, metalness: 0.3 });
-    const mast = new THREE3.Mesh(new THREE3.BoxGeometry(1.1, 40, 1.1), craneMat);
-    const jib = new THREE3.Mesh(new THREE3.BoxGeometry(30, 0.8, 0.8), craneMat);
-    const counter = new THREE3.Mesh(new THREE3.BoxGeometry(7, 1.2, 1.2), craneMat);
+    const craneMat = new THREE4.MeshStandardMaterial({ color: 14721850, roughness: 0.6, metalness: 0.3 });
+    const mast = new THREE4.Mesh(new THREE4.BoxGeometry(1.1, 40, 1.1), craneMat);
+    const jib = new THREE4.Mesh(new THREE4.BoxGeometry(30, 0.8, 0.8), craneMat);
+    const counter = new THREE4.Mesh(new THREE4.BoxGeometry(7, 1.2, 1.2), craneMat);
     mast.castShadow = jib.castShadow = true;
     const craneX = lot.x + lot.w * 0.36, craneZ = lot.z + lot.d * 0.36;
     g.add(mud, slab, scaffold, mast, jib, counter);
@@ -3522,23 +3595,23 @@ var CityScene = class {
       this.cars.push(car);
     }
     this.carMeshes = [];
-    const glassMat = new THREE3.MeshStandardMaterial({ color: 1316894, roughness: 0.12, metalness: 0.65 });
+    const glassMat = new THREE4.MeshStandardMaterial({ color: 1316894, roughness: 0.12, metalness: 0.65 });
     for (const model in byModel) {
       const list = byModel[model];
       const spec = models[model];
-      const body = new THREE3.InstancedMesh(
+      const body = new THREE4.InstancedMesh(
         spec.body,
-        new THREE3.MeshStandardMaterial({ roughness: 0.38, metalness: 0.45 }),
+        new THREE4.MeshStandardMaterial({ roughness: 0.38, metalness: 0.45 }),
         list.length
       );
-      const glass = new THREE3.InstancedMesh(spec.glass, glassMat, list.length);
-      const lamps = new THREE3.InstancedMesh(
+      const glass = new THREE4.InstancedMesh(spec.glass, glassMat, list.length);
+      const lamps = new THREE4.InstancedMesh(
         spec.lamps,
-        new THREE3.MeshStandardMaterial({ color: 16773844, emissive: 16764815, emissiveIntensity: 0 }),
+        new THREE4.MeshStandardMaterial({ color: 16773844, emissive: 16764815, emissiveIntensity: 0 }),
         list.length
       );
       body.castShadow = true;
-      const c = new THREE3.Color();
+      const c = new THREE4.Color();
       list.forEach((car, i) => {
         car.idx = i;
         c.setHex(spec.fixedColor ?? CAR_PAINT[Math.floor(mulberry32(i * 77 + model.length)() * CAR_PAINT.length)]);
@@ -3591,18 +3664,18 @@ var CityScene = class {
       g.arc(x, y, r, 0, 6.3);
       g.fill();
     }
-    const tex = new THREE3.CanvasTexture(c);
-    tex.colorSpace = THREE3.SRGBColorSpace;
+    const tex = new THREE4.CanvasTexture(c);
+    tex.colorSpace = THREE4.SRGBColorSpace;
     const COUNT = this.q.clouds;
-    this.cloudMat = new THREE3.MeshBasicMaterial({
+    this.cloudMat = new THREE4.MeshBasicMaterial({
       map: tex,
       transparent: true,
       opacity: 0.62,
       depthWrite: false,
       fog: false,
-      side: THREE3.DoubleSide
+      side: THREE4.DoubleSide
     });
-    this.clouds = new THREE3.InstancedMesh(new THREE3.PlaneGeometry(1, 1), this.cloudMat, COUNT);
+    this.clouds = new THREE4.InstancedMesh(new THREE4.PlaneGeometry(1, 1), this.cloudMat, COUNT);
     this.clouds.renderOrder = 1;
     this.cloudPuffs = [];
     for (let i = 0; i < COUNT; i++) {
@@ -3618,7 +3691,7 @@ var CityScene = class {
   }
   updateClouds(dt) {
     const lim = CONFIG.WIDTH * 1.4;
-    const q = new THREE3.Quaternion().setFromEuler(new THREE3.Euler(-Math.PI / 2, 0, 0));
+    const q = new THREE4.Quaternion().setFromEuler(new THREE4.Euler(-Math.PI / 2, 0, 0));
     for (let i = 0; i < this.cloudPuffs.length; i++) {
       const p = this.cloudPuffs[i];
       p.x += p.drift * dt;
@@ -3631,16 +3704,16 @@ var CityScene = class {
   }
   // ---------------------------------------------------------------- airships
   _airships() {
-    this.airshipGroup = new THREE3.Group();
+    this.airshipGroup = new THREE4.Group();
     this.scene.add(this.airshipGroup);
     this.airships = [];
     this.crowdBoost = /* @__PURE__ */ new Map();
     const parts = airshipParts();
     this._airshipGeo = parts;
     this._airshipMats = {
-      hull: new THREE3.MeshStandardMaterial({ color: 13883355, roughness: 0.42, metalness: 0.55 }),
-      rigging: new THREE3.MeshStandardMaterial({ color: 3883078, roughness: 0.7, metalness: 0.3 }),
-      lights: new THREE3.MeshStandardMaterial({ color: 16773327, emissive: 16767130, emissiveIntensity: 0.2 })
+      hull: new THREE4.MeshStandardMaterial({ color: 13883355, roughness: 0.42, metalness: 0.55 }),
+      rigging: new THREE4.MeshStandardMaterial({ color: 3883078, roughness: 0.7, metalness: 0.3 }),
+      lights: new THREE4.MeshStandardMaterial({ color: 16773327, emissive: 16767130, emissiveIntensity: 0.2 })
     };
   }
   /** Every mooring mast currently standing in the city. */
@@ -3654,10 +3727,10 @@ var CityScene = class {
     if (!masts.length) return;
     const target = masts[Math.floor(Math.random() * masts.length)];
     if (this.airships.some((a2) => a2.target === target)) return;
-    const g = new THREE3.Group();
-    g.add(new THREE3.Mesh(this._airshipGeo.hull, this._airshipMats.hull));
-    g.add(new THREE3.Mesh(this._airshipGeo.rigging, this._airshipMats.rigging));
-    const lamps = new THREE3.Mesh(this._airshipGeo.lights, this._airshipMats.lights);
+    const g = new THREE4.Group();
+    g.add(new THREE4.Mesh(this._airshipGeo.hull, this._airshipMats.hull));
+    g.add(new THREE4.Mesh(this._airshipGeo.rigging, this._airshipMats.rigging));
+    const lamps = new THREE4.Mesh(this._airshipGeo.lights, this._airshipMats.lights);
     g.add(lamps);
     g.children[0].castShadow = true;
     const a = Math.random() * Math.PI * 2;
@@ -3705,7 +3778,7 @@ var CityScene = class {
       if (s.t <= 0) {
         s.phase = "departing";
         const a = Math.random() * Math.PI * 2;
-        s.away = new THREE3.Vector3(m.x + Math.cos(a) * 1400, m.y + 160, m.z + Math.sin(a) * 1400);
+        s.away = new THREE4.Vector3(m.x + Math.cos(a) * 1400, m.y + 160, m.z + Math.sin(a) * 1400);
         const cell = cellOf(m.x, m.z);
         this.crowdBoost.delete(`${cell.col},${cell.row}`);
       }
@@ -3720,15 +3793,15 @@ var CityScene = class {
     const COUNT = this.q.peds;
     const parts = personParts();
     const rnd = mulberry32(909);
-    const coatMat = new THREE3.MeshStandardMaterial({ roughness: 0.88 });
-    const headMat = new THREE3.MeshStandardMaterial({ roughness: 0.85 });
-    const legMat = new THREE3.MeshStandardMaterial({ color: 2434860, roughness: 0.9 });
-    this.pCoat = new THREE3.InstancedMesh(parts.coat, coatMat, COUNT);
-    this.pHead = new THREE3.InstancedMesh(parts.head, headMat, COUNT);
-    this.pLegA = new THREE3.InstancedMesh(parts.leg, legMat, COUNT);
-    this.pLegB = new THREE3.InstancedMesh(parts.leg, legMat, COUNT);
+    const coatMat = new THREE4.MeshStandardMaterial({ roughness: 0.88 });
+    const headMat = new THREE4.MeshStandardMaterial({ roughness: 0.85 });
+    const legMat = new THREE4.MeshStandardMaterial({ color: 2434860, roughness: 0.9 });
+    this.pCoat = new THREE4.InstancedMesh(parts.coat, coatMat, COUNT);
+    this.pHead = new THREE4.InstancedMesh(parts.head, headMat, COUNT);
+    this.pLegA = new THREE4.InstancedMesh(parts.leg, legMat, COUNT);
+    this.pLegB = new THREE4.InstancedMesh(parts.leg, legMat, COUNT);
     this.pCoat.castShadow = true;
-    const c = new THREE3.Color();
+    const c = new THREE4.Color();
     const cells = [...this.city.land.keys()].map((k) => k.split(",").map(Number));
     this.peds = [];
     for (let i = 0; i < COUNT; i++) {
@@ -3767,7 +3840,7 @@ var CityScene = class {
   /** Pedestrians live near the camera and are recycled in front of you. */
   updateCrowd(dt, focus) {
     const halfBlock = CONFIG.BLOCK / 2 + 2.6;
-    const legQ = new THREE3.Quaternion();
+    const legQ = new THREE4.Quaternion();
     for (let i = 0; i < this.peds.length; i++) {
       const p = this.peds[i];
       p.phase += dt * p.speed * 5.4;
@@ -3828,7 +3901,7 @@ var CityScene = class {
       this.pHead.setMatrixAt(i, tmpM);
       for (const [mesh, sign, off] of [[this.pLegA, 1, -0.09], [this.pLegB, -1, 0.09]]) {
         legQ.setFromAxisAngle(UP, yaw);
-        legQ.multiply(new THREE3.Quaternion().setFromAxisAngle(new THREE3.Vector3(1, 0, 0), swing * sign));
+        legQ.multiply(new THREE4.Quaternion().setFromAxisAngle(new THREE4.Vector3(1, 0, 0), swing * sign));
         tmpV.set(p.x + Math.cos(yaw) * off * s, 0.74 * s + bob, p.z - Math.sin(yaw) * off * s);
         tmpM.compose(tmpV, legQ, tmpS);
         mesh.setMatrixAt(i, tmpM);
@@ -3839,7 +3912,7 @@ var CityScene = class {
   }
   // -------------------------------------------------------------- highlight
   _highlight() {
-    this.highlightGroup = new THREE3.Group();
+    this.highlightGroup = new THREE4.Group();
     this.scene.add(this.highlightGroup);
     this.highlightOwner = null;
   }
@@ -3853,25 +3926,25 @@ var CityScene = class {
     const lots = this.city.lots.filter((l) => l.owner === ownerId);
     if (!lots.length) return 0;
     const color = OWNER_TINT[ownerId] ?? 16777215;
-    const padMat = new THREE3.MeshBasicMaterial({
+    const padMat = new THREE4.MeshBasicMaterial({
       color,
       transparent: true,
       opacity: 0.34,
       depthWrite: false,
       fog: false
     });
-    const beamMat = new THREE3.MeshBasicMaterial({
+    const beamMat = new THREE4.MeshBasicMaterial({
       color,
       transparent: true,
       opacity: 0.12,
       depthWrite: false,
       fog: false
     });
-    const pads = new THREE3.InstancedMesh(new THREE3.BoxGeometry(1, 0.5, 1), padMat, lots.length);
-    const beams = new THREE3.InstancedMesh(new THREE3.BoxGeometry(1, 1, 1), beamMat, lots.length);
+    const pads = new THREE4.InstancedMesh(new THREE4.BoxGeometry(1, 0.5, 1), padMat, lots.length);
+    const beams = new THREE4.InstancedMesh(new THREE4.BoxGeometry(1, 1, 1), beamMat, lots.length);
     pads.renderOrder = 4;
     beams.renderOrder = 4;
-    const q = new THREE3.Quaternion();
+    const q = new THREE4.Quaternion();
     lots.forEach((lot, i) => {
       tmpM.compose(tmpV.set(lot.x, 0.85, lot.z), q, tmpS.set(lot.w * 1.02, 1, lot.d * 1.02));
       pads.setMatrixAt(i, tmpM);
@@ -3893,23 +3966,23 @@ var CityScene = class {
   }
   // ----------------------------------------------------------------- vision
   _vision() {
-    this.vision = new THREE3.Group();
+    this.vision = new THREE4.Group();
     this.vision.visible = false;
-    const env = new THREE3.Mesh(
-      new THREE3.BoxGeometry(1, 1, 1),
-      new THREE3.MeshBasicMaterial({ color: 5224703, transparent: true, opacity: 0.1, depthWrite: false })
+    const env = new THREE4.Mesh(
+      new THREE4.BoxGeometry(1, 1, 1),
+      new THREE4.MeshBasicMaterial({ color: 5224703, transparent: true, opacity: 0.1, depthWrite: false })
     );
-    const wire = new THREE3.LineSegments(
-      new THREE3.EdgesGeometry(new THREE3.BoxGeometry(1, 1, 1)),
-      new THREE3.LineBasicMaterial({ color: 9430783, transparent: true, opacity: 0.9 })
+    const wire = new THREE4.LineSegments(
+      new THREE4.EdgesGeometry(new THREE4.BoxGeometry(1, 1, 1)),
+      new THREE4.LineBasicMaterial({ color: 9430783, transparent: true, opacity: 0.9 })
     );
-    const ghost = new THREE3.Mesh(
-      new THREE3.BoxGeometry(1, 1, 1),
-      new THREE3.MeshBasicMaterial({ color: 13496063, transparent: true, opacity: 0.26, depthWrite: false })
+    const ghost = new THREE4.Mesh(
+      new THREE4.BoxGeometry(1, 1, 1),
+      new THREE4.MeshBasicMaterial({ color: 13496063, transparent: true, opacity: 0.26, depthWrite: false })
     );
-    const ghostWire = new THREE3.LineSegments(
-      new THREE3.EdgesGeometry(new THREE3.BoxGeometry(1, 1, 1)),
-      new THREE3.LineBasicMaterial({ color: 16777215, transparent: true, opacity: 0.9 })
+    const ghostWire = new THREE4.LineSegments(
+      new THREE4.EdgesGeometry(new THREE4.BoxGeometry(1, 1, 1)),
+      new THREE4.LineBasicMaterial({ color: 16777215, transparent: true, opacity: 0.9 })
     );
     this.vision.add(env, wire, ghost, ghostWire);
     this.visionParts = { env, wire, ghost, ghostWire };
@@ -3944,15 +4017,15 @@ var CityScene = class {
   // ----------------------------------------------------------------- avatar
   _avatar() {
     const parts = personParts();
-    const g = new THREE3.Group();
-    const coat = new THREE3.Mesh(parts.coat, new THREE3.MeshStandardMaterial({ color: 2831424, roughness: 0.8 }));
+    const g = new THREE4.Group();
+    const coat = new THREE4.Mesh(parts.coat, new THREE4.MeshStandardMaterial({ color: 2831424, roughness: 0.8 }));
     coat.position.y = 1.08;
-    const head = new THREE3.Mesh(parts.head, new THREE3.MeshStandardMaterial({ color: 14265220, roughness: 0.85 }));
+    const head = new THREE4.Mesh(parts.head, new THREE4.MeshStandardMaterial({ color: 14265220, roughness: 0.85 }));
     head.position.y = 1.55;
-    const legMat = new THREE3.MeshStandardMaterial({ color: 2040102, roughness: 0.9 });
+    const legMat = new THREE4.MeshStandardMaterial({ color: 2040102, roughness: 0.9 });
     this.avatarLegs = [
-      new THREE3.Mesh(parts.leg, legMat),
-      new THREE3.Mesh(parts.leg, legMat)
+      new THREE4.Mesh(parts.leg, legMat),
+      new THREE4.Mesh(parts.leg, legMat)
     ];
     this.avatarLegs[0].position.set(-0.09, 0.76, 0);
     this.avatarLegs[1].position.set(0.09, 0.76, 0);
@@ -3970,12 +4043,12 @@ var CityScene = class {
   }
   _playerCar() {
     const spec = vehicleModels().sedan;
-    const g = new THREE3.Group();
-    const body = new THREE3.Mesh(spec.body, new THREE3.MeshStandardMaterial({ color: 1316378, roughness: 0.3, metalness: 0.55 }));
-    const glass = new THREE3.Mesh(spec.glass, new THREE3.MeshStandardMaterial({ color: 987929, roughness: 0.1, metalness: 0.7 }));
-    this.playerLamps = new THREE3.Mesh(
+    const g = new THREE4.Group();
+    const body = new THREE4.Mesh(spec.body, new THREE4.MeshStandardMaterial({ color: 1316378, roughness: 0.3, metalness: 0.55 }));
+    const glass = new THREE4.Mesh(spec.glass, new THREE4.MeshStandardMaterial({ color: 987929, roughness: 0.1, metalness: 0.7 }));
+    this.playerLamps = new THREE4.Mesh(
       spec.lamps,
-      new THREE3.MeshStandardMaterial({ color: 16773844, emissive: 16764815, emissiveIntensity: 0 })
+      new THREE4.MeshStandardMaterial({ color: 16773844, emissive: 16764815, emissiveIntensity: 0 })
     );
     body.castShadow = true;
     g.add(body, glass, this.playerLamps);
@@ -4031,7 +4104,7 @@ var CityScene = class {
     const elev = Math.sin(Math.max(0, Math.min(1, t)) * Math.PI);
     const day = Math.max(0, elev);
     const ang = t * Math.PI;
-    const dir = new THREE3.Vector3(Math.cos(ang) * 0.85, Math.max(0.1, elev), Math.sin(ang) * 0.55 - 0.3).normalize();
+    const dir = new THREE4.Vector3(Math.cos(ang) * 0.85, Math.max(0.1, elev), Math.sin(ang) * 0.55 - 0.3).normalize();
     this.sun.position.set(focus.x + dir.x * 420, dir.y * 480 + 60, focus.z + dir.z * 420);
     this.sun.target.position.set(focus.x, 0, focus.z);
     this.sun.target.updateMatrixWorld();
@@ -4049,6 +4122,8 @@ var CityScene = class {
     this.scene.fog.color.copy(fogC);
     this.scene.fog.density = 3e-4 + (1 - day) * 35e-5;
     const lit = 1 - Math.min(1, day * 2.4);
+    this.night = lit;
+    this.post?.setNight(lit);
     if (this._lit === void 0 || Math.abs(lit - this._lit) > 0.02) {
       this._lit = lit;
       for (const g of this.buildingByLot.values()) {
@@ -4070,14 +4145,16 @@ var CityScene = class {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, false);
+    this.post?.setSize(w, h);
   }
   render() {
-    this.renderer.render(this.scene, this.camera);
+    if (this.post) this.post.render();
+    else this.renderer.render(this.scene, this.camera);
   }
 };
 
 // src/controls.js
-import * as THREE4 from "three";
+import * as THREE5 from "three";
 var MODE = { STREET: "street", CAR: "car", BOARD: "board" };
 function isTyping() {
   const a = document.activeElement;
@@ -4098,20 +4175,20 @@ var Controls = class {
     this.canvas = canvas2;
     this.mode = MODE.STREET;
     this.firstPerson = false;
-    this.pos = new THREE4.Vector3(0, 0, CONFIG.PITCH * 2.2);
+    this.pos = new THREE5.Vector3(0, 0, CONFIG.PITCH * 2.2);
     this.groundY = 0;
     this.platform = null;
     this.riding = null;
     this.yaw = Math.PI;
     this.pitch = -0.08;
-    this.vel = new THREE4.Vector3();
+    this.vel = new THREE5.Vector3();
     this.car = {
-      pos: new THREE4.Vector3(CONFIG.PITCH * 0.5 - CONFIG.STREET / 2 - 4, 0, CONFIG.PITCH * 2.2),
+      pos: new THREE5.Vector3(CONFIG.PITCH * 0.5 - CONFIG.STREET / 2 - 4, 0, CONFIG.PITCH * 2.2),
       yaw: 0,
       speed: 0,
       active: false
     };
-    this.board = { target: new THREE4.Vector3(0, 0, 0), dist: 780, yaw: 0.6, pitch: -1.12 };
+    this.board = { target: new THREE5.Vector3(0, 0, 0), dist: 780, yaw: 0.6, pitch: -1.12 };
     this.keys = /* @__PURE__ */ new Set();
     this.transition = null;
     this.locked = false;
@@ -4334,27 +4411,27 @@ var Controls = class {
   _boardCameraPose() {
     const b = this.board;
     const cp = Math.cos(b.pitch), sp = Math.sin(b.pitch);
-    const pos = new THREE4.Vector3(
+    const pos = new THREE5.Vector3(
       b.target.x + Math.sin(b.yaw) * cp * b.dist,
       b.target.y - sp * b.dist,
       b.target.z + Math.cos(b.yaw) * cp * b.dist
     );
-    const q = new THREE4.Quaternion();
-    const m = new THREE4.Matrix4().lookAt(pos, b.target, new THREE4.Vector3(0, 1, 0));
+    const q = new THREE5.Quaternion();
+    const m = new THREE5.Matrix4().lookAt(pos, b.target, new THREE5.Vector3(0, 1, 0));
     q.setFromRotationMatrix(m);
     return { pos, q };
   }
   _streetCameraPose() {
     const eye = (this.mode === MODE.CAR ? 2 : 1.72) + this.groundY;
-    const head = new THREE4.Vector3(this.pos.x, eye, this.pos.z);
-    const q = new THREE4.Quaternion().setFromEuler(new THREE4.Euler(this.pitch, this.yaw, 0, "YXZ"));
+    const head = new THREE5.Vector3(this.pos.x, eye, this.pos.z);
+    const q = new THREE5.Quaternion().setFromEuler(new THREE5.Euler(this.pitch, this.yaw, 0, "YXZ"));
     if (this.firstPerson) return { pos: head, q };
-    const back = new THREE4.Vector3(0, 0, 1).applyQuaternion(q);
+    const back = new THREE5.Vector3(0, 0, 1).applyQuaternion(q);
     const dist = this.mode === MODE.CAR ? 9.5 : 5.4;
-    const pos = head.clone().addScaledVector(back, dist).add(new THREE4.Vector3(0, 1.3, 0));
+    const pos = head.clone().addScaledVector(back, dist).add(new THREE5.Vector3(0, 1.3, 0));
     if (pos.y < this.groundY + 0.9) {
       const t = (this.groundY + 0.9 - head.y - 1.3) / (back.y * dist || -1);
-      pos.copy(head).addScaledVector(back, Math.max(1.2, dist * Math.max(0, Math.min(1, t)))).add(new THREE4.Vector3(0, 1.3, 0));
+      pos.copy(head).addScaledVector(back, Math.max(1.2, dist * Math.max(0, Math.min(1, t)))).add(new THREE5.Vector3(0, 1.3, 0));
       pos.y = Math.max(pos.y, this.groundY + 0.9);
     }
     if (!this.platform && !this.riding) {
@@ -4428,7 +4505,7 @@ var Controls = class {
 };
 
 // src/ui.js
-import * as THREE5 from "three";
+import * as THREE6 from "three";
 var $ = (id) => document.getElementById(id);
 var pct = (n) => `${Math.round(n * 100)}%`;
 function drawPlate(canvas2, story, city2) {
@@ -4718,7 +4795,7 @@ var UI = class {
     const key = `${lot.id}_${isProject}_${mine}_${lot.name || ""}`;
     const h = (isProject ? lot.project.floors : lot.building.floors) * CONFIG.FLOOR_H;
     camera.updateMatrixWorld();
-    const v = new THREE5.Vector3(lot.x, Math.min(h, 90) + 6, lot.z).project(camera);
+    const v = new THREE6.Vector3(lot.x, Math.min(h, 90) + 6, lot.z).project(camera);
     if (v.z > 1) {
       el.classList.add("hidden");
       return;
@@ -5226,9 +5303,9 @@ ui.onTravel = (lot) => {
 ui.onMassingPreview = (lot, floors) => {
   if (controls.mode !== MODE.BOARD) scene.showVision(lot, floors);
 };
-var ray = new THREE6.Raycaster();
-var ndc = new THREE6.Vector2();
-var groundPlane = new THREE6.Plane(new THREE6.Vector3(0, 1, 0), 0);
+var ray = new THREE7.Raycaster();
+var ndc = new THREE7.Vector2();
+var groundPlane = new THREE7.Plane(new THREE7.Vector3(0, 1, 0), 0);
 canvas.addEventListener("pointerup", (e) => {
   if (e.pointerType === "touch") return;
   if (controls.mode !== MODE.BOARD || e.button !== 0) return;
@@ -5247,7 +5324,7 @@ function pickAt(clientX, clientY) {
     if (lot) break;
   }
   if (!lot) {
-    const p = new THREE6.Vector3();
+    const p = new THREE7.Vector3();
     if (ray.ray.intersectPlane(groundPlane, p)) {
       lot = nearestLot(p.x, p.z, 26);
     }
@@ -5257,7 +5334,7 @@ function pickAt(clientX, clientY) {
     hideWater();
     return;
   }
-  const hit = new THREE6.Vector3();
+  const hit = new THREE7.Vector3();
   if (!ray.ray.intersectPlane(groundPlane, hit)) return;
   const { col, row } = cellOf(hit.x, hit.z);
   if (canReclaim(city, col, row)) showWater(col, row);
@@ -5407,7 +5484,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "d38e4dc \xB7 2026-09-22 22:48" : "dev";
+var BUILD = true ? "e4a2aee \xB7 2026-09-22 22:56" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");

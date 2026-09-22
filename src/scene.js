@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { CONFIG, cellCenter, cellOf, mulberry32 } from './world.js';
 import { makeBuilding, roofPropGeometries } from './architecture.js';
+import { Post } from './post.js';
 import { vehicleModels, CAR_PAINT, personParts, COAT_COLORS, SKIN_TONES, streetProps,
          airshipParts } from './models.js';
 
@@ -48,8 +49,10 @@ function freeze(o) {
 
 /** What to draw at full fat, and what a phone gets instead. */
 export const QUALITY = {
-  high: { peds: 430, cars: 110, clouds: 46, shadows: true, dpr: 1.75, shadowMap: 2048 },
-  low:  { peds: 120, cars: 38,  clouds: 20, shadows: false, dpr: 1.2, shadowMap: 1024 },
+  high: { peds: 430, cars: 110, clouds: 46, shadows: true, dpr: 1.75, shadowMap: 2048,
+          bloom: true, bloomScale: 1, msaa: 4 },
+  low:  { peds: 120, cars: 38,  clouds: 20, shadows: false, dpr: 1.2, shadowMap: 1024,
+          bloom: true, bloomScale: 0.5, msaa: 0 },
 };
 
 export class CityScene {
@@ -92,6 +95,9 @@ export class CityScene {
     this._playerCar();
 
     this.rebuildCollision();
+
+    // Post-processing last: it needs the scene and the camera.
+    if (quality.bloom) this.post = new Post(this.renderer, this.scene, this.camera, quality);
   }
 
   // ------------------------------------------------------------------ light
@@ -1273,6 +1279,8 @@ export class CityScene {
     this.scene.fog.density = 0.00030 + (1 - day) * 0.00035;
 
     const lit = 1 - Math.min(1, day * 2.4);
+    this.night = lit;
+    this.post?.setNight(lit);
     if (this._lit === undefined || Math.abs(lit - this._lit) > 0.02) {
       this._lit = lit;
       for (const g of this.buildingByLot.values()) {
@@ -1296,7 +1304,11 @@ export class CityScene {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, false);
+    this.post?.setSize(w, h);
   }
 
-  render() { this.renderer.render(this.scene, this.camera); }
+  render() {
+    if (this.post) this.post.render();
+    else this.renderer.render(this.scene, this.camera);
+  }
 }
