@@ -12,6 +12,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 export class Post {
@@ -30,6 +31,35 @@ export class Post {
     this.composer = new EffectComposer(renderer, target);
     this.composer.addPass(new RenderPass(scene, camera));
 
+    // Ambient occlusion, before bloom so the glow spills from an image that
+    // already has its corners in it. Radius is in metres, like everything
+    // else here: four metres is a kerb, a doorway, the gap between a tower
+    // and its neighbour — the scale at which a city actually reads as solid.
+    if (quality.ao) {
+      this.ao = new GTAOPass(scene, camera, size.width, size.height, undefined,
+        { screenSpaceRadius: true, radius: 0.4, distanceExponent: 1.0,
+          thickness: 30, scale: 2.5, samples: quality.aoSamples ?? 16 },
+        { lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, rings: 2, samples: 16 });
+      this.ao.blendIntensity = 1.0;
+
+      // Clouds and the sky are drawn into the same depth buffer the AO reads,
+      // and a cloud that occludes a tower 400m below it is not a corner — it
+      // is a halo. Keep them out of the pass entirely.
+      const base = this.ao.overrideVisibility.bind(this.ao);
+      this.ao.overrideVisibility = () => {
+        base();                                  // caches visibility first
+        scene.traverse((o) => { if (o.userData.noAO) o.visible = false; });
+      };
+      this.composer.addPass(this.ao);
+    }
+
+    if (quality.bloom) this._addBloom(size, quality);
+    this.composer.addPass(new OutputPass());
+
+    this.setNight(0);
+  }
+
+  _addBloom(size, quality) {
     this.bloom = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0.5, 0.62, 1.0);
     // A phone blurs at half resolution; nobody can tell, and it costs a quarter.
     const scale = quality.bloomScale ?? 1;
@@ -39,9 +69,6 @@ export class Post {
         base(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)));
     }
     this.composer.addPass(this.bloom);
-    this.composer.addPass(new OutputPass());
-
-    this.setNight(0);
   }
 
   /**
@@ -50,6 +77,7 @@ export class Post {
    * the lit windows and the whole grid starts to glow.
    */
   setNight(n) {
+    if (!this.bloom) return;
     const k = Math.max(0, Math.min(1, n));
     // Tuned against the skyline at 22:30. Push much past this and the
     // streetlamps smear into one hot ribbon and the water stops reading as
@@ -66,6 +94,7 @@ export class Post {
   dispose() {
     this.composer.renderTarget1.dispose();
     this.composer.renderTarget2.dispose();
-    this.bloom.dispose?.();
+    this.bloom?.dispose?.();
+    this.ao?.dispose?.();
   }
 }

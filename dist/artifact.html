@@ -2567,6 +2567,7 @@ import * as THREE2 from "three";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 var Post = class {
   constructor(renderer, scene2, camera, quality) {
@@ -2580,6 +2581,38 @@ var Post = class {
     });
     this.composer = new EffectComposer(renderer, target);
     this.composer.addPass(new RenderPass(scene2, camera));
+    if (quality.ao) {
+      this.ao = new GTAOPass(
+        scene2,
+        camera,
+        size.width,
+        size.height,
+        void 0,
+        {
+          screenSpaceRadius: true,
+          radius: 0.4,
+          distanceExponent: 1,
+          thickness: 30,
+          scale: 2.5,
+          samples: quality.aoSamples ?? 16
+        },
+        { lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, rings: 2, samples: 16 }
+      );
+      this.ao.blendIntensity = 1;
+      const base = this.ao.overrideVisibility.bind(this.ao);
+      this.ao.overrideVisibility = () => {
+        base();
+        scene2.traverse((o) => {
+          if (o.userData.noAO) o.visible = false;
+        });
+      };
+      this.composer.addPass(this.ao);
+    }
+    if (quality.bloom) this._addBloom(size, quality);
+    this.composer.addPass(new OutputPass());
+    this.setNight(0);
+  }
+  _addBloom(size, quality) {
     this.bloom = new UnrealBloomPass(new THREE2.Vector2(size.width, size.height), 0.5, 0.62, 1);
     const scale = quality.bloomScale ?? 1;
     if (scale !== 1) {
@@ -2587,8 +2620,6 @@ var Post = class {
       this.bloom.setSize = (w, h) => base(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)));
     }
     this.composer.addPass(this.bloom);
-    this.composer.addPass(new OutputPass());
-    this.setNight(0);
   }
   /**
    * 0 is noon, 1 is the middle of the night. By day the threshold sits above
@@ -2596,6 +2627,7 @@ var Post = class {
    * the lit windows and the whole grid starts to glow.
    */
   setNight(n) {
+    if (!this.bloom) return;
     const k = Math.max(0, Math.min(1, n));
     this.bloom.threshold = 1.05 - k * 0.25;
     this.bloom.strength = 0.1 + k * 0.22;
@@ -2610,7 +2642,8 @@ var Post = class {
   dispose() {
     this.composer.renderTarget1.dispose();
     this.composer.renderTarget2.dispose();
-    this.bloom.dispose?.();
+    this.bloom?.dispose?.();
+    this.ao?.dispose?.();
   }
 };
 
@@ -2922,8 +2955,12 @@ var QUALITY = {
     shadowMap: 2048,
     bloom: true,
     bloomScale: 1,
-    msaa: 4
+    msaa: 4,
+    ao: true,
+    aoSamples: 16
   },
+  // No AO on a phone yet: it costs a second pass over every building, and
+  // there are still thousands of them to draw. Revisit once they are merged.
   low: {
     peds: 120,
     cars: 38,
@@ -2933,7 +2970,8 @@ var QUALITY = {
     shadowMap: 1024,
     bloom: true,
     bloomScale: 0.5,
-    msaa: 0
+    msaa: 0,
+    ao: false
   }
 };
 var CityScene = class {
@@ -2974,7 +3012,7 @@ var CityScene = class {
     this._avatar();
     this._playerCar();
     this.rebuildCollision();
-    if (quality.bloom) this.post = new Post(this.renderer, this.scene, this.camera, quality);
+    if (quality.bloom || quality.ao) this.post = new Post(this.renderer, this.scene, this.camera, quality);
   }
   // ------------------------------------------------------------------ light
   _lights() {
@@ -3028,6 +3066,7 @@ var CityScene = class {
     });
     this.sky = new THREE4.Mesh(new THREE4.SphereGeometry(3200, 24, 16), mat);
     this.sky.frustumCulled = false;
+    this.sky.userData.noAO = true;
     this.scene.add(this.sky);
   }
   _water() {
@@ -3687,6 +3726,7 @@ var CityScene = class {
         drift: 1.6 + rnd() * 2.4
       });
     }
+    this.clouds.userData.noAO = true;
     this.scene.add(this.clouds);
   }
   updateClouds(dt) {
@@ -5484,7 +5524,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "e4a2aee \xB7 2026-09-22 22:56" : "dev";
+var BUILD = true ? "7d6d65f \xB7 2026-09-22 23:12" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");

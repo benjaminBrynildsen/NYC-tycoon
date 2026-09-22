@@ -50,9 +50,11 @@ function freeze(o) {
 /** What to draw at full fat, and what a phone gets instead. */
 export const QUALITY = {
   high: { peds: 430, cars: 110, clouds: 46, shadows: true, dpr: 1.75, shadowMap: 2048,
-          bloom: true, bloomScale: 1, msaa: 4 },
+          bloom: true, bloomScale: 1, msaa: 4, ao: true, aoSamples: 16 },
+  // No AO on a phone yet: it costs a second pass over every building, and
+  // there are still thousands of them to draw. Revisit once they are merged.
   low:  { peds: 120, cars: 38,  clouds: 20, shadows: false, dpr: 1.2, shadowMap: 1024,
-          bloom: true, bloomScale: 0.5, msaa: 0 },
+          bloom: true, bloomScale: 0.5, msaa: 0, ao: false },
 };
 
 export class CityScene {
@@ -97,7 +99,7 @@ export class CityScene {
     this.rebuildCollision();
 
     // Post-processing last: it needs the scene and the camera.
-    if (quality.bloom) this.post = new Post(this.renderer, this.scene, this.camera, quality);
+    if (quality.bloom || quality.ao) this.post = new Post(this.renderer, this.scene, this.camera, quality);
   }
 
   // ------------------------------------------------------------------ light
@@ -151,6 +153,7 @@ export class CityScene {
     });
     this.sky = new THREE.Mesh(new THREE.SphereGeometry(3200, 24, 16), mat);
     this.sky.frustumCulled = false;
+    this.sky.userData.noAO = true;
     this.scene.add(this.sky);
   }
 
@@ -840,6 +843,7 @@ export class CityScene {
         drift: 1.6 + rnd() * 2.4,
       });
     }
+    this.clouds.userData.noAO = true;
     this.scene.add(this.clouds);
   }
 
