@@ -367,6 +367,11 @@ input[type=text]::placeholder { color: #5f6b7a; }
   border: 1px solid var(--line); background: rgba(255,255,255,.08); color: var(--ink);
 }
 #resetmenu button.primary { background: var(--accent); color: #06121b; border-color: var(--accent); }
+
+#speednote {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .1em;
+  color: #e0b341; margin-left: 10px; max-width: 110px; line-height: 1.3;
+}
 </style>
 <script type="importmap">
 { "imports": {
@@ -397,12 +402,14 @@ input[type=text]::placeholder { color: #5f6b7a; }
       </div>
     </div>
     <div id="speeds">
-      <button data-speed="0" class="sp">❚❚</button>
-      <button data-speed="1" class="sp on">1×</button>
-      <button data-speed="2" class="sp">10×</button>
-      <button data-speed="3" class="sp">60×</button>
-      <button data-speed="4" class="sp">300×</button>
+      <button data-speed="0" class="sp" title="Pause">&#10074;&#10074;</button>
+      <button data-speed="1" class="sp on" title="Real time">1&times;</button>
+      <button data-speed="2" class="sp" title="An hour a second">1h</button>
+      <button data-speed="3" class="sp" title="Half a day a second">12h</button>
+      <button data-speed="4" class="sp" title="Three days a second">3d</button>
+      <button data-speed="5" class="sp" title="A month a second">1mo</button>
     </div>
+    <div id="speednote"></div>
   </div>
 
   <div id="portfolio" class="panel hidden">
@@ -522,7 +529,7 @@ input[type=text]::placeholder { color: #5f6b7a; }
         <h4>On the board</h4>
         <p><kbd>Tab</kbd> rise up and drop back down</p>
         <p><kbd>Click</kbd> a lot to inspect · <kbd>Right-drag</kbd> orbit · <kbd>Scroll</kbd> zoom</p>
-        <p><kbd>1–4</kbd> speed up time · <kbd>Space</kbd> pause</p>
+        <p><kbd>1–5</kbd> speed up time (to a month a second) · <kbd>Space</kbd> pause</p>
       </div>
     </div>
     <p class="sub small">Buy land. Build on it. Rent pays you monthly and development pulls up the value of everything around it — including your rivals' land. The market runs in cycles; leverage is how you go fast and how you die.</p>
@@ -3766,7 +3773,8 @@ var UI = class {
 };
 
 // src/main.js
-var SPEEDS = [0, 5, 60, 720, 4320];
+var SPEEDS = [0, 5, 60, 720, 4320, 43200];
+var STREET_CAP = 60;
 var DEFAULT_SEED = 7;
 function readSeed() {
   const m = /^#s(\d+)$/.exec(location.hash || "");
@@ -3911,6 +3919,9 @@ addEventListener("keydown", (e) => {
     case "Digit4":
       ui.setSpeed(4);
       break;
+    case "Digit5":
+      ui.setSpeed(5);
+      break;
     case "Escape":
       if (document.pointerLockElement) document.exitPointerLock();
       ui.closeLot();
@@ -3948,7 +3959,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "0ae54ec \xB7 2026-09-22 18:58" : "dev";
+var BUILD = true ? "22a71c6 \xB7 2026-09-22 19:17" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
@@ -3984,7 +3995,7 @@ var uiAccum = 0;
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1e3);
   last = now;
-  const minutesPerSecond = controls.mode === MODE.BOARD ? SPEEDS[speed] : Math.min(SPEEDS[speed], 5);
+  const minutesPerSecond = controls.mode === MODE.BOARD ? SPEEDS[speed] : Math.min(SPEEDS[speed], STREET_CAP);
   advance(state, minutesPerSecond * dt / (60 * 24));
   controls.update(dt, scene);
   scene.updateTraffic(dt);
@@ -4017,6 +4028,8 @@ function frame(now) {
   uiAccum += dt;
   if (uiAccum > 0.25) {
     uiAccum = 0;
+    const capped = controls.mode !== MODE.BOARD && SPEEDS[speed] > STREET_CAP;
+    document.getElementById("speednote").textContent = capped ? "street time \u2014 TAB to run the clock" : "";
     ui.refreshTop();
     ui.refreshNews();
     if (controls.mode === MODE.BOARD) ui.refreshBoard();

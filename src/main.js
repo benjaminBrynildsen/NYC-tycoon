@@ -8,7 +8,12 @@ import { Controls, MODE, requestLock, isTyping } from './controls.js';
 import { UI } from './ui.js';
 
 // Game minutes that pass per real second, by speed setting.
-const SPEEDS = [0, 5, 60, 720, 4320];
+// 43,200 minutes is thirty days: one month every second.
+const SPEEDS = [0, 5, 60, 720, 4320, 43200];
+
+// On foot the clock stays walkable — a month a second would strobe the sun
+// and make the street unreadable. The board is where you compress time.
+const STREET_CAP = 60;
 
 /**
  * Seed handling. A reset reloads the page rather than tearing the scene down,
@@ -152,6 +157,7 @@ addEventListener('keydown', (e) => {
     case 'Digit2': ui.setSpeed(2); break;
     case 'Digit3': ui.setSpeed(3); break;
     case 'Digit4': ui.setSpeed(4); break;
+    case 'Digit5': ui.setSpeed(5); break;
     case 'Escape':
       if (document.pointerLockElement) document.exitPointerLock();
       ui.closeLot(); scene.hideVision(); visionLot = null;
@@ -230,7 +236,9 @@ function frame(now) {
   last = now;
 
   // Street time runs at a fixed pace; only the board lets you compress it.
-  const minutesPerSecond = controls.mode === MODE.BOARD ? SPEEDS[speed] : Math.min(SPEEDS[speed], 5);
+  const minutesPerSecond = controls.mode === MODE.BOARD
+    ? SPEEDS[speed]
+    : Math.min(SPEEDS[speed], STREET_CAP);
   advance(state, (minutesPerSecond * dt) / (60 * 24));
 
   controls.update(dt, scene);
@@ -277,6 +285,10 @@ function frame(now) {
   uiAccum += dt;
   if (uiAccum > 0.25) {
     uiAccum = 0;
+    // Say so when the street is holding the clock back, rather than silently
+    // ignoring the speed you picked.
+    const capped = controls.mode !== MODE.BOARD && SPEEDS[speed] > STREET_CAP;
+    document.getElementById('speednote').textContent = capped ? 'street time — TAB to run the clock' : '';
     ui.refreshTop();
     ui.refreshNews();
     if (controls.mode === MODE.BOARD) ui.refreshBoard();
