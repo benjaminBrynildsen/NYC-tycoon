@@ -11,7 +11,7 @@ import {
   leaderboard, buyLot, sellLot, startProject, formatDate, occupancyFor, rentPerSf,
   premiums, blockCharacter, rushQuote, rushProject, nameBuilding, worthBreakdown,
   makeOffer, reservePrice, regionGate, canWorkIn, demolitionBlock, LANDMARK_FLOORS,
-  blockSpareSf,
+  blockSpareSf, sellAll,
 } from './economy.js';
 
 const $ = (id) => document.getElementById(id);
@@ -119,6 +119,26 @@ export class UI {
     $('build-close').onclick = () => $('build-panel').classList.add('hidden');
     $('pf-close').onclick = () => $('portfolio').classList.add('hidden');
     $('np-more').onclick = () => this.openFullEdition();
+
+    // Two-step, because there is no undo.
+    const sellBtn = $('do-sellall');
+    sellBtn.onclick = () => {
+      if (!this._armSell) {
+        this._armSell = true;
+        sellBtn.textContent = 'Confirm — sell everything';
+        sellBtn.classList.add('danger');
+        clearTimeout(this._sellT);
+        this._sellT = setTimeout(() => this.disarmSell(), 5000);
+        return;
+      }
+      this.disarmSell();
+      const r = sellAll(this.state, 'player');
+      this.toast(r.count
+        ? `Sold ${r.count} ${r.count === 1 ? 'property' : 'properties'} for ${money(r.total)}.`
+          + (r.held ? ` ${r.held} still under construction.` : '')
+        : 'Nothing to sell.', !r.count);
+      this.refreshTop(); this.refreshBoard(); this.onDirty();
+    };
     // Delegated: the standings list is rebuilt on a timer, so a handler bound
     // to each row would be thrown away between press and release.
     $('leaderboard').addEventListener('click', (e) => {
@@ -206,9 +226,17 @@ export class UI {
     if (!$('portfolio').classList.contains('hidden')) this.refreshPortfolio();
   }
 
+  disarmSell() {
+    this._armSell = false;
+    const b = $('do-sellall');
+    b.textContent = 'Sell all properties';
+    b.classList.remove('danger');
+  }
+
   togglePortfolio() {
     const p = $('portfolio');
     p.classList.toggle('hidden');
+    this.disarmSell();
     if (!p.classList.contains('hidden')) this.refreshPortfolio();
   }
 

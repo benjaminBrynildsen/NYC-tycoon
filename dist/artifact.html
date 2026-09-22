@@ -386,6 +386,29 @@ input[type=range].maxed { accent-color: #4ade80; }
 
 #water-panel { bottom: 18px; left: 14px; width: 300px; }
 #water-panel #do-reclaim { width: 100%; margin-top: 12px; }
+
+/* --------------------------------------------------------------- the lift */
+#elevator { position: absolute; inset: 0; z-index: 25; pointer-events: none; }
+.lift-doors { position: absolute; inset: 0; background: #0a0c10; }
+.lift-doors::after {
+  content: ''; position: absolute; inset: 0; left: 50%; width: 2px;
+  background: rgba(255,255,255,.14);
+}
+.lift-readout {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  text-align: center; color: #e0b341; font-variant-numeric: tabular-nums;
+}
+.lift-readout span { font-size: 62px; font-weight: 700; line-height: 1; letter-spacing: .04em; }
+.lift-readout em {
+  display: block; font-style: normal; font-size: 10px; letter-spacing: .32em;
+  color: var(--dim); margin-top: 8px;
+}
+#do-sellall {
+  width: 100%; margin-top: 12px; padding: 8px; border-radius: 6px; cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--line); background: rgba(255,255,255,.08); color: var(--ink);
+}
+#do-sellall.danger { background: var(--bad); border-color: var(--bad); color: #1a0c0a; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -434,6 +457,7 @@ input[type=range].maxed { accent-color: #4ade80; }
     <div id="pf-income"></div>
     <div id="pf-gate"></div>
     <p class="hint" id="pf-holdings"></p>
+    <button id="do-sellall">Sell all properties</button>
   </div>
 
   <div id="worldlabel" class="hidden"></div>
@@ -525,6 +549,11 @@ input[type=range].maxed { accent-color: #4ade80; }
     <p class="hint">Taller than the minimum doesn't add floor area — FAR caps that — but a slimmer tower rents for more per square foot and costs more to build.</p>
   </div>
 
+  <div id="elevator" class="hidden">
+    <div class="lift-doors"></div>
+    <div class="lift-readout"><span id="lift-floor">0</span><em>FLOOR</em></div>
+  </div>
+
   <div id="crosshair"></div>
   <div id="prompt"></div>
   <div id="toast"></div>
@@ -548,7 +577,7 @@ input[type=range].maxed { accent-color: #4ade80; }
         <h4>On the street</h4>
         <p><kbd>W A S D</kbd> or <kbd>arrows</kbd> · <kbd>Shift</kbd> run · <kbd>Mouse</kbd> look</p>
         <p><kbd>V</kbd> raise the Vision on the lot you're standing on</p>
-        <p><kbd>E</kbd> car · <kbd>Shift</kbd> boost · <kbd>F</kbd> first person</p>
+        <p><kbd>E</kbd> car, or the lift to a roof · <kbd>F</kbd> first person</p>
         <p><kbd>Esc</kbd> frees the cursor so you can click the panels</p>
       </div>
       <div>
@@ -1523,6 +1552,22 @@ function pushNews(state2, kind, headline, dek, lot = null) {
   });
   if (state2.news.length > 40) state2.news.pop();
 }
+function sellAll(state2, actorId) {
+  let count = 0, total = 0, held = 0;
+  for (const lot of state2.city.lots) {
+    if (lot.owner !== actorId) continue;
+    if (lot.project) {
+      held++;
+      continue;
+    }
+    const r = sellLot(state2, lot, actorId);
+    if (r.ok) {
+      count++;
+      total += r.price * 0.97;
+    }
+  }
+  return { count, total, held };
+}
 function logEvent(state2, actorId, text) {
   const who = state2.actors[actorId];
   state2.log.unshift({ day: state2.day, actor: actorId, name: who ? who.name : actorId, text });
@@ -2083,6 +2128,20 @@ function makeBuilding(lot, b, cache) {
   }
   const top = vols[vols.length - 1];
   const roofY = (top.y0 + top.floors) * FH + 1.2;
+  if (b.floors >= 6) {
+    const pm = solid(cache, "parapet", 6972768, 0.93);
+    for (const [dx, dz, w, d] of [
+      [0, top.d / 2, top.w + 0.5, 0.45],
+      [0, -top.d / 2, top.w + 0.5, 0.45],
+      [top.w / 2, 0, 0.45, top.d + 0.5],
+      [-top.w / 2, 0, 0.45, top.d + 0.5]
+    ]) {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 1.15, d), pm);
+      wall.position.set(lot.x + dx, roofY + 0.58, lot.z + dz);
+      wall.castShadow = true;
+      group.add(wall);
+    }
+  }
   if (b.floors <= 20 && rnd() < 0.75) {
     props.push({
       kind: "watertower",
@@ -2111,7 +2170,22 @@ function makeBuilding(lot, b, cache) {
       s: 0.7 + rnd() * 0.4
     });
   }
-  group.userData = { lotId: lot.id, type, props, height: b.floors * FH };
+  const topVol = vols[vols.length - 1];
+  group.userData = {
+    lotId: lot.id,
+    type,
+    props,
+    height: b.floors * FH,
+    // Where the lift lets you out, and how far you can walk before the parapet.
+    roof: {
+      y: (topVol.y0 + topVol.floors) * FH + 1.2,
+      hw: topVol.w / 2 - 1.2,
+      hd: topVol.d / 2 - 1.2,
+      x: lot.x,
+      z: lot.z,
+      floors: b.floors
+    }
+  };
   return group;
 }
 function massingVolumes(lot, b) {
@@ -2441,6 +2515,7 @@ var CityScene = class {
     this._streetFurniture();
     this._buildings();
     this._vehicles();
+    this._clouds();
     this._crowd();
     this._highlight();
     this._vision();
@@ -3117,9 +3192,69 @@ var CityScene = class {
       set.lamps.instanceMatrix.needsUpdate = true;
     }
   }
+  /** A high layer of cloud you only really meet from a rooftop. */
+  _clouds() {
+    const c = document.createElement("canvas");
+    c.width = c.height = 128;
+    const g = c.getContext("2d");
+    const rnd = mulberry32(5150);
+    g.clearRect(0, 0, 128, 128);
+    for (let i = 0; i < 26; i++) {
+      const x = 28 + rnd() * 72, y = 40 + rnd() * 48, r = 14 + rnd() * 26;
+      const grad = g.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, "rgba(255,255,255,0.85)");
+      grad.addColorStop(0.55, "rgba(255,255,255,0.4)");
+      grad.addColorStop(1, "rgba(255,255,255,0)");
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(x, y, r, 0, 6.3);
+      g.fill();
+    }
+    const tex = new THREE3.CanvasTexture(c);
+    tex.colorSpace = THREE3.SRGBColorSpace;
+    const COUNT = 46;
+    this.cloudMat = new THREE3.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      opacity: 0.62,
+      depthWrite: false,
+      fog: false,
+      side: THREE3.DoubleSide
+    });
+    this.clouds = new THREE3.InstancedMesh(new THREE3.PlaneGeometry(1, 1), this.cloudMat, COUNT);
+    this.clouds.renderOrder = 1;
+    this.cloudPuffs = [];
+    for (let i = 0; i < COUNT; i++) {
+      this.cloudPuffs.push({
+        x: (rnd() - 0.5) * CONFIG.WIDTH * 2.4,
+        z: (rnd() - 0.5) * CONFIG.DEPTH * 1.8,
+        y: 210 + rnd() * 170,
+        s: 240 + rnd() * 420,
+        drift: 1.6 + rnd() * 2.4
+      });
+    }
+    this.scene.add(this.clouds);
+  }
+  updateClouds(dt) {
+    const lim = CONFIG.WIDTH * 1.4;
+    const q = new THREE3.Quaternion().setFromEuler(new THREE3.Euler(-Math.PI / 2, 0, 0));
+    for (let i = 0; i < this.cloudPuffs.length; i++) {
+      const p = this.cloudPuffs[i];
+      p.x += p.drift * dt;
+      if (p.x > lim) p.x = -lim;
+      tmpM.compose(tmpV.set(p.x, p.y, p.z), q, tmpS.set(p.s, p.s * 0.62, 1));
+      this.clouds.setMatrixAt(i, tmpM);
+    }
+    tmpS.set(1, 1, 1);
+    this.clouds.instanceMatrix.needsUpdate = true;
+  }
+  /** Where a building's lift lets you out. */
+  roofOf(lotId) {
+    return this.buildingByLot.get(lotId)?.userData.roof ?? null;
+  }
   // ----------------------------------------------------------------- people
   _crowd() {
-    const COUNT = 240;
+    const COUNT = 430;
     const parts = personParts();
     const rnd = mulberry32(909);
     const coatMat = new THREE3.MeshStandardMaterial({ roughness: 0.88 });
@@ -3154,6 +3289,18 @@ var CityScene = class {
     if (this.pHead.instanceColor) this.pHead.instanceColor.needsUpdate = true;
     this.scene.add(this.pCoat, this.pHead, this.pLegA, this.pLegB);
   }
+  /** Total built floor area on a cell — how busy its pavements should be. */
+  blockGsf(col, row) {
+    if (!this._blockByCell) {
+      this._blockByCell = /* @__PURE__ */ new Map();
+      for (const b2 of this.city.blocks) this._blockByCell.set(`${b2.col},${b2.row}`, b2);
+    }
+    const b = this._blockByCell.get(`${col},${row}`);
+    if (!b) return 0;
+    let gsf = 0;
+    for (const l of b.lots) if (l.building) gsf += l.building.gsf;
+    return gsf;
+  }
   /** Pedestrians live near the camera and are recycled in front of you. */
   updateCrowd(dt, focus) {
     const halfBlock = CONFIG.BLOCK / 2 + 2.6;
@@ -3172,16 +3319,26 @@ var CityScene = class {
       const far = dx * dx + dz * dz > 170 * 170;
       const here = cellOf(p.x, p.z);
       if (far || !this.city.isLand(here.col, here.row)) {
-        const a = Math.random() * Math.PI * 2, r = 45 + Math.random() * 95;
-        const nx = focus.x + Math.cos(a) * r, nz = focus.z + Math.sin(a) * r;
-        const c = cellOf(nx, nz);
-        if (!this.city.isLand(c.col, c.row)) {
-          const f = cellOf(focus.x, focus.z);
-          p.x = cellCenter(f.col, f.row).x;
-          p.z = cellCenter(f.col, f.row).z;
+        let best = null, bestGsf = -1;
+        for (let k = 0; k < 3; k++) {
+          const a = Math.random() * Math.PI * 2, r = 40 + Math.random() * 100;
+          const nx = focus.x + Math.cos(a) * r, nz = focus.z + Math.sin(a) * r;
+          const c = cellOf(nx, nz);
+          if (!this.city.isLand(c.col, c.row)) continue;
+          const gsf = this.blockGsf(c.col, c.row);
+          if (gsf > bestGsf) {
+            bestGsf = gsf;
+            best = { nx, nz };
+          }
+        }
+        if (best) {
+          p.x = best.nx;
+          p.z = best.nz;
         } else {
-          p.x = nx;
-          p.z = nz;
+          const f = cellOf(focus.x, focus.z);
+          const centre2 = cellCenter(f.col, f.row);
+          p.x = centre2.x;
+          p.z = centre2.z;
         }
       }
       const cell = cellOf(p.x, p.z);
@@ -3478,6 +3635,9 @@ var Controls = class {
     this.mode = MODE.STREET;
     this.firstPerson = false;
     this.pos = new THREE4.Vector3(0, 0, CONFIG.PITCH * 2.2);
+    this.groundY = 0;
+    this.platform = null;
+    this.riding = null;
     this.yaw = Math.PI;
     this.pitch = -0.08;
     this.vel = new THREE4.Vector3();
@@ -3591,8 +3751,55 @@ var Controls = class {
     this.car.pos.copy(this.pos);
     return d;
   }
+  /**
+   * Take the lift. Up puts you on a roof and keeps you inside its parapet;
+   * down returns you to the pavement beside the building.
+   */
+  startRide(platform) {
+    if (this.riding || this.mode !== MODE.STREET) return false;
+    const up = !!platform;
+    this.riding = {
+      t: 0,
+      dur: 2.2,
+      up,
+      fromY: this.groundY,
+      toY: up ? platform.y : 0,
+      platform,
+      fromFloor: up ? 0 : this.platform?.floors ?? 0,
+      toFloor: up ? platform.floors : 0,
+      exit: up ? null : { x: this.platform.x, z: this.platform.z + this.platform.hd + 14 }
+    };
+    return true;
+  }
+  /** Floor the lift is passing, for the indicator. */
+  get rideFloor() {
+    if (!this.riding) return null;
+    const k = Math.min(1, this.riding.t / this.riding.dur);
+    return Math.round(this.riding.fromFloor + (this.riding.toFloor - this.riding.fromFloor) * k);
+  }
+  _updateRide(dt) {
+    const r = this.riding;
+    r.t += dt;
+    const k = Math.min(1, r.t / r.dur);
+    const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    this.groundY = r.fromY + (r.toY - r.fromY) * e;
+    if (k < 1) return;
+    if (r.up) {
+      this.platform = r.platform;
+      this.pos.set(r.platform.x, 0, r.platform.z - r.platform.hd * 0.72);
+      this.yaw = 0;
+      this.pitch = -0.16;
+    } else {
+      this.platform = null;
+      let [x, z] = this.s.resolveCollision(r.exit.x, r.exit.z, 0.7);
+      this.pos.set(x, 0, z);
+    }
+    this.groundY = r.toY;
+    this.riding = null;
+  }
   update(dt, sceneRef) {
-    if (this.mode === MODE.CAR) this._updateCar(dt);
+    if (this.riding) this._updateRide(dt);
+    else if (this.mode === MODE.CAR) this._updateCar(dt);
     else if (this.mode === MODE.STREET) this._updateWalk(dt);
     this._updateCamera(dt, sceneRef);
   }
@@ -3607,10 +3814,16 @@ var Controls = class {
     const dx = (fx * cos + fz * sin) * speed2 * dt;
     const dz = (fz * cos - fx * sin) * speed2 * dt;
     let nx = this.pos.x + dx, nz = this.pos.z + dz;
-    [nx, nz] = this.s.resolveCollision(nx, nz, 0.6);
-    const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
-    this.pos.x = Math.max(-lx, Math.min(lx, nx));
-    this.pos.z = Math.max(-lz, Math.min(lz, nz));
+    if (this.platform) {
+      const p = this.platform;
+      this.pos.x = Math.max(p.x - p.hw, Math.min(p.x + p.hw, nx));
+      this.pos.z = Math.max(p.z - p.hd, Math.min(p.z + p.hd, nz));
+    } else {
+      [nx, nz] = this.s.resolveCollision(nx, nz, 0.6);
+      const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
+      this.pos.x = Math.max(-lx, Math.min(lx, nx));
+      this.pos.z = Math.max(-lz, Math.min(lz, nz));
+    }
     this.moving = Math.hypot(dx, dz) > 1e-3;
   }
   _updateCar(dt) {
@@ -3638,7 +3851,7 @@ var Controls = class {
     this.pos.copy(c.pos);
   }
   enterCar() {
-    if (this.mode !== MODE.STREET) return false;
+    if (this.mode !== MODE.STREET || this.platform || this.riding) return false;
     if (this.pos.distanceTo(this.s.playerCar.position) > 6) return false;
     this.car.pos.copy(this.s.playerCar.position);
     this.mode = MODE.CAR;
@@ -3666,21 +3879,23 @@ var Controls = class {
     return { pos, q };
   }
   _streetCameraPose() {
-    const eye = this.mode === MODE.CAR ? 2 : 1.72;
+    const eye = (this.mode === MODE.CAR ? 2 : 1.72) + this.groundY;
     const head = new THREE4.Vector3(this.pos.x, eye, this.pos.z);
     const q = new THREE4.Quaternion().setFromEuler(new THREE4.Euler(this.pitch, this.yaw, 0, "YXZ"));
     if (this.firstPerson) return { pos: head, q };
     const back = new THREE4.Vector3(0, 0, 1).applyQuaternion(q);
     const dist = this.mode === MODE.CAR ? 9.5 : 5.4;
     const pos = head.clone().addScaledVector(back, dist).add(new THREE4.Vector3(0, 1.3, 0));
-    if (pos.y < 0.9) {
-      const t = (0.9 - head.y - 1.3) / (back.y * dist || -1);
+    if (pos.y < this.groundY + 0.9) {
+      const t = (this.groundY + 0.9 - head.y - 1.3) / (back.y * dist || -1);
       pos.copy(head).addScaledVector(back, Math.max(1.2, dist * Math.max(0, Math.min(1, t)))).add(new THREE4.Vector3(0, 1.3, 0));
-      pos.y = Math.max(pos.y, 0.9);
+      pos.y = Math.max(pos.y, this.groundY + 0.9);
     }
-    const [cx, cz] = this.s.resolveCollision(pos.x, pos.z, 0.4);
-    pos.x = cx;
-    pos.z = cz;
+    if (!this.platform && !this.riding) {
+      const [cx, cz] = this.s.resolveCollision(pos.x, pos.z, 0.4);
+      pos.x = cx;
+      pos.z = cz;
+    }
     return { pos, q };
   }
   /**
@@ -3732,7 +3947,7 @@ var Controls = class {
         cam.updateProjectionMatrix();
       }
     }
-    s.avatar.position.set(this.pos.x, 0, this.pos.z);
+    s.avatar.position.set(this.pos.x, this.groundY, this.pos.z);
     s.avatar.rotation.y = this.yaw + Math.PI;
     s.avatar.visible = !(this.firstPerson && this.mode === MODE.STREET && !this.transition) && this.mode !== MODE.CAR;
     if (this.mode === MODE.CAR) {
@@ -3840,6 +4055,23 @@ var UI = class {
     $("build-close").onclick = () => $("build-panel").classList.add("hidden");
     $("pf-close").onclick = () => $("portfolio").classList.add("hidden");
     $("np-more").onclick = () => this.openFullEdition();
+    const sellBtn = $("do-sellall");
+    sellBtn.onclick = () => {
+      if (!this._armSell) {
+        this._armSell = true;
+        sellBtn.textContent = "Confirm \u2014 sell everything";
+        sellBtn.classList.add("danger");
+        clearTimeout(this._sellT);
+        this._sellT = setTimeout(() => this.disarmSell(), 5e3);
+        return;
+      }
+      this.disarmSell();
+      const r = sellAll(this.state, "player");
+      this.toast(r.count ? `Sold ${r.count} ${r.count === 1 ? "property" : "properties"} for ${money(r.total)}.` + (r.held ? ` ${r.held} still under construction.` : "") : "Nothing to sell.", !r.count);
+      this.refreshTop();
+      this.refreshBoard();
+      this.onDirty();
+    };
     $("leaderboard").addEventListener("click", (e) => {
       const li = e.target.closest("li[data-actor]");
       if (!li) return;
@@ -3922,9 +4154,16 @@ var UI = class {
     $("s-rank").textContent = `${rank}${["st", "nd", "rd", "th"][Math.min(rank - 1, 3)]} of 4`;
     if (!$("portfolio").classList.contains("hidden")) this.refreshPortfolio();
   }
+  disarmSell() {
+    this._armSell = false;
+    const b = $("do-sellall");
+    b.textContent = "Sell all properties";
+    b.classList.remove("danger");
+  }
   togglePortfolio() {
     const p = $("portfolio");
     p.classList.toggle("hidden");
+    this.disarmSell();
     if (!p.classList.contains("hidden")) this.refreshPortfolio();
   }
   refreshPortfolio() {
@@ -4475,12 +4714,7 @@ addEventListener("keydown", (e) => {
       if (controls.mode === MODE.STREET) controls.firstPerson = !controls.firstPerson;
       break;
     case "KeyE":
-      if (controls.mode === MODE.CAR) {
-        controls.exitCar();
-        ui.toast("Out of the car.");
-      } else if (controls.enterCar()) {
-        ui.toast("Driving. W/S throttle, A/D steer, E to get out.");
-      }
+      useElevatorOrCar();
       break;
     case "Space":
       e.preventDefault();
@@ -4509,6 +4743,25 @@ addEventListener("keydown", (e) => {
       break;
   }
 });
+function useElevatorOrCar() {
+  if (controls.riding) return;
+  if (controls.platform) {
+    controls.startRide(null);
+    return;
+  }
+  if (controls.mode === MODE.CAR) {
+    controls.exitCar();
+    ui.toast("Out of the car.");
+    return;
+  }
+  const lot = controls.currentLot(city);
+  const roof = lot && lot.building ? scene.roofOf(lot.id) : null;
+  if (roof && lot.building.floors >= 6) {
+    controls.startRide(roof);
+    return;
+  }
+  if (controls.enterCar()) ui.toast("Driving. W/S throttle, A/D steer, E to get out.");
+}
 function toggleVision() {
   if (controls.mode === MODE.BOARD) return;
   if (visionLot) {
@@ -4538,7 +4791,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "87d7d2b \xB7 2026-09-22 19:58" : "dev";
+var BUILD = true ? "f3d4b27 \xB7 2026-09-22 20:07" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
@@ -4595,7 +4848,13 @@ function frame(now) {
   displayHour = compressed || Math.abs(gap) > 0.75 ? (displayHour + gap * Math.min(1, dt * 1.6) + 24) % 24 : liveHour;
   const hour = displayHour;
   scene.updateSky(hour, controls.mode === MODE.BOARD ? controls.board.target : controls.focusPoint, dt);
+  scene.updateClouds(dt);
   scene.updateFills(state.fills);
+  const lift = document.getElementById("elevator");
+  if (controls.riding) {
+    lift.classList.remove("hidden");
+    document.getElementById("lift-floor").textContent = controls.rideFloor;
+  } else lift.classList.add("hidden");
   if (state._dirtyTerrain) {
     state._dirtyTerrain = false;
     scene.rebuildTerrain();
@@ -4609,8 +4868,11 @@ function frame(now) {
   }
   if (controls.mode === MODE.STREET && !visionLot) {
     const lot = controls.currentLot(city);
+    const roof = lot && lot.building ? scene.roofOf(lot.id) : null;
     const nearCar = controls.pos.distanceTo(scene.playerCar.position) < 6;
-    if (nearCar) ui.prompt("E \u2014 get in the car");
+    if (controls.platform) ui.prompt("E \u2014 take the lift down");
+    else if (roof && lot.building.floors >= 6) ui.prompt(`E \u2014 lift to the roof (${lot.building.floors} floors)  \xB7  V \u2014 the Vision`);
+    else if (nearCar) ui.prompt("E \u2014 get in the car");
     else if (lot) ui.prompt(`V \u2014 raise the Vision on lot #${lot.id}`);
     else ui.prompt("");
   } else if (controls.mode === MODE.CAR) {

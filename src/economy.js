@@ -555,6 +555,18 @@ export function pushNews(state, kind, headline, dek, lot = null) {
   if (state.news.length > 40) state.news.pop();
 }
 
+/** Liquidate. Sites under construction can't be walked away from. */
+export function sellAll(state, actorId) {
+  let count = 0, total = 0, held = 0;
+  for (const lot of state.city.lots) {
+    if (lot.owner !== actorId) continue;
+    if (lot.project) { held++; continue; }
+    const r = sellLot(state, lot, actorId);
+    if (r.ok) { count++; total += r.price * 0.97; }
+  }
+  return { count, total, held };
+}
+
 export function logEvent(state, actorId, text) {
   const who = state.actors[actorId];
   state.log.unshift({ day: state.day, actor: actorId, name: who ? who.name : actorId, text });

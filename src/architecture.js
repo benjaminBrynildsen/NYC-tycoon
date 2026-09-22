@@ -309,6 +309,20 @@ export function makeBuilding(lot, b, cache) {
   // Roof kit. Every New York roof has something on it.
   const top = vols[vols.length - 1];
   const roofY = (top.y0 + top.floors) * FH + 1.2;
+
+  // A parapet, so a roof reads as somewhere you could stand.
+  if (b.floors >= 6) {
+    const pm = solid(cache, 'parapet', 0x6a6560, 0.93);
+    for (const [dx, dz, w, d] of [
+      [0, top.d / 2, top.w + 0.5, 0.45], [0, -top.d / 2, top.w + 0.5, 0.45],
+      [top.w / 2, 0, 0.45, top.d + 0.5], [-top.w / 2, 0, 0.45, top.d + 0.5],
+    ]) {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 1.15, d), pm);
+      wall.position.set(lot.x + dx, roofY + 0.58, lot.z + dz);
+      wall.castShadow = true;
+      group.add(wall);
+    }
+  }
   if (b.floors <= 20 && rnd() < 0.75) {
     props.push({ kind: 'watertower', x: lot.x + (rnd() - 0.5) * top.w * 0.4,
                  y: roofY, z: lot.z + (rnd() - 0.5) * top.d * 0.4, s: 0.9 + rnd() * 0.3 });
@@ -323,7 +337,14 @@ export function makeBuilding(lot, b, cache) {
                  z: lot.z + (rnd() - 0.5) * top.d * 0.5, s: 0.7 + rnd() * 0.4 });
   }
 
-  group.userData = { lotId: lot.id, type, props, height: b.floors * FH };
+  const topVol = vols[vols.length - 1];
+  group.userData = {
+    lotId: lot.id, type, props, height: b.floors * FH,
+    // Where the lift lets you out, and how far you can walk before the parapet.
+    roof: { y: (topVol.y0 + topVol.floors) * FH + 1.2,
+            hw: topVol.w / 2 - 1.2, hd: topVol.d / 2 - 1.2,
+            x: lot.x, z: lot.z, floors: b.floors },
+  };
   return group;
 }
 

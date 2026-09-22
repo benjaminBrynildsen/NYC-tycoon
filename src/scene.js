@@ -74,6 +74,7 @@ export class CityScene {
     this._streetFurniture();
     this._buildings();
     this._vehicles();
+    this._clouds();
     this._crowd();
     this._highlight();
     this._vision();
@@ -786,10 +787,68 @@ export class CityScene {
     }
   }
 
+  /** A high layer of cloud you only really meet from a rooftop. */
+  _clouds() {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d');
+    const rnd = mulberry32(5150);
+    g.clearRect(0, 0, 128, 128);
+    for (let i = 0; i < 26; i++) {
+      const x = 28 + rnd() * 72, y = 40 + rnd() * 48, r = 14 + rnd() * 26;
+      const grad = g.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, 'rgba(255,255,255,0.85)');
+      grad.addColorStop(0.55, 'rgba(255,255,255,0.4)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = grad;
+      g.beginPath(); g.arc(x, y, r, 0, 6.3); g.fill();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+
+    const COUNT = 46;
+    this.cloudMat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: 0.62, depthWrite: false, fog: false,
+      side: THREE.DoubleSide,
+    });
+    this.clouds = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), this.cloudMat, COUNT);
+    this.clouds.renderOrder = 1;
+    this.cloudPuffs = [];
+    for (let i = 0; i < COUNT; i++) {
+      this.cloudPuffs.push({
+        x: (rnd() - 0.5) * CONFIG.WIDTH * 2.4,
+        z: (rnd() - 0.5) * CONFIG.DEPTH * 1.8,
+        y: 210 + rnd() * 170,
+        s: 240 + rnd() * 420,
+        drift: 1.6 + rnd() * 2.4,
+      });
+    }
+    this.scene.add(this.clouds);
+  }
+
+  updateClouds(dt) {
+    const lim = CONFIG.WIDTH * 1.4;
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
+    for (let i = 0; i < this.cloudPuffs.length; i++) {
+      const p = this.cloudPuffs[i];
+      p.x += p.drift * dt;
+      if (p.x > lim) p.x = -lim;
+      tmpM.compose(tmpV.set(p.x, p.y, p.z), q, tmpS.set(p.s, p.s * 0.62, 1));
+      this.clouds.setMatrixAt(i, tmpM);
+    }
+    tmpS.set(1, 1, 1);
+    this.clouds.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Where a building's lift lets you out. */
+  roofOf(lotId) {
+    return this.buildingByLot.get(lotId)?.userData.roof ?? null;
+  }
+
   // ----------------------------------------------------------------- people
 
   _crowd() {
-    const COUNT = 240;
+    const COUNT = 430;
     const parts = personParts();
     const rnd = mulberry32(909);
 
@@ -824,6 +883,19 @@ export class CityScene {
     this.scene.add(this.pCoat, this.pHead, this.pLegA, this.pLegB);
   }
 
+  /** Total built floor area on a cell — how busy its pavements should be. */
+  blockGsf(col, row) {
+    if (!this._blockByCell) {
+      this._blockByCell = new Map();
+      for (const b of this.city.blocks) this._blockByCell.set(`${b.col},${b.row}`, b);
+    }
+    const b = this._blockByCell.get(`${col},${row}`);
+    if (!b) return 0;
+    let gsf = 0;
+    for (const l of b.lots) if (l.building) gsf += l.building.gsf;
+    return gsf;
+  }
+
   /** Pedestrians live near the camera and are recycled in front of you. */
   updateCrowd(dt, focus) {
     const halfBlock = CONFIG.BLOCK / 2 + 2.6;
@@ -839,13 +911,24 @@ export class CityScene {
       const dx = p.x - focus.x, dz = p.z - focus.z;
       const far = dx * dx + dz * dz > 170 * 170;
       const here = cellOf(p.x, p.z);
-      // Recycle anyone who has drifted too far, or out over the water.
+      // Recycle anyone who has drifted too far, or out over the water, and put
+      // them where the floor area is: a block with a tower on it is busy.
       if (far || !this.city.isLand(here.col, here.row)) {
-        const a = Math.random() * Math.PI * 2, r = 45 + Math.random() * 95;
-        const nx = focus.x + Math.cos(a) * r, nz = focus.z + Math.sin(a) * r;
-        const c = cellOf(nx, nz);
-        if (!this.city.isLand(c.col, c.row)) { const f = cellOf(focus.x, focus.z); p.x = cellCenter(f.col, f.row).x; p.z = cellCenter(f.col, f.row).z; }
-        else { p.x = nx; p.z = nz; }
+        let best = null, bestGsf = -1;
+        for (let k = 0; k < 3; k++) {
+          const a = Math.random() * Math.PI * 2, r = 40 + Math.random() * 100;
+          const nx = focus.x + Math.cos(a) * r, nz = focus.z + Math.sin(a) * r;
+          const c = cellOf(nx, nz);
+          if (!this.city.isLand(c.col, c.row)) continue;
+          const gsf = this.blockGsf(c.col, c.row);
+          if (gsf > bestGsf) { bestGsf = gsf; best = { nx, nz }; }
+        }
+        if (best) { p.x = best.nx; p.z = best.nz; }
+        else {
+          const f = cellOf(focus.x, focus.z);
+          const centre = cellCenter(f.col, f.row);
+          p.x = centre.x; p.z = centre.z;
+        }
       }
       const cell = cellOf(p.x, p.z);
       const centre = cellCenter(cell.col, cell.row);

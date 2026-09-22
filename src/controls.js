@@ -31,6 +31,9 @@ export class Controls {
     this.firstPerson = false;
 
     this.pos = new THREE.Vector3(0, 0, CONFIG.PITCH * 2.2);
+    this.groundY = 0;        // raised when you are standing on a roof
+    this.platform = null;    // {x, z, hw, hd, y} while up there
+    this.riding = null;      // the lift, mid-journey
     this.yaw = Math.PI;
     this.pitch = -0.08;
     this.vel = new THREE.Vector3();
@@ -146,8 +149,58 @@ export class Controls {
     return d;
   }
 
+  /**
+   * Take the lift. Up puts you on a roof and keeps you inside its parapet;
+   * down returns you to the pavement beside the building.
+   */
+  startRide(platform) {
+    if (this.riding || this.mode !== MODE.STREET) return false;
+    const up = !!platform;
+    this.riding = {
+      t: 0, dur: 2.2, up,
+      fromY: this.groundY,
+      toY: up ? platform.y : 0,
+      platform,
+      fromFloor: up ? 0 : (this.platform?.floors ?? 0),
+      toFloor: up ? platform.floors : 0,
+      exit: up ? null : { x: this.platform.x, z: this.platform.z + this.platform.hd + 14 },
+    };
+    return true;
+  }
+
+  /** Floor the lift is passing, for the indicator. */
+  get rideFloor() {
+    if (!this.riding) return null;
+    const k = Math.min(1, this.riding.t / this.riding.dur);
+    return Math.round(this.riding.fromFloor + (this.riding.toFloor - this.riding.fromFloor) * k);
+  }
+
+  _updateRide(dt) {
+    const r = this.riding;
+    r.t += dt;
+    const k = Math.min(1, r.t / r.dur);
+    const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;   // ease in-out
+    this.groundY = r.fromY + (r.toY - r.fromY) * e;
+    if (k < 1) return;
+    if (r.up) {
+      this.platform = r.platform;
+      // Step out at the edge looking over the parapet, not at the middle of a
+      // blank roof wondering what the point was.
+      this.pos.set(r.platform.x, 0, r.platform.z - r.platform.hd * 0.72);
+      this.yaw = 0;
+      this.pitch = -0.16;
+    } else {
+      this.platform = null;
+      let [x, z] = this.s.resolveCollision(r.exit.x, r.exit.z, 0.7);
+      this.pos.set(x, 0, z);
+    }
+    this.groundY = r.toY;
+    this.riding = null;
+  }
+
   update(dt, sceneRef) {
-    if (this.mode === MODE.CAR) this._updateCar(dt);
+    if (this.riding) this._updateRide(dt);
+    else if (this.mode === MODE.CAR) this._updateCar(dt);
     else if (this.mode === MODE.STREET) this._updateWalk(dt);
     this._updateCamera(dt, sceneRef);
   }
@@ -165,10 +218,17 @@ export class Controls {
     const dz = (fz * cos - fx * sin) * speed * dt;
 
     let nx = this.pos.x + dx, nz = this.pos.z + dz;
-    [nx, nz] = this.s.resolveCollision(nx, nz, 0.6);
-    const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
-    this.pos.x = Math.max(-lx, Math.min(lx, nx));
-    this.pos.z = Math.max(-lz, Math.min(lz, nz));
+    if (this.platform) {
+      // Up here the parapet is the only thing that stops you.
+      const p = this.platform;
+      this.pos.x = Math.max(p.x - p.hw, Math.min(p.x + p.hw, nx));
+      this.pos.z = Math.max(p.z - p.hd, Math.min(p.z + p.hd, nz));
+    } else {
+      [nx, nz] = this.s.resolveCollision(nx, nz, 0.6);
+      const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
+      this.pos.x = Math.max(-lx, Math.min(lx, nx));
+      this.pos.z = Math.max(-lz, Math.min(lz, nz));
+    }
     this.moving = Math.hypot(dx, dz) > 0.001;
   }
 
@@ -200,7 +260,7 @@ export class Controls {
   }
 
   enterCar() {
-    if (this.mode !== MODE.STREET) return false;
+    if (this.mode !== MODE.STREET || this.platform || this.riding) return false;
     if (this.pos.distanceTo(this.s.playerCar.position) > 6) return false;
     this.car.pos.copy(this.s.playerCar.position);
     this.mode = MODE.CAR;
@@ -231,7 +291,7 @@ export class Controls {
   }
 
   _streetCameraPose() {
-    const eye = this.mode === MODE.CAR ? 2.0 : 1.72;
+    const eye = (this.mode === MODE.CAR ? 2.0 : 1.72) + this.groundY;
     const head = new THREE.Vector3(this.pos.x, eye, this.pos.z);
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
     if (this.firstPerson) return { pos: head, q };
@@ -239,14 +299,16 @@ export class Controls {
     const dist = this.mode === MODE.CAR ? 9.5 : 5.4;
     const pos = head.clone().addScaledVector(back, dist).add(new THREE.Vector3(0, 1.3, 0));
     // Looking up must not bury the camera in the pavement.
-    if (pos.y < 0.9) {
-      const t = (0.9 - head.y - 1.3) / (back.y * dist || -1);
+    if (pos.y < this.groundY + 0.9) {
+      const t = (this.groundY + 0.9 - head.y - 1.3) / (back.y * dist || -1);
       pos.copy(head).addScaledVector(back, Math.max(1.2, dist * Math.max(0, Math.min(1, t))))
          .add(new THREE.Vector3(0, 1.3, 0));
-      pos.y = Math.max(pos.y, 0.9);
+      pos.y = Math.max(pos.y, this.groundY + 0.9);
     }
-    const [cx, cz] = this.s.resolveCollision(pos.x, pos.z, 0.4);
-    pos.x = cx; pos.z = cz;
+    if (!this.platform && !this.riding) {
+      const [cx, cz] = this.s.resolveCollision(pos.x, pos.z, 0.4);
+      pos.x = cx; pos.z = cz;
+    }
     return { pos, q };
   }
 
@@ -302,7 +364,7 @@ export class Controls {
     }
 
     // Keep the avatar and the car where they belong in the world.
-    s.avatar.position.set(this.pos.x, 0, this.pos.z);
+    s.avatar.position.set(this.pos.x, this.groundY, this.pos.z);
     s.avatar.rotation.y = this.yaw + Math.PI;
     s.avatar.visible = !(this.firstPerson && this.mode === MODE.STREET && !this.transition) && this.mode !== MODE.CAR;
     if (this.mode === MODE.CAR) {

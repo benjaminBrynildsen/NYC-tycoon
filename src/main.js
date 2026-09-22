@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { generateCity, CONFIG, cellOf, canReclaim, minFloors } from './world.js';
 import { createState, advance, netWorth, leaderboard, money, logEvent,
-         reclaimCost, startReclaim, canReclaimHere } from './economy.js';
+         reclaimCost, startReclaim, canReclaimHere, sellAll } from './economy.js';
 import { CityScene } from './scene.js';
 import { Controls, MODE, requestLock, isTyping } from './controls.js';
 import { UI } from './ui.js';
@@ -181,14 +181,7 @@ addEventListener('keydown', (e) => {
     case 'KeyF':
       if (controls.mode === MODE.STREET) controls.firstPerson = !controls.firstPerson;
       break;
-    case 'KeyE':
-      if (controls.mode === MODE.CAR) {
-        controls.exitCar();
-        ui.toast('Out of the car.');
-      } else if (controls.enterCar()) {
-        ui.toast('Driving. W/S throttle, A/D steer, E to get out.');
-      }
-      break;
+    case 'KeyE': useElevatorOrCar(); break;
     case 'Space': e.preventDefault(); ui.setSpeed(speed === 0 ? 1 : 0); break;
     case 'Digit1': ui.setSpeed(1); break;
     case 'Digit2': ui.setSpeed(2); break;
@@ -201,6 +194,22 @@ addEventListener('keydown', (e) => {
       break;
   }
 });
+
+/** E does the obvious thing for wherever you're standing. */
+function useElevatorOrCar() {
+  if (controls.riding) return;
+  if (controls.platform) {
+    controls.startRide(null);
+    return;
+  }
+  if (controls.mode === MODE.CAR) { controls.exitCar(); ui.toast('Out of the car.'); return; }
+
+  const lot = controls.currentLot(city);
+  const roof = lot && lot.building ? scene.roofOf(lot.id) : null;
+  if (roof && lot.building.floors >= 6) { controls.startRide(roof); return; }
+
+  if (controls.enterCar()) ui.toast('Driving. W/S throttle, A/D steer, E to get out.');
+}
 
 function toggleVision() {
   if (controls.mode === MODE.BOARD) return;
@@ -306,7 +315,14 @@ function frame(now) {
   const hour = displayHour;
   scene.updateSky(hour, controls.mode === MODE.BOARD ? controls.board.target : controls.focusPoint, dt);
 
+  scene.updateClouds(dt);
   scene.updateFills(state.fills);
+
+  const lift = document.getElementById('elevator');
+  if (controls.riding) {
+    lift.classList.remove('hidden');
+    document.getElementById('lift-floor').textContent = controls.rideFloor;
+  } else lift.classList.add('hidden');
 
   if (state._dirtyTerrain) {
     state._dirtyTerrain = false;
@@ -323,8 +339,11 @@ function frame(now) {
   // Contextual prompt on the street.
   if (controls.mode === MODE.STREET && !visionLot) {
     const lot = controls.currentLot(city);
+    const roof = lot && lot.building ? scene.roofOf(lot.id) : null;
     const nearCar = controls.pos.distanceTo(scene.playerCar.position) < 6;
-    if (nearCar) ui.prompt('E — get in the car');
+    if (controls.platform) ui.prompt('E — take the lift down');
+    else if (roof && lot.building.floors >= 6) ui.prompt(`E — lift to the roof (${lot.building.floors} floors)  ·  V — the Vision`);
+    else if (nearCar) ui.prompt('E — get in the car');
     else if (lot) ui.prompt(`V — raise the Vision on lot #${lot.id}`);
     else ui.prompt('');
   } else if (controls.mode === MODE.CAR) {
