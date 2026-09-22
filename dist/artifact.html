@@ -59,6 +59,7 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
   color: var(--dim); font-size: 18px; cursor: pointer; line-height: 1;
 }
 
+#portfolio { top: 62px; left: 14px; width: 272px; }
 #board-panel { top: 62px; right: 14px; width: 268px; max-height: calc(100vh - 90px); overflow: auto; }
 #leaderboard { margin: 0; padding: 0; list-style: none; counter-reset: r; }
 #leaderboard li {
@@ -165,9 +166,94 @@ button.big { margin-top: 20px; padding: 12px 26px; font-size: 14px; flex: none; 
   #touch-warning h2 { font-size: 22px; letter-spacing: .14em; margin: 0 0 10px; }
   #touch-warning p { color: var(--dim); font-size: 13px; line-height: 1.6; }
 }
+
+/* --------------------------------------------------------------- additions */
+.stat.clickable { cursor: pointer; }
+.stat.clickable:hover label { color: var(--accent); }
+.kv.sep { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 7px; }
+.kv b.big { font-size: 15px; }
+.dimtext { color: var(--dim); }
+
+#lot-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
+.tag {
+  font-size: 10px; padding: 2px 7px; border-radius: 20px;
+  border: 1px solid var(--line); color: var(--dim);
+}
+.tag b { color: var(--ink); font-weight: 700; }
+.tag-water { border-color: #3d86b8; color: #8fc8ec; }
+.tag-park { border-color: #3f8a4d; color: #92d3a0; }
+.tag-retail { border-color: #b98b33; color: #ecc87e; }
+.tag-blight { border-color: #8a4038; color: #e39a90; }
+
+.namerow { display: flex; gap: 6px; margin-top: 10px; }
+.namerow input { flex: 1; }
+.namerow button { flex: none; padding: 6px 12px; }
+input[type=text] {
+  padding: 6px 8px; border-radius: 5px; background: rgba(255,255,255,.07);
+  color: var(--ink); border: 1px solid var(--line); font: inherit; width: 100%;
+}
+input[type=text]::placeholder { color: #5f6b7a; }
+
+/* the label pinned to a building in the world */
+#worldlabel {
+  position: absolute; transform: translate(-50%, -100%);
+  background: rgba(10, 14, 20, .93); border: 1px solid var(--line);
+  border-radius: 8px; padding: 9px 11px; width: 228px;
+  pointer-events: auto; backdrop-filter: blur(10px);
+  box-shadow: 0 12px 34px rgba(0,0,0,.6);
+}
+#worldlabel::after {
+  content: ''; position: absolute; left: 50%; bottom: -6px; width: 10px; height: 10px;
+  transform: translateX(-50%) rotate(45deg);
+  background: rgba(10,14,20,.93); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+.wl-head { font-size: 13px; font-weight: 700; line-height: 1.25; }
+.wl-addr { font-size: 10px; color: var(--dim); margin-bottom: 7px; }
+.wl-row { display: flex; justify-content: space-between; font-size: 11px; padding: 2px 0; }
+.wl-row span { color: var(--dim); }
+.wl-row b { font-variant-numeric: tabular-nums; }
+.wl-bar { height: 4px; border-radius: 3px; background: rgba(255,255,255,.12); margin-bottom: 7px; overflow: hidden; }
+.wl-bar i { display: block; height: 100%; background: var(--accent); }
+.wl-btn {
+  width: 100%; margin-top: 8px; padding: 6px; font: inherit; font-size: 11px; font-weight: 600;
+  border-radius: 5px; border: 1px solid var(--accent); background: rgba(94,200,255,.16);
+  color: var(--accent); cursor: pointer;
+}
+.wl-btn:hover { background: var(--accent); color: #06121b; }
+
+.swatches { display: flex; gap: 6px; margin-top: 6px; }
+.swatch {
+  width: 30px; height: 24px; border-radius: 5px; cursor: pointer;
+  border: 2px solid transparent; box-shadow: inset 0 0 0 1px rgba(0,0,0,.4);
+}
+.swatch.on { border-color: var(--accent); }
+.formrow { display: flex; gap: 6px; margin-top: 6px; }
+.formbtn {
+  flex: 1; padding: 5px 0; font: inherit; font-size: 11px; border-radius: 5px;
+  border: 1px solid var(--line); background: rgba(255,255,255,.06);
+  color: var(--dim); cursor: pointer;
+}
+.formbtn.on { background: var(--accent); color: #06121b; border-color: var(--accent); font-weight: 700; }
+#lot-offer { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 4px; }
+#lot-offer button { width: 100%; margin-top: 8px; }
+
+/* Panels must never run off the top of the screen. */
+#build-panel, #lot-panel, #portfolio {
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+#build-panel { bottom: 18px; }
+@media (max-height: 820px) {
+  #build-figures td { padding: 1.5px 0; }
+  .ctl { margin: 7px 0 3px; }
+}
 </style>
 <script type="importmap">
-{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
 </script>
 
 <canvas id="view"></canvas>
@@ -176,9 +262,10 @@ button.big { margin-top: 20px; padding: 12px 26px; font-size: 14px; flex: none; 
   <div id="topbar">
     <div class="stat"><label>Date</label><b id="s-date">—</b></div>
     <div class="stat"><label>Cash</label><b id="s-cash" class="good">—</b></div>
-    <div class="stat"><label>Net worth</label><b id="s-worth">—</b></div>
-    <div class="stat"><label>Debt</label><b id="s-debt" class="bad">—</b></div>
+    <div class="stat clickable" id="s-worth-wrap" title="Click for the full breakdown">
+      <label>Net worth ▾</label><b id="s-worth">—</b></div>
     <div class="stat"><label>Built</label><b id="s-gsf">—</b></div>
+    <div class="stat"><label>Rank</label><b id="s-rank">—</b></div>
     <div class="stat"><label>Market</label><b id="s-cycle">—</b></div>
     <div id="speeds">
       <button data-speed="0" class="sp">❚❚</button>
@@ -188,6 +275,17 @@ button.big { margin-top: 20px; padding: 12px 26px; font-size: 14px; flex: none; 
       <button data-speed="4" class="sp">300×</button>
     </div>
   </div>
+
+  <div id="portfolio" class="panel hidden">
+    <button id="pf-close">×</button>
+    <h3>Assets</h3>
+    <div id="pf-assets"></div>
+    <h3>Income</h3>
+    <div id="pf-income"></div>
+    <p class="hint" id="pf-holdings"></p>
+  </div>
+
+  <div id="worldlabel" class="hidden"></div>
 
   <div id="board-panel" class="panel hidden">
     <h3>Standings</h3>
@@ -200,7 +298,18 @@ button.big { margin-top: 20px; padding: 12px 26px; font-size: 14px; flex: none; 
     <button id="lot-close">×</button>
     <h3 id="lot-title">Lot</h3>
     <div id="lot-meta" class="meta"></div>
+    <div id="lot-tags"></div>
     <div id="lot-rows"></div>
+    <div id="lot-name" class="namerow hidden">
+      <input type="text" id="i-name" maxlength="40" placeholder="Name this building">
+      <button id="do-name">Name</button>
+    </div>
+    <div id="lot-offer" class="hidden">
+      <label class="ctl">Your offer <output id="o-offer"></output>
+        <input type="range" id="i-offer"></label>
+      <button id="do-offer" class="primary">Offer</button>
+      <p class="hint" id="offer-note"></p>
+    </div>
     <div id="lot-actions"></div>
   </div>
 
@@ -216,8 +325,14 @@ button.big { margin-top: 20px; padding: 12px 26px; font-size: 14px; flex: none; 
         <option value="residential">Residential</option>
         <option value="mixed">Mixed-use</option>
       </select></label>
+    <label class="ctl">Facade
+      <select id="i-style"></select></label>
+    <div class="ctl">Colour<div id="i-colors" class="swatches"></div></div>
+    <div class="ctl">Form<div id="i-form" class="formrow"></div></div>
     <label class="ctl">Leverage <output id="o-ltc"></output>
       <input type="range" id="i-ltc" min="0" max="65" value="55"></label>
+    <label class="ctl">Name (optional)
+      <input type="text" id="i-buildname" maxlength="40" placeholder="e.g. The Kestrel"></label>
     <table id="build-figures"></table>
     <div class="row">
       <button id="do-build" class="primary">Break ground</button>
@@ -246,9 +361,9 @@ button.big { margin-top: 20px; padding: 12px 26px; font-size: 14px; flex: none; 
     <div class="cols">
       <div>
         <h4>On the street</h4>
-        <p><kbd>W A S D</kbd> walk · <kbd>Shift</kbd> run · <kbd>Mouse</kbd> look</p>
+        <p><kbd>W A S D</kbd> or <kbd>arrows</kbd> · <kbd>Shift</kbd> run · <kbd>Mouse</kbd> look</p>
         <p><kbd>V</kbd> raise the Vision on the lot you're standing on</p>
-        <p><kbd>E</kbd> enter / leave your car · <kbd>F</kbd> first person</p>
+        <p><kbd>E</kbd> car · <kbd>Shift</kbd> boost · <kbd>F</kbd> first person</p>
       </div>
       <div>
         <h4>On the board</h4>

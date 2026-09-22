@@ -1,450 +1,789 @@
-// Everything you can see: the city mesh, traffic, crowds, sky and the Vision
-// envelope. Reads world + sim state, never writes to it.
+// Everything you can see. Reads world + sim state, never writes to it.
 
 import * as THREE from 'three';
-import { CONFIG, DISTRICTS, massing, minFloors, buildableSf, mulberry32 } from './world.js';
+import { CONFIG, WATER, mulberry32 } from './world.js';
+import { makeBuilding, roofPropGeometries } from './architecture.js';
+import { vehicleModels, CAR_PAINT, personParts, COAT_COLORS, SKIN_TONES, streetProps } from './models.js';
 
-const OWNER_COLORS = {
-  player: 0x4ade80, r1: 0xd4664a, r2: 0xe0b341, r3: 0x6fa8c7, npc: null,
-};
+const OWNER_TINT = { player: 0x4ade80, r1: 0xd4664a, r2: 0xe0b341, r3: 0x6fa8c7 };
+const MODEL_MIX = ['sedan', 'sedan', 'taxi', 'suv', 'sedan', 'van', 'sports', 'boxtruck', 'suv', 'taxi'];
 
-function windowTexture(styleSeed) {
+const tmpM = new THREE.Matrix4();
+const tmpQ = new THREE.Quaternion();
+const tmpV = new THREE.Vector3();
+const tmpS = new THREE.Vector3(1, 1, 1);
+const UP = new THREE.Vector3(0, 1, 0);
+
+/** Text baked to a canvas, with an outline so it survives any background. */
+function textTexture(text, { size = 64, color = '#ffffff', outline = 'rgba(0,0,0,0.75)',
+                             weight = 700, pad = 14, track = 0 } = {}) {
+  const font = `${weight} ${size}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
   const c = document.createElement('canvas');
-  c.width = 64; c.height = 64;
-  const g = c.getContext('2d');
-  const rnd = mulberry32(styleSeed);
-  const base = ['#6b6f76', '#7a7168', '#5f6b74', '#847a6e'][styleSeed % 4];
-  g.fillStyle = base;
-  g.fillRect(0, 0, 64, 64);
-  for (let y = 0; y < 4; y++) {
-    for (let x = 0; x < 4; x++) {
-      const lit = rnd();
-      g.fillStyle = `rgba(20,24,30,${0.55 + lit * 0.3})`;
-      g.fillRect(x * 16 + 3, y * 16 + 4, 10, 9);
-    }
-  }
-  g.fillStyle = 'rgba(0,0,0,0.18)';
-  for (let y = 0; y < 4; y++) g.fillRect(0, y * 16 + 14, 64, 2);
+  let g = c.getContext('2d');
+  g.font = font;
+  const label = track ? text.split('').join(String.fromCharCode(8202)) : text;
+  c.width = Math.max(64, Math.ceil(g.measureText(label).width) + pad * 2);
+  c.height = size + pad * 2;
+  g = c.getContext('2d');
+  g.font = font;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.lineWidth = Math.max(3, size / 10);
+  g.strokeStyle = outline;
+  g.strokeText(label, c.width / 2, c.height / 2);
+  g.fillStyle = color;
+  g.fillText(label, c.width / 2, c.height / 2);
   const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.colorSpace = THREE.SRGBColorSpace;
-  return t;
+  t.anisotropy = 8;
+  return { texture: t, aspect: c.width / c.height };
 }
 
-function emissiveTexture(styleSeed) {
-  const c = document.createElement('canvas');
-  c.width = 64; c.height = 64;
-  const g = c.getContext('2d');
-  const rnd = mulberry32(styleSeed + 555);
-  g.fillStyle = '#000'; g.fillRect(0, 0, 64, 64);
-  for (let y = 0; y < 4; y++) {
-    for (let x = 0; x < 4; x++) {
-      if (rnd() < 0.55) {
-        const warm = rnd();
-        g.fillStyle = warm < 0.7 ? '#ffd79a' : '#cfe4ff';
-        g.fillRect(x * 16 + 3, y * 16 + 4, 10, 9);
-      }
-    }
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
+function freeze(o) {
+  o.updateMatrix();
+  o.matrixAutoUpdate = false;
+  return o;
 }
 
 export class CityScene {
   constructor(state, canvas) {
     this.state = state;
     this.city = state.city;
+    this.matCache = new Map();
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 1.18;
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(62, 1, 0.5, 4000);
+    this.camera = new THREE.PerspectiveCamera(62, 1, 0.4, 6000);
 
-    this.winTex = [0, 1, 2, 3].map(windowTexture);
-    this.emTex = [0, 1, 2, 3].map(emissiveTexture);
+    this.collisionGrid = new Map();   // built during _buildings(), so make it first
+    this.clock = 0;
 
-    this.buildingByLot = new Map();
-    this.buildingGroup = new THREE.Group();
-    this.scene.add(this.buildingGroup);
+    this._lights();
+    this._sky();
+    this._water();
+    this._ground();
+    this._streetLabels();
+    this._streetFurniture();
+    this._buildings();
+    this._vehicles();
+    this._crowd();
+    this._vision();
+    this._avatar();
+    this._playerCar();
 
-    this._buildSky();
-    this._buildGround();
-    this._buildAllBuildings();
-    this._buildTraffic();
-    this._buildCrowd();
-    this._buildVision();
-    this._buildAvatar();
-    this._buildPlayerCar();
-
-    this.collisionGrid = new Map();
     this.rebuildCollision();
   }
 
-  // ------------------------------------------------------------------ setup
+  // ------------------------------------------------------------------ light
 
-  _buildSky() {
-    this.hemi = new THREE.HemisphereLight(0xbcd4ff, 0x2a2622, 1.0);
+  _lights() {
+    this.hemi = new THREE.HemisphereLight(0xbcd4ff, 0x30291f, 1.0);
     this.scene.add(this.hemi);
 
     this.sun = new THREE.DirectionalLight(0xfff0dd, 2.4);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
     const s = this.sun.shadow.camera;
-    s.near = 1; s.far = 900; s.left = -260; s.right = 260; s.top = 260; s.bottom = -260;
-    this.sun.shadow.bias = -0.0008;
-    this.scene.add(this.sun);
-    this.scene.add(this.sun.target);
+    s.near = 20; s.far = 1400; s.left = -230; s.right = 230; s.top = 320; s.bottom = -230;
+    this.sun.shadow.bias = -0.0009;
+    this.sun.shadow.normalBias = 0.5;
+    this.scene.add(this.sun, this.sun.target);
 
-    this.scene.fog = new THREE.Fog(0x9fb3cc, 320, 1700);
-    this.scene.background = new THREE.Color(0x9fb3cc);
+    this.scene.fog = new THREE.FogExp2(0x9fb3cc, 0.0016);
   }
 
-  _buildGround() {
-    const E = CONFIG.EXTENT;
+  _sky() {
+    this.skyUniforms = {
+      uTop: { value: new THREE.Color(0x3f74c0) },
+      uMid: { value: new THREE.Color(0x9fb3cc) },
+      uBot: { value: new THREE.Color(0xd7c4a8) },
+      uSun: { value: new THREE.Vector3(0.4, 0.5, 0.3) },
+      uSunColor: { value: new THREE.Color(0xffd9a0) },
+    };
+    const mat = new THREE.ShaderMaterial({
+      uniforms: this.skyUniforms,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      vertexShader: `
+        varying vec3 vDir;
+        void main() {
+          vDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec3 uTop, uMid, uBot, uSunColor;
+        uniform vec3 uSun;
+        varying vec3 vDir;
+        void main() {
+          float h = clamp(vDir.y * 1.15 + 0.08, -1.0, 1.0);
+          vec3 c = h > 0.0 ? mix(uMid, uTop, pow(h, 0.7)) : mix(uMid, uBot, pow(-h, 0.55));
+          float d = max(dot(normalize(vDir), normalize(uSun)), 0.0);
+          c += uSunColor * (pow(d, 22.0) * 0.85 + pow(d, 4.0) * 0.16);
+          gl_FragColor = vec4(c, 1.0);
+        }`,
+    });
+    this.sky = new THREE.Mesh(new THREE.SphereGeometry(3200, 24, 16), mat);
+    this.sky.frustumCulled = false;
+    this.scene.add(this.sky);
+  }
+
+  _water() {
+    // A scrolling normal map is enough to make a flat plane read as harbour.
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d');
+    const img = g.createImageData(128, 128);
+    for (let y = 0; y < 128; y++) {
+      for (let x = 0; x < 128; x++) {
+        const i = (y * 128 + x) * 4;
+        const w = Math.sin(x * 0.28) * 0.5 + Math.sin((x * 0.11 + y * 0.19)) * 0.5;
+        img.data[i] = 128 + w * 34;
+        img.data[i + 1] = 128 + Math.sin(y * 0.24 + x * 0.05) * 30;
+        img.data[i + 2] = 255;
+        img.data[i + 3] = 255;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    this.waterNormal = new THREE.CanvasTexture(c);
+    this.waterNormal.wrapS = this.waterNormal.wrapT = THREE.RepeatWrapping;
+    this.waterNormal.repeat.set(70, 70);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x1d3b4d, roughness: 0.16, metalness: 0.55,
+      normalMap: this.waterNormal, normalScale: new THREE.Vector2(0.55, 0.55),
+    });
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000), mat);
+    plane.rotation.x = -Math.PI / 2;
+    plane.position.set(1200, -0.55, 1200);
+    plane.receiveShadow = false;
+    this.scene.add(freeze(plane));
+  }
+
+  // ----------------------------------------------------------------- ground
+
+  _ground() {
+    const E = CONFIG.EXTENT, B = CONFIG.BLOCK, P = CONFIG.PITCH, half = E / 2;
+
+    // Asphalt only reaches the water; past that is harbour.
     const asphalt = new THREE.Mesh(
-      new THREE.PlaneGeometry(E * 1.6, E * 1.6),
-      new THREE.MeshStandardMaterial({ color: 0x2f3236, roughness: 0.95 })
+      new THREE.PlaneGeometry(E + CONFIG.STREET * 2, E + CONFIG.STREET * 2),
+      new THREE.MeshStandardMaterial({ color: 0x33363b, roughness: 0.97 })
     );
     asphalt.rotation.x = -Math.PI / 2;
+    asphalt.position.set(
+      (WATER.eastX - (half + CONFIG.STREET)) / 2 - CONFIG.STREET / 2,
+      0,
+      (WATER.southZ - (half + CONFIG.STREET)) / 2 - CONFIG.STREET / 2
+    );
     asphalt.receiveShadow = true;
-    this.scene.add(asphalt);
+    this.scene.add(freeze(asphalt));
 
-    // Sidewalks and parks, one slab per block.
-    const walkMat = new THREE.MeshStandardMaterial({ color: 0x8c8d8a, roughness: 0.92 });
-    const parkMat = new THREE.MeshStandardMaterial({ color: 0x4a6b3c, roughness: 1 });
-    const geo = new THREE.BoxGeometry(CONFIG.BLOCK + 5, 0.4, CONFIG.BLOCK + 5);
-    const walks = new THREE.InstancedMesh(geo, walkMat, this.city.blocks.length);
-    const parks = [];
-    let wi = 0;
-    const m = new THREE.Matrix4();
+    const walkMat = new THREE.MeshStandardMaterial({ color: 0x93938f, roughness: 0.93 });
+    const curbMat = new THREE.MeshStandardMaterial({ color: 0x6f7073, roughness: 0.9 });
+    const parkMat = new THREE.MeshStandardMaterial({ color: 0x47693a, roughness: 1 });
+    const pathMat = new THREE.MeshStandardMaterial({ color: 0x9b8f77, roughness: 1 });
+
+    const walkGeo = new THREE.BoxGeometry(B + 6, 0.36, B + 6);
+    const curbGeo = new THREE.BoxGeometry(B + 8, 0.2, B + 8);
+    const normals = this.city.blocks.filter((b) => !b.isPark);
+
+    const curbs = new THREE.InstancedMesh(curbGeo, curbMat, this.city.blocks.length);
+    const walks = new THREE.InstancedMesh(walkGeo, walkMat, normals.length);
+    curbs.receiveShadow = walks.receiveShadow = true;
+    let wi = 0, ci = 0;
     for (const b of this.city.blocks) {
-      if (b.isPark) {
-        const p = new THREE.Mesh(geo, parkMat);
-        p.position.set(b.cx, 0.2, b.cz);
-        p.receiveShadow = true;
-        this.scene.add(p);
-        parks.push(p);
-        this._addTrees(b);
-        continue;
-      }
-      m.makeTranslation(b.cx, 0.2, b.cz);
-      walks.setMatrixAt(wi++, m);
+      tmpM.makeTranslation(b.cx, 0.1, b.cz);
+      curbs.setMatrixAt(ci++, tmpM);
+      if (b.isPark) { this._park(b, parkMat, pathMat); continue; }
+      tmpM.makeTranslation(b.cx, 0.18, b.cz);
+      walks.setMatrixAt(wi++, tmpM);
     }
-    walks.count = wi;
-    walks.receiveShadow = true;
-    walks.instanceMatrix.needsUpdate = true;
-    this.scene.add(walks);
+    walks.count = wi; curbs.count = ci;
+    this.scene.add(walks, curbs);
 
-    // Lane markings down the middle of every street.
-    const lineMat = new THREE.MeshBasicMaterial({ color: 0xd8c76a });
-    const half = CONFIG.EXTENT / 2;
+    // Lane markings and crosswalks.
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0xcdbd6d });
+    const zebraMat = new THREE.MeshBasicMaterial({ color: 0xd8d8d2 });
+    const lineGeo = new THREE.PlaneGeometry(0.44, P - B - 2);
+    const lanes = [];
     for (let i = 0; i <= CONFIG.GRID; i++) {
-      const pos = -half + i * CONFIG.PITCH;
-      for (const axis of ['x', 'z']) {
-        const g = new THREE.Mesh(new THREE.PlaneGeometry(axis === 'x' ? 0.5 : CONFIG.EXTENT, axis === 'x' ? CONFIG.EXTENT : 0.5), lineMat);
-        g.rotation.x = -Math.PI / 2;
-        g.position.set(axis === 'x' ? pos : 0, 0.05, axis === 'x' ? 0 : pos);
-        this.scene.add(g);
+      const pos = -half + i * P;
+      if (pos > WATER.eastX && pos > WATER.southZ) continue;
+      for (let j = -1; j <= CONFIG.GRID; j++) {
+        const along = -half + j * P + P / 2;
+        lanes.push([pos, along, 0], [along, pos, Math.PI / 2]);
+      }
+    }
+    const lineMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.44, B), lineMat, lanes.length);
+    lanes.forEach(([x, z, rot], i) => {
+      tmpQ.setFromEuler(new THREE.Euler(-Math.PI / 2, 0, rot));
+      tmpM.compose(tmpV.set(x, 0.06, z), tmpQ, tmpS);
+      lineMesh.setMatrixAt(i, tmpM);
+    });
+    this.scene.add(lineMesh);
+
+    const zebras = [];
+    for (let i = 0; i <= CONFIG.GRID; i++) {
+      for (let j = 0; j < CONFIG.GRID; j++) {
+        const across = -half + i * P;
+        const along = -half + j * P + P / 2;
+        for (let k = -3; k <= 3; k++) {
+          zebras.push([across + k * 1.5, along - B / 2 - 5.5, 0]);
+          zebras.push([along - B / 2 - 5.5, across + k * 1.5, Math.PI / 2]);
+        }
+      }
+    }
+    const zGeo = new THREE.PlaneGeometry(0.85, 6.5);
+    const zMesh = new THREE.InstancedMesh(zGeo, zebraMat, zebras.length);
+    zebras.forEach(([x, z, rot], i) => {
+      tmpQ.setFromEuler(new THREE.Euler(-Math.PI / 2, 0, rot));
+      tmpM.compose(tmpV.set(x, 0.07, z), tmpQ, tmpS);
+      zMesh.setMatrixAt(i, tmpM);
+    });
+    this.scene.add(zMesh);
+  }
+
+  _park(block, parkMat, pathMat) {
+    const B = CONFIG.BLOCK;
+    const lawn = new THREE.Mesh(new THREE.BoxGeometry(B + 5, 0.3, B + 5), parkMat);
+    lawn.position.set(block.cx, 0.15, block.cz);
+    lawn.receiveShadow = true;
+    this.scene.add(freeze(lawn));
+    for (const rot of [0, Math.PI / 2]) {
+      const path = new THREE.Mesh(new THREE.BoxGeometry(B + 5, 0.06, 4), pathMat);
+      path.position.set(block.cx, 0.33, block.cz);
+      path.rotation.y = rot;
+      this.scene.add(freeze(path));
+    }
+    this._trees(block);
+  }
+
+  _trees(block) {
+    if (!this._treeGeo) {
+      this._treeGeo = {
+        trunk: new THREE.CylinderGeometry(0.22, 0.34, 3.6, 5),
+        crown: new THREE.IcosahedronGeometry(1, 0),
+        trunkMat: new THREE.MeshStandardMaterial({ color: 0x4b3a2a, roughness: 1 }),
+        crownMat: new THREE.MeshStandardMaterial({ color: 0x3c6b30, roughness: 1 }),
+      };
+      this._treeSpots = [];
+    }
+    const rnd = mulberry32(block.bx * 91 + block.by * 17);
+    for (let i = 0; i < 12; i++) {
+      this._treeSpots.push([
+        block.cx + (rnd() - 0.5) * CONFIG.BLOCK * 0.82,
+        block.cz + (rnd() - 0.5) * CONFIG.BLOCK * 0.82,
+        2.2 + rnd() * 1.4,
+      ]);
+    }
+  }
+
+  /** Street names painted down the middle of every road, read from above. */
+  _streetLabels() {
+    this.streetLabels = new THREE.Group();
+    this.streetLabels.visible = false;
+    this.scene.add(this.streetLabels);
+
+    const P = CONFIG.PITCH, half = CONFIG.EXTENT / 2, H = 7.5;
+    for (const c of this.city.corridors) {
+      const along = c.axis === 'ns' ? 'z' : 'x';
+      const across = -half + c.index * P;
+      if (across > WATER.eastX || across > WATER.southZ) continue;
+      const { texture, aspect } = textTexture(c.name.toUpperCase(), { size: 58, color: '#f2efe6', track: 1 });
+      const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, fog: false });
+      const geo = new THREE.PlaneGeometry(H * aspect, H);
+      c._labelMat = mat;
+      for (let j = 0; j < CONFIG.GRID; j++) {
+        const at = -half + j * P + P / 2;
+        if (at > WATER.eastX || at > WATER.southZ) continue;
+        const m = new THREE.Mesh(geo, mat);
+        m.rotation.x = -Math.PI / 2;
+        m.rotation.z = along === 'z' ? Math.PI / 2 : 0;
+        m.position.set(along === 'z' ? across : at, 0.09, along === 'z' ? at : across);
+        m.renderOrder = 2;
+        this.streetLabels.add(freeze(m));
       }
     }
   }
 
-  _addTrees(block) {
-    const rnd = mulberry32(block.bx * 91 + block.by * 17);
-    const trunk = new THREE.MeshStandardMaterial({ color: 0x4b3a2a, roughness: 1 });
-    const leaf = new THREE.MeshStandardMaterial({ color: 0x3f6b32, roughness: 1 });
-    for (let i = 0; i < 9; i++) {
-      const x = block.cx + (rnd() - 0.5) * CONFIG.BLOCK * 0.8;
-      const z = block.cz + (rnd() - 0.5) * CONFIG.BLOCK * 0.8;
-      const t = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 3.5, 5), trunk);
-      t.position.set(x, 1.9, z);
-      const c = new THREE.Mesh(new THREE.IcosahedronGeometry(2.6 + rnd(), 0), leaf);
-      c.position.set(x, 4.8, z);
-      c.castShadow = true;
-      this.scene.add(t, c);
+  /** Named streets glow once they've become destinations. */
+  refreshCorridorLabels() {
+    for (const c of this.city.corridors) {
+      if (!c._labelMat) continue;
+      c._labelMat.color.set(c.famous ? 0xffd98a : 0xf2efe6);
+      c._labelMat.opacity = c.famous ? 1 : 0.78;
     }
   }
 
-  _materialsFor(lot, b) {
-    const style = lot.seed % 4;
-    const tex = this.winTex[style].clone();
-    const em = this.emTex[style].clone();
-    const sideM = b.side || Math.sqrt(lot.areaSf * 0.7 / CONFIG.SF_PER_M2);
-    tex.repeat.set(Math.max(1, Math.round(sideM / 4)), Math.max(1, Math.round(b.floors / 2)));
-    em.repeat.copy(tex.repeat);
-    tex.needsUpdate = em.needsUpdate = true;
-
-    const tint = OWNER_COLORS[b.builtBy] ?? null;
-    const mat = new THREE.MeshStandardMaterial({
-      map: tex, emissiveMap: em, emissive: 0xffffff, emissiveIntensity: 0,
-      roughness: 0.82, metalness: 0.04,
-      color: tint ? new THREE.Color(tint).lerp(new THREE.Color(0xffffff), 0.62) : 0xffffff,
-    });
-    return mat;
+  setBoardMode(on) {
+    this.streetLabels.visible = on;
   }
 
-  _buildOne(lot) {
-    const b = lot.building;
-    if (!b) return null;
-    const side = b.side || Math.sqrt((lot.areaSf * 0.7) / CONFIG.SF_PER_M2);
-    const h = b.floors * CONFIG.FLOOR_H;
-    const geo = new THREE.BoxGeometry(side, h, side);
-    const mesh = new THREE.Mesh(geo, this._materialsFor(lot, b));
-    mesh.position.set(lot.x, h / 2 + 0.4, lot.z);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.userData.lotId = lot.id;
-    mesh.userData.side = side;
-    mesh.userData.height = h;
+  _streetFurniture() {
+    const P = CONFIG.PITCH, B = CONFIG.BLOCK, half = CONFIG.EXTENT / 2;
+    const props = streetProps();
 
-    // A squat base on taller towers so the street wall reads properly.
-    if (b.floors > 12) {
-      const podH = CONFIG.FLOOR_H * 3;
-      const pod = new THREE.Mesh(
-        new THREE.BoxGeometry(lot.w * 0.92, podH, lot.d * 0.92),
-        new THREE.MeshStandardMaterial({ color: 0x5c5f63, roughness: 0.9 })
-      );
-      pod.position.set(lot.x, podH / 2 + 0.4, lot.z);
-      pod.castShadow = pod.receiveShadow = true;
-      pod.userData.lotId = lot.id;
-      mesh.userData.podium = pod;
-      this.buildingGroup.add(pod);
+    // Street trees along the sidewalks, plus the park trees collected above.
+    const spots = this._treeSpots || [];
+    for (const b of this.city.blocks) {
+      if (b.isPark) continue;
+      const rnd = mulberry32(b.bx * 313 + b.by * 71);
+      for (let i = 0; i < 4; i++) {
+        const t = -0.32 + i * 0.21;
+        const edge = Math.floor(rnd() * 4);
+        const o = B / 2 + 1.6;
+        const [x, z] = edge === 0 ? [b.cx + t * B, b.cz - o] : edge === 1 ? [b.cx + t * B, b.cz + o]
+                     : edge === 2 ? [b.cx - o, b.cz + t * B] : [b.cx + o, b.cz + t * B];
+        if (rnd() < 0.55) spots.push([x, z, 1.8 + rnd() * 1.1]);
+      }
     }
-    this.buildingGroup.add(mesh);
-    return mesh;
+    const tg = this._treeGeo;
+    if (tg && spots.length) {
+      const trunks = new THREE.InstancedMesh(tg.trunk, tg.trunkMat, spots.length);
+      const crowns = new THREE.InstancedMesh(tg.crown, tg.crownMat, spots.length);
+      crowns.castShadow = true;
+      spots.forEach(([x, z, s], i) => {
+        tmpM.compose(tmpV.set(x, 1.9, z), new THREE.Quaternion(), tmpS.set(1, 1, 1));
+        trunks.setMatrixAt(i, tmpM);
+        tmpM.compose(tmpV.set(x, 3.6 + s * 0.5, z), new THREE.Quaternion(), tmpS.set(s, s * 0.9, s));
+        crowns.setMatrixAt(i, tmpM);
+      });
+      tmpS.set(1, 1, 1);
+      this.scene.add(trunks, crowns);
+    }
+
+    // Lamp posts at every corner, plus hydrants, refuse and traffic signals.
+    const lamps = [], hydrants = [], trash = [], signals = [];
+    for (const b of this.city.blocks) {
+      const o = B / 2 + 2.2;
+      const rnd = mulberry32(b.bx * 17 + b.by * 907);
+      for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        lamps.push([b.cx + sx * o, b.cz + sz * o, sx > 0 ? Math.PI : 0]);
+        if (rnd() < 0.55) signals.push([b.cx + sx * o * 1.06, b.cz + sz * o * 1.06]);
+      }
+      if (b.isPark) continue;
+      if (rnd() < 0.8) hydrants.push([b.cx + (rnd() - 0.5) * B * 0.7, b.cz + (rnd() < 0.5 ? -1 : 1) * o * 0.92]);
+      for (let i = 0; i < 3; i++) {
+        if (rnd() < 0.5) trash.push([b.cx + (rnd() - 0.5) * B * 0.8, b.cz + (rnd() < 0.5 ? -1 : 1) * o * 0.88]);
+      }
+    }
+
+    const place = (geo, mat, list, y, cast = true) => {
+      const im = new THREE.InstancedMesh(geo, mat, list.length);
+      im.castShadow = cast;
+      list.forEach(([x, z, rot = 0], i) => {
+        tmpQ.setFromAxisAngle(UP, rot);
+        tmpM.compose(tmpV.set(x, y, z), tmpQ, tmpS);
+        im.setMatrixAt(i, tmpM);
+      });
+      this.scene.add(im);
+      return im;
+    };
+
+    const metal = new THREE.MeshStandardMaterial({ color: 0x33373c, roughness: 0.7, metalness: 0.4 });
+    place(props.lampPost, metal, lamps, 0.4);
+    this.lampGlow = place(props.lampHead,
+      new THREE.MeshStandardMaterial({ color: 0xffe2ac, emissive: 0xffd28a, emissiveIntensity: 0 }),
+      lamps, 0.4, false);
+    place(props.hydrant, new THREE.MeshStandardMaterial({ color: 0xb2452f, roughness: 0.75 }), hydrants, 0.4);
+    place(props.trash, new THREE.MeshStandardMaterial({ color: 0x1b1d20, roughness: 0.95 }), trash, 0.4);
+    place(props.trafficLight, metal, signals, 0.4);
   }
 
-  _buildAllBuildings() {
-    for (const lot of this.city.lots) {
-      const mesh = this._buildOne(lot);
-      if (mesh) this.buildingByLot.set(lot.id, mesh);
-    }
+  // -------------------------------------------------------------- buildings
+
+  _buildings() {
+    this.buildingGroup = new THREE.Group();
     this.siteGroup = new THREE.Group();
-    this.scene.add(this.siteGroup);
+    this.roofGroup = new THREE.Group();
+    this.scene.add(this.buildingGroup, this.siteGroup, this.roofGroup);
+    this.buildingByLot = new Map();
     this.siteByLot = new Map();
+    this.roofGeo = roofPropGeometries();
+    this.roofMats = {
+      watertower: new THREE.MeshStandardMaterial({ color: 0x6b4f38, roughness: 0.95 }),
+      bulkhead: new THREE.MeshStandardMaterial({ color: 0x7a7269, roughness: 0.9 }),
+      mast: new THREE.MeshStandardMaterial({ color: 0x53585e, roughness: 0.6, metalness: 0.5 }),
+      ac: new THREE.MeshStandardMaterial({ color: 0x8e9299, roughness: 0.7, metalness: 0.3 }),
+    };
+    this.syncBuildings();
   }
 
-  /** Called when the sim finishes or starts something. Cheap enough to do wholesale. */
+  /** A name on the building, sized to the facade, on the two visible faces. */
+  _addSignage(g, lot) {
+    if (!lot.name) return;
+    // Signage belongs on the base, above the entrance — a tower that steps back
+    // leaves nothing under a sign hung at the top.
+    const base = g.children.find((c) => c.geometry?.parameters?.width);
+    if (!base) return;
+    const bw = base.geometry.parameters.width;
+    const bd = base.geometry.parameters.depth;
+    const bh = base.geometry.parameters.height;
+    const { texture, aspect } = textTexture(lot.name.toUpperCase(),
+      { size: 72, color: '#f6f1e4', outline: 'rgba(0,0,0,0.85)', track: 1 });
+    const h = Math.min((bw * 0.82) / aspect, bh * 0.3, 3.4);
+    const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, fog: false });
+    const y = Math.min(base.position.y + bh / 2 - h, CONFIG.FLOOR_H * 1.35);
+    const geo = new THREE.PlaneGeometry(h * aspect, h);
+    const halfW = bw / 2, halfD = bd / 2;
+    for (const [dx, dz, rot] of [[0, halfD + 0.32, 0], [halfW + 0.32, 0, Math.PI / 2]]) {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(lot.x + dx, y, lot.z + dz);
+      m.rotation.y = rot;
+      m.renderOrder = 3;
+      g.add(freeze(m));
+    }
+  }
+
+  _makeBuilding(lot) {
+    const g = makeBuilding(lot, lot.building, this.matCache);
+    const tint = OWNER_TINT[lot.building.builtBy];
+    for (const child of g.children) {
+      freeze(child);
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      if (tint && mats.some((m) => m && m.emissiveMap)) {
+        // Owner colour shows as a faint wash so you can read the skyline.
+        child.userData.ownerTint = tint;
+      }
+    }
+    this._addSignage(g, lot);
+    g.matrixAutoUpdate = false;
+    g.updateMatrix();
+    this.buildingGroup.add(g);
+    return g;
+  }
+
   syncBuildings() {
+    let changed = false;
     for (const lot of this.city.lots) {
       const has = this.buildingByLot.get(lot.id);
-      if (lot.building && !has) {
-        const m = this._buildOne(lot);
-        if (m) this.buildingByLot.set(lot.id, m);
-      } else if (!lot.building && has) {
+      const b = lot.building;
+      const sig = b
+        ? `${b.floors}_${b.use}_${b.style || '-'}_${b.form || '-'}_${b.variant ?? '-'}`
+          + `_${Math.round((b.condition ?? 1) * 4)}_${lot.name || ''}`
+        : null;
+
+      if (b && (!has || has.userData.sig !== sig)) {
+        if (has) this.buildingGroup.remove(has);
+        const g = this._makeBuilding(lot);
+        g.userData.sig = sig;
+        this.buildingByLot.set(lot.id, g);
+        changed = true;
+      } else if (!b && has) {
         this.buildingGroup.remove(has);
-        if (has.userData.podium) this.buildingGroup.remove(has.userData.podium);
-        has.geometry.dispose();
         this.buildingByLot.delete(lot.id);
+        changed = true;
       }
-      // Construction sites
+
       const site = this.siteByLot.get(lot.id);
-      if (lot.project && !site) {
-        const g = new THREE.Group();
-        const pad = new THREE.Mesh(
-          new THREE.BoxGeometry(lot.w * 0.95, 1.2, lot.d * 0.95),
-          new THREE.MeshStandardMaterial({ color: 0x6b5a3e, roughness: 1 })
-        );
-        pad.position.set(lot.x, 0.6, lot.z);
-        const frame = new THREE.Mesh(
-          new THREE.BoxGeometry(lot.w * 0.7, 1, lot.d * 0.7),
-          new THREE.MeshStandardMaterial({ color: 0xb8b2a4, roughness: 0.7, transparent: true, opacity: 0.75 })
-        );
-        frame.position.set(lot.x, 1, lot.z);
-        const crane = new THREE.Mesh(
-          new THREE.BoxGeometry(0.8, 40, 0.8),
-          new THREE.MeshStandardMaterial({ color: 0xe0a33a })
-        );
-        crane.position.set(lot.x + lot.w * 0.35, 20, lot.z + lot.d * 0.35);
-        const jib = new THREE.Mesh(new THREE.BoxGeometry(26, 0.6, 0.6), crane.material);
-        jib.position.set(lot.x + lot.w * 0.35 + 9, 39, lot.z + lot.d * 0.35);
-        g.add(pad, frame, crane, jib);
-        g.userData = { frame, crane, jib, lot };
-        this.siteGroup.add(g);
-        this.siteByLot.set(lot.id, g);
-      } else if (!lot.project && site) {
+      if (lot.project && !site) { this._makeSite(lot); changed = true; }
+      else if (!lot.project && site) {
         this.siteGroup.remove(site);
         this.siteByLot.delete(lot.id);
+        changed = true;
       }
     }
-    this.rebuildCollision();
+    if (changed) { this._rebuildRoofProps(); this.rebuildCollision(); this._lit = undefined; }
   }
 
-  updateSites() {
-    for (const [lotId, g] of this.siteByLot) {
-      const lot = this.city.lots[lotId] || this.city.lots.find((l) => l.id === lotId);
-      const p = lot && lot.project;
+  _rebuildRoofProps() {
+    this.roofGroup.clear();
+    const buckets = { watertower: [], bulkhead: [], mast: [], ac: [] };
+    for (const g of this.buildingByLot.values()) {
+      for (const p of g.userData.props || []) buckets[p.kind]?.push(p);
+    }
+    for (const kind in buckets) {
+      const list = buckets[kind];
+      if (!list.length) continue;
+      for (const geo of this.roofGeo[kind]) {
+        const im = new THREE.InstancedMesh(geo, this.roofMats[kind], list.length);
+        im.castShadow = true;
+        list.forEach((p, i) => {
+          tmpM.compose(tmpV.set(p.x, p.y, p.z), new THREE.Quaternion(), tmpS.set(p.s, p.s, p.s));
+          im.setMatrixAt(i, tmpM);
+        });
+        tmpS.set(1, 1, 1);
+        this.roofGroup.add(im);
+      }
+    }
+  }
+
+  _makeSite(lot) {
+    const g = new THREE.Group();
+    const mud = new THREE.Mesh(
+      new THREE.BoxGeometry(lot.w * 0.97, 0.8, lot.d * 0.97),
+      new THREE.MeshStandardMaterial({ color: 0x5d5344, roughness: 1 })
+    );
+    mud.position.set(lot.x, 0.4, lot.z);
+    mud.receiveShadow = true;
+
+    // Hoarding around the site — the blue plywood fence.
+    const fenceMat = new THREE.MeshStandardMaterial({ color: 0x2f5f86, roughness: 0.9 });
+    for (const [sx, sz, w, d] of [[0, -1, lot.w, 0.3], [0, 1, lot.w, 0.3], [-1, 0, 0.3, lot.d], [1, 0, 0.3, lot.d]]) {
+      const f = new THREE.Mesh(new THREE.BoxGeometry(w, 2.4, d), fenceMat);
+      f.position.set(lot.x + sx * lot.w / 2, 1.2, lot.z + sz * lot.d / 2);
+      f.castShadow = true;
+      g.add(freeze(f));
+    }
+
+    const slab = new THREE.Mesh(
+      new THREE.BoxGeometry(lot.w * 0.72, 1, lot.d * 0.72),
+      new THREE.MeshStandardMaterial({ color: 0xa9a294, roughness: 0.92 })
+    );
+    slab.castShadow = slab.receiveShadow = true;
+
+    const scaffold = new THREE.Mesh(
+      new THREE.BoxGeometry(lot.w * 0.76, 1, lot.d * 0.76),
+      new THREE.MeshStandardMaterial({ color: 0xc9b98f, roughness: 0.9, transparent: true, opacity: 0.4, wireframe: true })
+    );
+
+    const craneMat = new THREE.MeshStandardMaterial({ color: 0xe0a33a, roughness: 0.6, metalness: 0.3 });
+    const mast = new THREE.Mesh(new THREE.BoxGeometry(1.1, 40, 1.1), craneMat);
+    const jib = new THREE.Mesh(new THREE.BoxGeometry(30, 0.8, 0.8), craneMat);
+    const counter = new THREE.Mesh(new THREE.BoxGeometry(7, 1.2, 1.2), craneMat);
+    mast.castShadow = jib.castShadow = true;
+    const craneX = lot.x + lot.w * 0.36, craneZ = lot.z + lot.d * 0.36;
+
+    g.add(mud, slab, scaffold, mast, jib, counter);
+    g.userData = { lot, slab, scaffold, mast, jib, counter, craneX, craneZ };
+    this.siteGroup.add(g);
+    this.siteByLot.set(lot.id, g);
+    return g;
+  }
+
+  updateSites(dt) {
+    for (const g of this.siteByLot.values()) {
+      const lot = g.userData.lot;
+      const p = lot.project;
       if (!p) continue;
       const t = Math.max(0, Math.min(1, (this.state.day - p.startDay) / (p.endDay - p.startDay)));
-      const h = Math.max(1, t * p.floors * CONFIG.FLOOR_H);
-      g.userData.frame.scale.y = h;
-      g.userData.frame.position.y = h / 2 + 1;
-      const craneH = Math.max(40, h + 18);
-      g.userData.crane.scale.y = craneH / 40;
-      g.userData.crane.position.y = craneH / 2;
-      g.userData.jib.position.y = craneH - 2;
-      g.userData.jib.rotation.y += 0.002;
+      const full = p.floors * CONFIG.FLOOR_H;
+      const h = Math.max(1.2, t * full);
+
+      g.userData.slab.scale.y = h;
+      g.userData.slab.position.set(lot.x, h / 2 + 0.8, lot.z);
+      g.userData.scaffold.scale.y = Math.min(full, h + 4);
+      g.userData.scaffold.position.set(lot.x, Math.min(full, h + 4) / 2 + 0.8, lot.z);
+
+      const craneH = Math.max(46, full + 22);
+      g.userData.mast.scale.y = craneH / 40;
+      g.userData.mast.position.set(g.userData.craneX, craneH / 2, g.userData.craneZ);
+      const spin = this.clock * 0.09 + lot.id;
+      for (const [part, off, len] of [[g.userData.jib, 11, 0], [g.userData.counter, -5, 0]]) {
+        part.position.set(
+          g.userData.craneX + Math.cos(spin) * off, craneH - 2, g.userData.craneZ + Math.sin(spin) * off
+        );
+        part.rotation.y = -spin;
+      }
     }
   }
 
   // --------------------------------------------------------------- vehicles
 
-  _buildTraffic() {
-    const COUNT = 90;
-    const body = new THREE.BoxGeometry(2, 1.4, 4.4);
-    const mat = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.35 });
-    this.traffic = new THREE.InstancedMesh(body, mat, COUNT);
-    this.traffic.castShadow = true;
-    const palette = [0x1b1b1e, 0xb8bcc2, 0x8d2f2a, 0x1f3d63, 0xd8d3c6, 0xe2b93b, 0x2f5d3a, 0x6f6f75, 0xa94f2e, 0xf0eee8];
-    this.cars = [];
-    const half = CONFIG.EXTENT / 2;
+  _vehicles() {
+    const models = vehicleModels();
+    const COUNT = 110;
     const rnd = mulberry32(4242);
-    const c = new THREE.Color();
+    const half = CONFIG.EXTENT / 2;
+
+    this.cars = [];
+    const byModel = {};
     for (let i = 0; i < COUNT; i++) {
+      const model = MODEL_MIX[Math.floor(rnd() * MODEL_MIX.length)];
       const axis = rnd() < 0.5 ? 'x' : 'z';
       const lane = Math.floor(rnd() * (CONFIG.GRID + 1));
       const laneCoord = -half + lane * CONFIG.PITCH;
       const dir = rnd() < 0.5 ? 1 : -1;
-      this.cars.push({
-        axis, laneCoord: laneCoord + dir * 4, dir,
+      const car = {
+        model, axis, laneCoord: laneCoord + dir * 4.2, dir,
         pos: (rnd() - 0.5) * CONFIG.EXTENT,
-        speed: 11 + rnd() * 9,
-      });
-      c.setHex(palette[Math.floor(rnd() * palette.length)]);
-      this.traffic.setColorAt(i, c);
+        speed: (model === 'boxtruck' ? 7 : model === 'sports' ? 17 : 11) + rnd() * 7,
+        idx: 0,
+      };
+      (byModel[model] ||= []).push(car);
+      this.cars.push(car);
     }
-    this.traffic.instanceColor.needsUpdate = true;
-    this.scene.add(this.traffic);
+
+    this.carMeshes = [];
+    const glassMat = new THREE.MeshStandardMaterial({ color: 0x14181e, roughness: 0.12, metalness: 0.65 });
+    for (const model in byModel) {
+      const list = byModel[model];
+      const spec = models[model];
+      const bodyMat = new THREE.MeshStandardMaterial({ roughness: 0.38, metalness: 0.45 });
+      const body = new THREE.InstancedMesh(spec.body, bodyMat, list.length);
+      const glass = new THREE.InstancedMesh(spec.glass, glassMat, list.length);
+      const lamps = new THREE.InstancedMesh(spec.lamps,
+        new THREE.MeshStandardMaterial({ color: 0xfff2d4, emissive: 0xffcf8f, emissiveIntensity: 0 }),
+        list.length);
+      body.castShadow = true;
+      const c = new THREE.Color();
+      list.forEach((car, i) => {
+        car.idx = i;
+        c.setHex(spec.fixedColor ?? CAR_PAINT[Math.floor(mulberry32(i * 77 + model.length)() * CAR_PAINT.length)]);
+        body.setColorAt(i, c);
+      });
+      if (body.instanceColor) body.instanceColor.needsUpdate = true;
+      this.scene.add(body, glass, lamps);
+      this.carMeshes.push({ model, list, body, glass, lamps });
+    }
+    this.carLampMats = this.carMeshes.map((m) => m.lamps.material);
   }
 
   updateTraffic(dt) {
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
     const half = CONFIG.EXTENT / 2 + 40;
-    for (let i = 0; i < this.cars.length; i++) {
-      const car = this.cars[i];
+    for (const car of this.cars) {
       car.pos += car.speed * car.dir * dt;
       if (car.pos > half) car.pos = -half;
       if (car.pos < -half) car.pos = half;
-      const x = car.axis === 'x' ? car.pos : car.laneCoord;
-      const z = car.axis === 'x' ? car.laneCoord : car.pos;
-      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0),
-        car.axis === 'x' ? (car.dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (car.dir > 0 ? 0 : Math.PI));
-      m.compose(new THREE.Vector3(x, 0.9, z), q, new THREE.Vector3(1, 1, 1));
-      this.traffic.setMatrixAt(i, m);
     }
-    this.traffic.instanceMatrix.needsUpdate = true;
+    for (const set of this.carMeshes) {
+      for (const car of set.list) {
+        const x = car.axis === 'x' ? car.pos : car.laneCoord;
+        const z = car.axis === 'x' ? car.laneCoord : car.pos;
+        // Face along travel; the models point down -Z.
+        const yaw = car.axis === 'x'
+          ? (car.dir > 0 ? -Math.PI / 2 : Math.PI / 2)
+          : (car.dir > 0 ? Math.PI : 0);
+        tmpQ.setFromAxisAngle(UP, yaw);
+        tmpM.compose(tmpV.set(x, 0.03, z), tmpQ, tmpS);
+        set.body.setMatrixAt(car.idx, tmpM);
+        set.glass.setMatrixAt(car.idx, tmpM);
+        set.lamps.setMatrixAt(car.idx, tmpM);
+      }
+      set.body.instanceMatrix.needsUpdate = true;
+      set.glass.instanceMatrix.needsUpdate = true;
+      set.lamps.instanceMatrix.needsUpdate = true;
+    }
   }
 
-  // ----------------------------------------------------------------- crowds
+  // ----------------------------------------------------------------- people
 
-  _buildCrowd() {
-    const COUNT = 220;
-    const geo = new THREE.CapsuleGeometry(0.28, 0.9, 3, 6);
-    const mat = new THREE.MeshStandardMaterial({ roughness: 0.9 });
-    this.crowd = new THREE.InstancedMesh(geo, mat, COUNT);
-    this.crowd.castShadow = true;
-    const coats = [0x24262b, 0x3c4450, 0x6d5f4e, 0x8a3f37, 0x2f4a3c, 0xb9b3a6, 0x4a3f55, 0x1f2a33];
+  _crowd() {
+    const COUNT = 240;
+    const parts = personParts();
     const rnd = mulberry32(909);
+
+    const coatMat = new THREE.MeshStandardMaterial({ roughness: 0.88 });
+    const headMat = new THREE.MeshStandardMaterial({ roughness: 0.85 });
+    const legMat = new THREE.MeshStandardMaterial({ color: 0x25272c, roughness: 0.9 });
+
+    this.pCoat = new THREE.InstancedMesh(parts.coat, coatMat, COUNT);
+    this.pHead = new THREE.InstancedMesh(parts.head, headMat, COUNT);
+    this.pLegA = new THREE.InstancedMesh(parts.leg, legMat, COUNT);
+    this.pLegB = new THREE.InstancedMesh(parts.leg, legMat, COUNT);
+    this.pCoat.castShadow = true;
+
     const c = new THREE.Color();
     this.peds = [];
     for (let i = 0; i < COUNT; i++) {
       this.peds.push({
         x: (rnd() - 0.5) * CONFIG.EXTENT, z: (rnd() - 0.5) * CONFIG.EXTENT,
-        dir: rnd() * Math.PI * 2, speed: 1.1 + rnd() * 0.9, t: rnd() * 10,
+        dir: rnd() * Math.PI * 2, speed: 1.0 + rnd() * 1.0,
+        scale: 0.92 + rnd() * 0.18, phase: rnd() * 6.28, turn: rnd() * 5,
       });
-      c.setHex(coats[Math.floor(rnd() * coats.length)]);
-      this.crowd.setColorAt(i, c);
+      c.setHex(COAT_COLORS[Math.floor(rnd() * COAT_COLORS.length)]);
+      this.pCoat.setColorAt(i, c);
+      c.setHex(SKIN_TONES[Math.floor(rnd() * SKIN_TONES.length)]);
+      this.pHead.setColorAt(i, c);
     }
-    this.crowd.instanceColor.needsUpdate = true;
-    this.scene.add(this.crowd);
+    if (this.pCoat.instanceColor) this.pCoat.instanceColor.needsUpdate = true;
+    if (this.pHead.instanceColor) this.pHead.instanceColor.needsUpdate = true;
+    this.scene.add(this.pCoat, this.pHead, this.pLegA, this.pLegB);
   }
 
-  /** Pedestrians live near the camera; far ones are recycled in front of you. */
+  /** Pedestrians live near the camera and are recycled in front of you. */
   updateCrowd(dt, focus) {
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const up = new THREE.Vector3(0, 1, 0);
-    const scl = new THREE.Vector3(1, 1, 1);
-    const half = CONFIG.BLOCK / 2 + 2;
+    const halfBlock = CONFIG.BLOCK / 2 + 2.6;
+    const legQ = new THREE.Quaternion();
     for (let i = 0; i < this.peds.length; i++) {
       const p = this.peds[i];
-      p.t += dt;
+      p.phase += dt * p.speed * 5.4;
+      p.turn -= dt;
       p.x += Math.cos(p.dir) * p.speed * dt;
       p.z += Math.sin(p.dir) * p.speed * dt;
-      if (p.t > 4 + (i % 7)) { p.dir += (Math.random() - 0.5) * 1.4; p.t = 0; }
+      if (p.turn < 0) { p.dir += (Math.random() - 0.5) * 1.5; p.turn = 3 + Math.random() * 5; }
 
       const dx = p.x - focus.x, dz = p.z - focus.z;
-      if (dx * dx + dz * dz > 160 * 160) {
-        const a = Math.random() * Math.PI * 2;
-        const r = 40 + Math.random() * 90;
+      if (dx * dx + dz * dz > 170 * 170) {
+        const a = Math.random() * Math.PI * 2, r = 45 + Math.random() * 95;
         p.x = focus.x + Math.cos(a) * r;
         p.z = focus.z + Math.sin(a) * r;
       }
-      // Keep them roughly on the sidewalk ring of whichever block they're in.
+      // Stay on the sidewalk ring of whichever block they belong to.
       const bx = Math.round((p.x + CONFIG.EXTENT / 2 - CONFIG.PITCH / 2) / CONFIG.PITCH);
       const bz = Math.round((p.z + CONFIG.EXTENT / 2 - CONFIG.PITCH / 2) / CONFIG.PITCH);
       const cx = -CONFIG.EXTENT / 2 + CONFIG.PITCH / 2 + bx * CONFIG.PITCH;
       const cz = -CONFIG.EXTENT / 2 + CONFIG.PITCH / 2 + bz * CONFIG.PITCH;
       const lx = p.x - cx, lz = p.z - cz;
-      if (Math.abs(lx) > half) { p.x = cx + Math.sign(lx) * half; p.dir = Math.PI - p.dir; }
-      if (Math.abs(lz) > half) { p.z = cz + Math.sign(lz) * half; p.dir = -p.dir; }
+      if (Math.abs(lx) > halfBlock) { p.x = cx + Math.sign(lx) * halfBlock; p.dir = Math.PI - p.dir; }
+      if (Math.abs(lz) > halfBlock) { p.z = cz + Math.sign(lz) * halfBlock; p.dir = -p.dir; }
 
-      const bob = Math.sin(p.t * 7 + i) * 0.05;
-      q.setFromAxisAngle(up, -p.dir + Math.PI / 2);
-      m.compose(new THREE.Vector3(p.x, 1.2 + bob, p.z), q, scl);
-      this.crowd.setMatrixAt(i, m);
+      const s = p.scale;
+      const swing = Math.sin(p.phase) * 0.62;
+      const bob = Math.abs(Math.cos(p.phase)) * 0.035;
+      const yaw = -p.dir + Math.PI / 2;
+      tmpQ.setFromAxisAngle(UP, yaw);
+      tmpS.set(s, s, s);
+
+      tmpM.compose(tmpV.set(p.x, (1.06 + bob) * s, p.z), tmpQ, tmpS);
+      this.pCoat.setMatrixAt(i, tmpM);
+      tmpM.compose(tmpV.set(p.x, (1.52 + bob) * s, p.z), tmpQ, tmpS);
+      this.pHead.setMatrixAt(i, tmpM);
+
+      for (const [mesh, sign, off] of [[this.pLegA, 1, -0.09], [this.pLegB, -1, 0.09]]) {
+        legQ.setFromAxisAngle(UP, yaw);
+        legQ.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), swing * sign));
+        tmpV.set(p.x + Math.cos(yaw) * off * s, 0.74 * s + bob, p.z - Math.sin(yaw) * off * s);
+        tmpM.compose(tmpV, legQ, tmpS);
+        mesh.setMatrixAt(i, tmpM);
+      }
     }
-    this.crowd.instanceMatrix.needsUpdate = true;
+    tmpS.set(1, 1, 1);
+    for (const m of [this.pCoat, this.pHead, this.pLegA, this.pLegB]) m.instanceMatrix.needsUpdate = true;
   }
 
   // ----------------------------------------------------------------- vision
 
-  _buildVision() {
+  _vision() {
     this.vision = new THREE.Group();
     this.vision.visible = false;
-    const env = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshBasicMaterial({ color: 0x5ec8ff, transparent: true, opacity: 0.14, depthWrite: false })
-    );
-    const wire = new THREE.LineSegments(
-      new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
-      new THREE.LineBasicMaterial({ color: 0x8fe6ff, transparent: true, opacity: 0.9 })
-    );
-    const ghost = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshBasicMaterial({ color: 0xbfe9ff, transparent: true, opacity: 0.3, depthWrite: false })
-    );
-    const ghostWire = new THREE.LineSegments(
-      new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
-      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 })
-    );
+    const env = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ color: 0x4fb8ff, transparent: true, opacity: 0.1, depthWrite: false }));
+    const wire = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+      new THREE.LineBasicMaterial({ color: 0x8fe6ff, transparent: true, opacity: 0.9 }));
+    const ghost = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ color: 0xcdeeff, transparent: true, opacity: 0.26, depthWrite: false }));
+    const ghostWire = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }));
     this.vision.add(env, wire, ghost, ghostWire);
     this.visionParts = { env, wire, ghost, ghostWire };
     this.scene.add(this.vision);
   }
 
-  showVision(lot, floors, use) {
+  showVision(lot, floors) {
     if (!lot) { this.vision.visible = false; return; }
     const { env, wire, ghost, ghostWire } = this.visionParts;
-    // The legal envelope: full lot footprint, full entitlement height.
-    const envFloors = minFloors(lot);
-    const envH = Math.max(envFloors, floors) * CONFIG.FLOOR_H * 1.02;
+    const minF = Math.max(1, Math.ceil(lot.far / CONFIG.MAX_COVERAGE));
+    const envH = Math.max(minF, floors) * CONFIG.FLOOR_H * 1.02;
     for (const o of [env, wire]) {
       o.scale.set(lot.w * 0.96, envH, lot.d * 0.96);
       o.position.set(lot.x, envH / 2 + 0.5, lot.z);
     }
-    const m = massing(lot, floors);
+    const entitled = lot.areaSf * lot.far;
+    const perFloor = lot.areaSf * CONFIG.MAX_COVERAGE;
+    const gsf = Math.min(entitled, floors * perFloor);
+    const side = Math.sqrt((gsf / floors) / CONFIG.SF_PER_M2);
+    const h = floors * CONFIG.FLOOR_H;
     for (const o of [ghost, ghostWire]) {
-      o.scale.set(m.side, m.height, m.side);
-      o.position.set(lot.x, m.height / 2 + 0.5, lot.z);
+      o.scale.set(side, h, side);
+      o.position.set(lot.x, h / 2 + 0.5, lot.z);
     }
     this.vision.visible = true;
   }
@@ -453,47 +792,43 @@ export class CityScene {
 
   // ----------------------------------------------------------------- avatar
 
-  _buildAvatar() {
+  _avatar() {
+    const parts = personParts();
     const g = new THREE.Group();
-    const body = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.34, 1.0, 4, 8),
-      new THREE.MeshStandardMaterial({ color: 0x2b3440, roughness: 0.8 })
-    );
-    body.position.y = 1.05;
-    body.castShadow = true;
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.24, 12, 10),
-      new THREE.MeshStandardMaterial({ color: 0xc79b74, roughness: 0.9 })
-    );
-    head.position.y = 1.82;
-    head.castShadow = true;
-    g.add(body, head);
+    const coat = new THREE.Mesh(parts.coat, new THREE.MeshStandardMaterial({ color: 0x2b3440, roughness: 0.8 }));
+    coat.position.y = 1.08;
+    const head = new THREE.Mesh(parts.head, new THREE.MeshStandardMaterial({ color: 0xd9ab84, roughness: 0.85 }));
+    head.position.y = 1.55;
+    const legMat = new THREE.MeshStandardMaterial({ color: 0x1f2126, roughness: 0.9 });
+    this.avatarLegs = [
+      new THREE.Mesh(parts.leg, legMat), new THREE.Mesh(parts.leg, legMat),
+    ];
+    this.avatarLegs[0].position.set(-0.09, 0.76, 0);
+    this.avatarLegs[1].position.set(0.09, 0.76, 0);
+    coat.castShadow = head.castShadow = true;
+    g.add(coat, head, ...this.avatarLegs);
     this.avatar = g;
+    this.avatarPhase = 0;
     this.scene.add(g);
   }
 
-  _buildPlayerCar() {
+  animateAvatar(dt, moving) {
+    this.avatarPhase += dt * (moving ? 9 : 0);
+    const swing = moving ? Math.sin(this.avatarPhase) * 0.6 : 0;
+    this.avatarLegs[0].rotation.x = swing;
+    this.avatarLegs[1].rotation.x = -swing;
+  }
+
+  _playerCar() {
+    const spec = vehicleModels().sedan;
     const g = new THREE.Group();
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(2.1, 1.1, 4.6),
-      new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.35, metalness: 0.5 })
-    );
-    body.position.y = 0.75;
-    const cab = new THREE.Mesh(
-      new THREE.BoxGeometry(1.85, 0.8, 2.2),
-      new THREE.MeshStandardMaterial({ color: 0x0c0e11, roughness: 0.15, metalness: 0.2 })
-    );
-    cab.position.set(0, 1.5, -0.2);
-    body.castShadow = cab.castShadow = true;
-    const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 10);
-    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x15151a, roughness: 1 });
-    for (const [wx, wz] of [[-1, 1.5], [1, 1.5], [-1, -1.5], [1, -1.5]]) {
-      const w = new THREE.Mesh(wheelGeo, wheelMat);
-      w.rotation.z = Math.PI / 2;
-      w.position.set(wx, 0.42, wz);
-      g.add(w);
-    }
-    g.add(body, cab);
+    const body = new THREE.Mesh(spec.body, new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.3, metalness: 0.55 }));
+    const glass = new THREE.Mesh(spec.glass, new THREE.MeshStandardMaterial({ color: 0x0f1319, roughness: 0.1, metalness: 0.7 }));
+    this.playerLamps = new THREE.Mesh(spec.lamps,
+      new THREE.MeshStandardMaterial({ color: 0xfff2d4, emissive: 0xffcf8f, emissiveIntensity: 0 }));
+    body.castShadow = true;
+    g.add(body, glass, this.playerLamps);
+    g.position.y = 0.03;
     this.playerCar = g;
     this.scene.add(g);
   }
@@ -502,23 +837,19 @@ export class CityScene {
 
   rebuildCollision() {
     this.collisionGrid.clear();
-    const add = (key, box) => {
+    const add = (key, boxDef) => {
       if (!this.collisionGrid.has(key)) this.collisionGrid.set(key, []);
-      this.collisionGrid.get(key).push(box);
+      this.collisionGrid.get(key).push(boxDef);
     };
     for (const lot of this.city.lots) {
       let hw, hd;
-      if (lot.building) {
-        const side = lot.building.side || Math.sqrt(lot.areaSf * 0.7 / CONFIG.SF_PER_M2);
-        hw = hd = (lot.building.floors > 12 ? lot.w * 0.92 : side) / 2;
-      } else if (lot.project) {
-        hw = hd = lot.w * 0.95 / 2;
-      } else continue;
+      if (lot.building) { hw = lot.w * 0.94 / 2; hd = lot.d * 0.94 / 2; }
+      else if (lot.project) { hw = lot.w * 0.97 / 2; hd = lot.d * 0.97 / 2; }
+      else continue;
       add(`${lot.bx},${lot.by}`, { x: lot.x, z: lot.z, hw, hd });
     }
   }
 
-  /** Push a point out of any building it has walked into. */
   resolveCollision(x, z, radius = 0.5) {
     const half = CONFIG.EXTENT / 2;
     const bx = Math.round((x + half - CONFIG.PITCH / 2) / CONFIG.PITCH);
@@ -544,35 +875,52 @@ export class CityScene {
 
   // -------------------------------------------------------------- day cycle
 
-  updateSky(hour, focus = { x: 0, z: 0 }) {
-    const t = (hour - 6) / 12;                     // 0 at 6am, 1 at 6pm
+  updateSky(hour, focus = { x: 0, z: 0 }, dt = 0) {
+    this.clock += dt;
+    this.waterNormal.offset.x = this.clock * 0.006;
+    this.waterNormal.offset.y = this.clock * 0.0035;
+
+    const t = (hour - 5.5) / 13;               // daylight 5:30 to 18:30
     const elev = Math.sin(Math.max(0, Math.min(1, t)) * Math.PI);
     const day = Math.max(0, elev);
     const ang = t * Math.PI;
-    this.sun.position.set(
-      focus.x + Math.cos(ang) * 320,
-      Math.max(60, elev * 460) + 80,
-      focus.z + Math.sin(ang) * 220 - 90
-    );
+
+    const dir = new THREE.Vector3(Math.cos(ang) * 0.85, Math.max(0.1, elev), Math.sin(ang) * 0.55 - 0.3).normalize();
+    this.sun.position.set(focus.x + dir.x * 420, dir.y * 480 + 60, focus.z + dir.z * 420);
     this.sun.target.position.set(focus.x, 0, focus.z);
     this.sun.target.updateMatrixWorld();
-    this.sun.intensity = 0.25 + day * 2.5;
-    this.sun.color.setHSL(0.09 + (1 - day) * 0.02, 0.45 - day * 0.25, 0.55 + day * 0.2);
-    this.hemi.intensity = 0.25 + day * 0.9;
+    this.sun.intensity = 0.25 + day * 3.3;
+    this.sun.color.setHSL(0.09 + (1 - day) * 0.02, 0.45 - day * 0.3, 0.55 + day * 0.28);
+    this.hemi.intensity = 0.3 + day * 1.35;
+    this.hemi.color.setHSL(0.6, 0.3, 0.35 + day * 0.45);
 
-    const nightC = new THREE.Color(0x0d1320);
-    const dayC = new THREE.Color(0x9fb3cc);
-    const duskC = new THREE.Color(0xd9915f);
-    let sky = nightC.clone().lerp(dayC, Math.min(1, day * 1.6));
-    if (day > 0.02 && day < 0.35) sky.lerp(duskC, 0.5);
-    this.scene.background = sky;
-    this.scene.fog.color = sky;
+    const dusk = day > 0 && day < 0.3;
+    this.skyUniforms.uSun.value.copy(dir);
+    this.skyUniforms.uTop.value.setHSL(0.6, 0.55, 0.06 + day * 0.4);
+    this.skyUniforms.uMid.value.setHSL(0.58, 0.4, 0.07 + day * 0.58);
+    this.skyUniforms.uBot.value.setHSL(dusk ? 0.06 : 0.55, dusk ? 0.6 : 0.3, 0.08 + day * 0.62);
+    this.skyUniforms.uSunColor.value.setHSL(0.09, 0.7, 0.2 + day * 0.35);
 
-    const lit = 1 - Math.min(1, day * 2.2);
-    if (this._lit === undefined || Math.abs(lit - this._lit) > 0.02 || this._litCount !== this.buildingByLot.size) {
+    const fogC = this.skyUniforms.uMid.value;
+    this.scene.fog.color.copy(fogC);
+    this.scene.fog.density = 0.00075 + (1 - day) * 0.0008;
+
+    const lit = 1 - Math.min(1, day * 2.4);
+    if (this._lit === undefined || Math.abs(lit - this._lit) > 0.02) {
       this._lit = lit;
-      this._litCount = this.buildingByLot.size;
-      for (const mesh of this.buildingByLot.values()) mesh.material.emissiveIntensity = lit * 0.85;
+      for (const g of this.buildingByLot.values()) {
+        for (const child of g.children) {
+          // Volumes carry a material array (walls + roof caps), so check both.
+          for (const m of Array.isArray(child.material) ? child.material : [child.material]) {
+            if (!m) continue;
+            if (m.emissiveMap) m.emissiveIntensity = lit * 0.95 * (m.userData.litScale ?? 1);
+            else if (m.userData.shopGlow) m.emissiveIntensity = lit * 0.55;
+          }
+        }
+      }
+      this.lampGlow.material.emissiveIntensity = lit * 2.4;
+      for (const m of this.carLampMats) m.emissiveIntensity = lit * 2.2;
+      this.playerLamps.material.emissiveIntensity = lit * 2.2;
     }
   }
 

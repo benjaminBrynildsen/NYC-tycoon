@@ -6,7 +6,10 @@
 <title>Air Rights</title>
 <link rel="stylesheet" href="src/style.css">
 <script type="importmap">
-{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
 </script>
 </head>
 <body>
@@ -16,9 +19,10 @@
   <div id="topbar">
     <div class="stat"><label>Date</label><b id="s-date">—</b></div>
     <div class="stat"><label>Cash</label><b id="s-cash" class="good">—</b></div>
-    <div class="stat"><label>Net worth</label><b id="s-worth">—</b></div>
-    <div class="stat"><label>Debt</label><b id="s-debt" class="bad">—</b></div>
+    <div class="stat clickable" id="s-worth-wrap" title="Click for the full breakdown">
+      <label>Net worth ▾</label><b id="s-worth">—</b></div>
     <div class="stat"><label>Built</label><b id="s-gsf">—</b></div>
+    <div class="stat"><label>Rank</label><b id="s-rank">—</b></div>
     <div class="stat"><label>Market</label><b id="s-cycle">—</b></div>
     <div id="speeds">
       <button data-speed="0" class="sp">❚❚</button>
@@ -28,6 +32,17 @@
       <button data-speed="4" class="sp">300×</button>
     </div>
   </div>
+
+  <div id="portfolio" class="panel hidden">
+    <button id="pf-close">×</button>
+    <h3>Assets</h3>
+    <div id="pf-assets"></div>
+    <h3>Income</h3>
+    <div id="pf-income"></div>
+    <p class="hint" id="pf-holdings"></p>
+  </div>
+
+  <div id="worldlabel" class="hidden"></div>
 
   <div id="board-panel" class="panel hidden">
     <h3>Standings</h3>
@@ -40,7 +55,18 @@
     <button id="lot-close">×</button>
     <h3 id="lot-title">Lot</h3>
     <div id="lot-meta" class="meta"></div>
+    <div id="lot-tags"></div>
     <div id="lot-rows"></div>
+    <div id="lot-name" class="namerow hidden">
+      <input type="text" id="i-name" maxlength="40" placeholder="Name this building">
+      <button id="do-name">Name</button>
+    </div>
+    <div id="lot-offer" class="hidden">
+      <label class="ctl">Your offer <output id="o-offer"></output>
+        <input type="range" id="i-offer"></label>
+      <button id="do-offer" class="primary">Offer</button>
+      <p class="hint" id="offer-note"></p>
+    </div>
     <div id="lot-actions"></div>
   </div>
 
@@ -56,8 +82,14 @@
         <option value="residential">Residential</option>
         <option value="mixed">Mixed-use</option>
       </select></label>
+    <label class="ctl">Facade
+      <select id="i-style"></select></label>
+    <div class="ctl">Colour<div id="i-colors" class="swatches"></div></div>
+    <div class="ctl">Form<div id="i-form" class="formrow"></div></div>
     <label class="ctl">Leverage <output id="o-ltc"></output>
       <input type="range" id="i-ltc" min="0" max="65" value="55"></label>
+    <label class="ctl">Name (optional)
+      <input type="text" id="i-buildname" maxlength="40" placeholder="e.g. The Kestrel"></label>
     <table id="build-figures"></table>
     <div class="row">
       <button id="do-build" class="primary">Break ground</button>
@@ -86,9 +118,9 @@
     <div class="cols">
       <div>
         <h4>On the street</h4>
-        <p><kbd>W A S D</kbd> walk · <kbd>Shift</kbd> run · <kbd>Mouse</kbd> look</p>
+        <p><kbd>W A S D</kbd> or <kbd>arrows</kbd> · <kbd>Shift</kbd> run · <kbd>Mouse</kbd> look</p>
         <p><kbd>V</kbd> raise the Vision on the lot you're standing on</p>
-        <p><kbd>E</kbd> enter / leave your car · <kbd>F</kbd> first person</p>
+        <p><kbd>E</kbd> car · <kbd>Shift</kbd> boost · <kbd>F</kbd> first person</p>
       </div>
       <div>
         <h4>On the board</h4>

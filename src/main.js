@@ -76,6 +76,20 @@ canvas.addEventListener('pointerdown', (e) => {
   if (lot) ui.select(lot);
 });
 
+/** The building or site worth putting a label on, near where you're standing. */
+function nearbyNotable() {
+  const f = controls.focusPoint;
+  let best = null, bd = 46 * 46;
+  for (const l of city.lots) {
+    if (!l.project && !l.building) continue;
+    if (!l.project && l.owner !== 'player') continue;
+    const dx = l.x - f.x, dz = l.z - f.z;
+    const d = dx * dx + dz * dz;
+    if (d < bd) { bd = d; best = l; }
+  }
+  return best;
+}
+
 function nearestLot(x, z, maxD) {
   let best = null, bd = maxD * maxD;
   for (const l of city.lots) {
@@ -133,7 +147,8 @@ controls.toggleBoard = () => {
   document.getElementById('modehint').textContent = up
     ? 'TAB — drop back to the street  ·  click a lot to inspect'
     : 'TAB — rise to the board';
-  if (up) { scene.hideVision(); visionLot = null; ui.refreshBoard(); }
+  scene.setBoardMode(up);
+  if (up) { scene.hideVision(); visionLot = null; ui.refreshBoard(); scene.refreshCorridorLabels(); }
   return up;
 };
 
@@ -165,14 +180,16 @@ function frame(now) {
   controls.update(dt, scene);
   scene.updateTraffic(dt);
   scene.updateCrowd(dt, controls.focusPoint);
-  scene.updateSites();
+  scene.updateSites(dt);
+  scene.animateAvatar(dt, controls.moving && controls.mode === MODE.STREET);
 
-  const hour = ((state.day % 1) * 24 + 8) % 24;
-  scene.updateSky(hour, controls.mode === MODE.BOARD ? controls.board.target : controls.focusPoint);
+  const hour = ((state.day % 1) * 24 + 11) % 24;   // open late morning
+  scene.updateSky(hour, controls.mode === MODE.BOARD ? controls.board.target : controls.focusPoint, dt);
 
   if (state._dirtyGeometry) {
     state._dirtyGeometry = false;
     scene.syncBuildings();
+    scene.refreshCorridorLabels();
     ui.refreshBoard();
   }
 
@@ -186,6 +203,11 @@ function frame(now) {
   } else if (controls.mode === MODE.CAR) {
     ui.prompt('E — get out');
   } else ui.prompt('');
+
+  const labelLot = controls.mode === MODE.BOARD
+    ? ui.selected
+    : (visionLot || nearbyNotable());
+  ui.updateWorldLabel(labelLot, scene.camera);
 
   uiAccum += dt;
   if (uiAccum > 0.25) {
@@ -223,3 +245,6 @@ function checkMilestones() {
     ui.toast('You are out of cash. Debt service is eating you — sell something.', true);
   } else if (me.cash > 5e6) warnedCash = false;
 }
+
+// Handy when poking at the running game from the console.
+window.__game = { state, city, scene, controls, ui };

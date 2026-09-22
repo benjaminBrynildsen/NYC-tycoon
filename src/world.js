@@ -12,8 +12,32 @@ export const CONFIG = {
   MAX_FLOORS: 90,
 };
 
+// The harbour wraps the south and east edges. Waterfront land is the scarcest
+// thing on the map and the game should make you feel that.
+export const WATER = { southZ: 0, eastX: 0 };
+
 CONFIG.PITCH = CONFIG.BLOCK + CONFIG.STREET;
 CONFIG.EXTENT = CONFIG.GRID * CONFIG.PITCH;
+WATER.southZ = CONFIG.EXTENT / 2 + 4;
+WATER.eastX = CONFIG.EXTENT / 2 + 4;
+
+export function waterDistance(x, z) {
+  return Math.min(WATER.southZ - z, WATER.eastX - x);
+}
+export function isWater(x, z) {
+  return z > WATER.southZ || x > WATER.eastX;
+}
+
+// Avenues run north-south, streets run east-west. Every lot gets a real address.
+export const AVENUE_NAMES = [
+  'Harrow Ave', 'Kestrel Ave', 'Dutch Ave', 'Pell Ave', 'Vandam Ave',
+  'Orchard Ave', 'Bowery Ave', 'Meridian Ave', 'Harbor Ave',
+];
+export function streetName(i) {
+  const n = i + 1;
+  const s = ['th', 'st', 'nd', 'rd'][(n % 100 > 10 && n % 100 < 14) ? 0 : Math.min(n % 10, 4) % 4] || 'th';
+  return `${n}${s} St`;
+}
 
 // Zoning districts, outward from the centre. FAR is the whole economy in one number.
 export const DISTRICTS = {
@@ -21,6 +45,24 @@ export const DISTRICTS = {
   mid:  { far: 10, landBase: 140, rentMul: 1.05, name: 'C5 Midtown' },
   edge: { far: 6,  landBase: 80,  rentMul: 0.95, name: 'C4 Edge' },
   res:  { far: 3,  landBase: 45,  rentMul: 0.85, name: 'R6 Residential' },
+};
+
+// Facade systems you can choose when you build. Each trades cost against the
+// rent it can command.
+export const STYLES = {
+  brick:   { name: 'Brick',        type: 'brownstone', cost: 0.90, rent: 0.95 },
+  loft:    { name: 'Industrial',   type: 'loft',       cost: 0.95, rent: 0.99 },
+  masonry: { name: 'Masonry',      type: 'prewar',     cost: 1.00, rent: 1.02 },
+  deco:    { name: 'Deco stone',   type: 'deco',       cost: 1.09, rent: 1.07 },
+  curtain: { name: 'Curtain wall', type: 'midcentury', cost: 1.05, rent: 1.05 },
+  glass:   { name: 'Glass',        type: 'glass',      cost: 1.20, rent: 1.15 },
+};
+
+// The shape of the mass. A point tower costs more per foot and rents for more.
+export const FORMS = {
+  slab:    { name: 'Slab',    cost: 0.95, rent: 0.96 },
+  stepped: { name: 'Stepped', cost: 1.04, rent: 1.04 },
+  point:   { name: 'Point',   cost: 1.13, rent: 1.10 },
 };
 
 export const USES = {
@@ -84,6 +126,16 @@ export function generateCity(seed = 7) {
 
   const lots = [];
   const blocks = [];
+  // One corridor per avenue and per cross street. Retail accumulates on them and
+  // a corridor that collects enough of it becomes a destination.
+  const corridors = [];
+  for (let i = 0; i <= GRID; i++) {
+    corridors.push({ id: `av${i}`, axis: 'ns', index: i, name: AVENUE_NAMES[i % AVENUE_NAMES.length],
+                     retail: 0, fame: 0, famous: false, lots: [] });
+    corridors.push({ id: `st${i}`, axis: 'ew', index: i, name: streetName(i),
+                     retail: 0, fame: 0, famous: false, lots: [] });
+  }
+  const corridorBy = new Map(corridors.map((c) => [c.id, c]));
   let id = 0;
 
   for (let by = 0; by < GRID; by++) {
@@ -113,7 +165,17 @@ export function generateCity(seed = 7) {
           project: null,
           landPerSf: DISTRICTS[district].landBase * (0.82 + rnd() * 0.36),
           seed: Math.floor(rnd() * 1e6),
+          name: null,
         };
+        // The corridors this lot fronts: the nearer avenue and the nearer street.
+        lot.avenue = corridorBy.get(`av${sx < 0 ? bx : bx + 1}`);
+        lot.street = corridorBy.get(`st${sz < 0 ? by : by + 1}`);
+        lot.avenue.lots.push(lot);
+        lot.street.lots.push(lot);
+        const num = 100 + by * 100 + (sz < 0 ? 0 : 50) + (sx < 0 ? 1 : 3) + (bx % 10) * 4;
+        lot.address = `${num} ${lot.avenue.name}`;
+        lot.crossStreet = lot.street.name;
+        lot.waterDist = waterDistance(lot.x, lot.z);
         lots.push(lot);
         block.lots.push(lot);
       }
@@ -139,11 +201,19 @@ export function generateCity(seed = 7) {
         quality: 0.45 + rnd() * 0.3,
         age: Math.floor(20 + rnd() * 70),
         builtBy: 'npc',
+        condition: 0.45 + rnd() * 0.45,
       };
     }
   }
 
-  return { lots, blocks, seed };
+  // Park frontage: a lot is park-front if a park block sits across the street.
+  const parkBlocks = blocks.filter((b) => b.isPark);
+  for (const lot of lots) {
+    lot.parkFront = parkBlocks.some((b) =>
+      Math.abs(b.cx - lot.x) < CONFIG.PITCH * 1.05 && Math.abs(b.cz - lot.z) < CONFIG.PITCH * 1.05);
+  }
+
+  return { lots, blocks, corridors, seed };
 }
 
 /** Lots within `radius` metres of a point. Used for land-value contagion. */

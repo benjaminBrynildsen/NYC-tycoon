@@ -34,7 +34,7 @@ export class Controls {
     };
 
     // Board camera: an orbit rig over the city.
-    this.board = { target: new THREE.Vector3(0, 0, 0), dist: 620, yaw: 0.6, pitch: -0.95 };
+    this.board = { target: new THREE.Vector3(0, 0, 0), dist: 780, yaw: 0.6, pitch: -1.12 };
 
     this.keys = new Set();
     this.transition = null;   // { t, from, to, dir }
@@ -68,7 +68,7 @@ export class Controls {
       }
       if (!this.locked && !this.lookDrag) return;
       this.yaw -= e.movementX * 0.0022;
-      this.pitch = Math.max(-1.2, Math.min(1.1, this.pitch - e.movementY * 0.0022));
+      this.pitch = Math.max(-1.05, Math.min(0.95, this.pitch - e.movementY * 0.0022));
     });
 
     this.canvas.addEventListener('mousedown', (e) => {
@@ -82,6 +82,17 @@ export class Controls {
       e.preventDefault();
       this.board.dist = Math.max(90, Math.min(1400, this.board.dist * (1 + Math.sign(e.deltaY) * 0.12)));
     }, { passive: false });
+  }
+
+  /** WASD and the arrow keys, as one forward/right pair. */
+  moveAxis() {
+    const k = this.keys;
+    let fx = 0, fz = 0;
+    if (k.has('KeyW') || k.has('ArrowUp')) fz -= 1;
+    if (k.has('KeyS') || k.has('ArrowDown')) fz += 1;
+    if (k.has('KeyA') || k.has('ArrowLeft')) fx -= 1;
+    if (k.has('KeyD') || k.has('ArrowRight')) fx += 1;
+    return { fx, fz };
   }
 
   get focusPoint() {
@@ -122,17 +133,14 @@ export class Controls {
   _updateWalk(dt) {
     const run = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
     const speed = run ? 9.5 : 4.2;
-    let fx = 0, fz = 0;
-    if (this.keys.has('KeyW')) fz -= 1;
-    if (this.keys.has('KeyS')) fz += 1;
-    if (this.keys.has('KeyA')) fx -= 1;
-    if (this.keys.has('KeyD')) fx += 1;
+    let { fx, fz } = this.moveAxis();
     const len = Math.hypot(fx, fz) || 1;
     fx /= len; fz /= len;
 
+    // forward = (-sin yaw, -cos yaw), right = (cos yaw, -sin yaw)
     const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
-    const dx = (fx * cos - fz * sin) * speed * dt;
-    const dz = (fx * sin + fz * cos) * speed * dt;
+    const dx = (fx * cos + fz * sin) * speed * dt;
+    const dz = (fz * cos - fx * sin) * speed * dt;
 
     let nx = this.pos.x + dx, nz = this.pos.z + dz;
     [nx, nz] = this.s.resolveCollision(nx, nz, 0.6);
@@ -144,13 +152,19 @@ export class Controls {
 
   _updateCar(dt) {
     const c = this.car;
-    const accel = this.keys.has('KeyW') ? 26 : this.keys.has('KeyS') ? -22 : 0;
+    const k = this.keys;
+    const boost = k.has('ShiftLeft') || k.has('ShiftRight');
+    const fwd = k.has('KeyW') || k.has('ArrowUp');
+    const rev = k.has('KeyS') || k.has('ArrowDown');
+    const accel = fwd ? (boost ? 62 : 42) : rev ? -30 : 0;
     c.speed += accel * dt;
-    c.speed *= 1 - 0.9 * dt;                        // drag
-    c.speed = Math.max(-14, Math.min(42, c.speed));
-    const steerAuth = Math.min(1, Math.abs(c.speed) / 9);
-    if (this.keys.has('KeyA')) c.yaw += 1.9 * dt * steerAuth * Math.sign(c.speed || 1);
-    if (this.keys.has('KeyD')) c.yaw -= 1.9 * dt * steerAuth * Math.sign(c.speed || 1);
+    c.speed *= 1 - 0.55 * dt;                       // drag
+    c.speed = Math.max(-18, Math.min(boost ? 82 : 58, c.speed));
+    // Steering tightens up at low speed and calms down at high speed.
+    const steerAuth = Math.min(1, Math.abs(c.speed) / 7) * (1 - Math.min(0.55, Math.abs(c.speed) / 150));
+    const sign = Math.sign(c.speed || 1);
+    if (k.has('KeyA') || k.has('ArrowLeft')) c.yaw += 2.2 * dt * steerAuth * sign;
+    if (k.has('KeyD') || k.has('ArrowRight')) c.yaw -= 2.2 * dt * steerAuth * sign;
 
     const nx = c.pos.x - Math.sin(c.yaw) * c.speed * dt;
     const nz = c.pos.z - Math.cos(c.yaw) * c.speed * dt;
@@ -202,6 +216,13 @@ export class Controls {
     const back = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
     const dist = this.mode === MODE.CAR ? 9.5 : 5.4;
     const pos = head.clone().addScaledVector(back, dist).add(new THREE.Vector3(0, 1.3, 0));
+    // Looking up must not bury the camera in the pavement.
+    if (pos.y < 0.9) {
+      const t = (0.9 - head.y - 1.3) / (back.y * dist || -1);
+      pos.copy(head).addScaledVector(back, Math.max(1.2, dist * Math.max(0, Math.min(1, t))))
+         .add(new THREE.Vector3(0, 1.3, 0));
+      pos.y = Math.max(pos.y, 0.9);
+    }
     const [cx, cz] = this.s.resolveCollision(pos.x, pos.z, 0.4);
     pos.x = cx; pos.z = cz;
     return { pos, q };
@@ -210,14 +231,10 @@ export class Controls {
   _boardPan(dt) {
     const sp = 260 * dt * (this.board.dist / 600);
     const sin = Math.sin(this.board.yaw), cos = Math.cos(this.board.yaw);
-    let fx = 0, fz = 0;
-    if (this.keys.has('KeyW')) fz -= 1;
-    if (this.keys.has('KeyS')) fz += 1;
-    if (this.keys.has('KeyA')) fx -= 1;
-    if (this.keys.has('KeyD')) fx += 1;
+    const { fx, fz } = this.moveAxis();
     if (!fx && !fz) return;
-    this.board.target.x += (fx * cos - fz * sin) * sp;
-    this.board.target.z += (fx * sin + fz * cos) * sp;
+    this.board.target.x += (fx * cos + fz * sin) * sp;
+    this.board.target.z += (fz * cos - fx * sin) * sp;
     const lim = CONFIG.EXTENT * 0.8;
     this.board.target.x = Math.max(-lim, Math.min(lim, this.board.target.x));
     this.board.target.z = Math.max(-lim, Math.min(lim, this.board.target.z));
