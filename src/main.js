@@ -10,9 +10,31 @@ import { UI } from './ui.js';
 // Game minutes that pass per real second, by speed setting.
 const SPEEDS = [0, 5, 60, 720, 4320];
 
+/**
+ * Seed handling. A reset reloads the page rather than tearing the scene down,
+ * which is the one way to guarantee nothing is left over from the last game,
+ * so the seed has to survive the reload. The hash makes a city shareable; the
+ * session copy is the fallback where an embedded view rewrites the URL.
+ */
+const DEFAULT_SEED = 7;
+function readSeed() {
+  const m = /^#s(\d+)$/.exec(location.hash || '');
+  if (m) return +m[1];
+  try {
+    const v = sessionStorage.getItem('airrights.seed');
+    if (v) return +v;
+  } catch { /* private window or blocked storage */ }
+  return DEFAULT_SEED;
+}
+function writeSeed(seed) {
+  try { sessionStorage.setItem('airrights.seed', String(seed)); } catch { /* fine */ }
+  try { location.hash = `s${seed}`; } catch { /* fine */ }
+}
+
+const SEED = readSeed();
 const canvas = document.getElementById('view');
-const city = generateCity(7);
-const state = createState(city);
+const city = generateCity(SEED);
+const state = createState(city, SEED);
 const scene = new CityScene(state, canvas);
 const controls = new Controls(scene, canvas);
 const ui = new UI(state, controls);
@@ -130,7 +152,10 @@ addEventListener('keydown', (e) => {
     case 'Digit2': ui.setSpeed(2); break;
     case 'Digit3': ui.setSpeed(3); break;
     case 'Digit4': ui.setSpeed(4); break;
-    case 'Escape': ui.closeLot(); scene.hideVision(); visionLot = null; break;
+    case 'Escape':
+      if (document.pointerLockElement) document.exitPointerLock();
+      ui.closeLot(); scene.hideVision(); visionLot = null;
+      break;
   }
 });
 
@@ -162,8 +187,28 @@ controls.toggleBoard = () => {
 
 // Injected by the build so a stale page is obvious at a glance.
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
-document.getElementById('buildstamp').textContent = `build ${BUILD}`;
+document.getElementById('buildstamp').textContent = `city ${SEED} · build ${BUILD}`;
 console.log(`Air Rights — build ${BUILD}`);
+
+// --- reset
+const resetBtn = document.getElementById('reset');
+const resetMenu = document.getElementById('resetmenu');
+const closeReset = () => resetMenu.classList.add('hidden');
+resetBtn.onclick = (e) => {
+  e.stopPropagation();
+  if (document.pointerLockElement) document.exitPointerLock();
+  resetMenu.classList.toggle('hidden');
+};
+document.getElementById('reset-cancel').onclick = closeReset;
+addEventListener('pointerdown', (e) => {
+  if (!resetMenu.contains(e.target) && e.target !== resetBtn) closeReset();
+});
+function restart(sameCity) {
+  writeSeed(sameCity ? SEED : Math.floor(Math.random() * 999_999) + 1);
+  location.reload();
+}
+document.getElementById('reset-new').onclick = () => restart(false);
+document.getElementById('reset-same').onclick = () => restart(true);
 
 document.getElementById('begin').onclick = () => {
   document.getElementById('start').remove();
@@ -215,6 +260,14 @@ function frame(now) {
   } else if (controls.mode === MODE.CAR) {
     ui.prompt('E — get out');
   } else ui.prompt('');
+
+  // While the pointer is locked the canvas swallows every click, so no HUD
+  // control is reachable. Say how to get the cursor back.
+  if (controls.mode !== MODE.BOARD) {
+    document.getElementById('modehint').textContent = document.pointerLockElement
+      ? 'ESC — free the cursor  ·  TAB — rise to the board'
+      : 'click the view to look around  ·  TAB — rise to the board';
+  }
 
   const labelLot = controls.mode === MODE.BOARD
     ? ui.selected

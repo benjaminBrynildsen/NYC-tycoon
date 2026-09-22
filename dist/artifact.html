@@ -350,6 +350,23 @@ input[type=text]::placeholder { color: #5f6b7a; }
 #leaderboard li { cursor: pointer; border-radius: 5px; margin: 0 -6px; padding: 5px 6px; }
 #leaderboard li:hover { background: rgba(255,255,255,.07); }
 #leaderboard li.lit { background: rgba(94,200,255,.15); box-shadow: inset 2px 0 0 var(--accent); }
+
+/* ----------------------------------------------------------------- reset */
+#resetwrap { margin-left: auto; position: relative; }
+#speeds { margin-left: 14px; }
+#reset:hover { background: rgba(242,118,106,.18); color: #f2766a; border-color: #f2766a; }
+#resetmenu {
+  position: absolute; top: 30px; right: 0; width: 210px; z-index: 30;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px; backdrop-filter: blur(14px); box-shadow: 0 16px 44px rgba(0,0,0,.6);
+}
+#resetmenu p { margin: 0 0 10px; font-size: 11.5px; color: var(--dim); line-height: 1.45; }
+#resetmenu button {
+  width: 100%; margin-top: 6px; padding: 7px; border-radius: 5px; cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--line); background: rgba(255,255,255,.08); color: var(--ink);
+}
+#resetmenu button.primary { background: var(--accent); color: #06121b; border-color: var(--accent); }
 </style>
 <script type="importmap">
 { "imports": {
@@ -370,6 +387,15 @@ input[type=text]::placeholder { color: #5f6b7a; }
     <div class="stat"><label>Built</label><b id="s-gsf">—</b></div>
     <div class="stat"><label>Rank</label><b id="s-rank">—</b></div>
     <div class="stat"><label>Market</label><b id="s-cycle">—</b></div>
+    <div id="resetwrap">
+      <button id="reset" class="sp" title="Start over">&#8635; Reset</button>
+      <div id="resetmenu" class="hidden">
+        <p>Start over? This game is not saved.</p>
+        <button id="reset-new" class="primary">New city</button>
+        <button id="reset-same">Replay this one</button>
+        <button id="reset-cancel">Cancel</button>
+      </div>
+    </div>
     <div id="speeds">
       <button data-speed="0" class="sp">❚❚</button>
       <button data-speed="1" class="sp on">1×</button>
@@ -490,6 +516,7 @@ input[type=text]::placeholder { color: #5f6b7a; }
         <p><kbd>W A S D</kbd> or <kbd>arrows</kbd> · <kbd>Shift</kbd> run · <kbd>Mouse</kbd> look</p>
         <p><kbd>V</kbd> raise the Vision on the lot you're standing on</p>
         <p><kbd>E</kbd> car · <kbd>Shift</kbd> boost · <kbd>F</kbd> first person</p>
+        <p><kbd>Esc</kbd> frees the cursor so you can click the panels</p>
       </div>
       <div>
         <h4>On the board</h4>
@@ -3740,9 +3767,31 @@ var UI = class {
 
 // src/main.js
 var SPEEDS = [0, 5, 60, 720, 4320];
+var DEFAULT_SEED = 7;
+function readSeed() {
+  const m = /^#s(\d+)$/.exec(location.hash || "");
+  if (m) return +m[1];
+  try {
+    const v = sessionStorage.getItem("airrights.seed");
+    if (v) return +v;
+  } catch {
+  }
+  return DEFAULT_SEED;
+}
+function writeSeed(seed) {
+  try {
+    sessionStorage.setItem("airrights.seed", String(seed));
+  } catch {
+  }
+  try {
+    location.hash = `s${seed}`;
+  } catch {
+  }
+}
+var SEED = readSeed();
 var canvas = document.getElementById("view");
-var city = generateCity(7);
-var state = createState(city);
+var city = generateCity(SEED);
+var state = createState(city, SEED);
 var scene = new CityScene(state, canvas);
 var controls = new Controls(scene, canvas);
 var ui = new UI(state, controls);
@@ -3863,6 +3912,7 @@ addEventListener("keydown", (e) => {
       ui.setSpeed(4);
       break;
     case "Escape":
+      if (document.pointerLockElement) document.exitPointerLock();
       ui.closeLot();
       scene.hideVision();
       visionLot = null;
@@ -3898,9 +3948,27 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "dc850e3 \xB7 2026-09-22 18:41" : "dev";
-document.getElementById("buildstamp").textContent = `build ${BUILD}`;
+var BUILD = true ? "0ae54ec \xB7 2026-09-22 18:58" : "dev";
+document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
+var resetBtn = document.getElementById("reset");
+var resetMenu = document.getElementById("resetmenu");
+var closeReset = () => resetMenu.classList.add("hidden");
+resetBtn.onclick = (e) => {
+  e.stopPropagation();
+  if (document.pointerLockElement) document.exitPointerLock();
+  resetMenu.classList.toggle("hidden");
+};
+document.getElementById("reset-cancel").onclick = closeReset;
+addEventListener("pointerdown", (e) => {
+  if (!resetMenu.contains(e.target) && e.target !== resetBtn) closeReset();
+});
+function restart(sameCity) {
+  writeSeed(sameCity ? SEED : Math.floor(Math.random() * 999999) + 1);
+  location.reload();
+}
+document.getElementById("reset-new").onclick = () => restart(false);
+document.getElementById("reset-same").onclick = () => restart(true);
 document.getElementById("begin").onclick = () => {
   document.getElementById("start").remove();
   requestLock(canvas);
@@ -3941,6 +4009,9 @@ function frame(now) {
   } else if (controls.mode === MODE.CAR) {
     ui.prompt("E \u2014 get out");
   } else ui.prompt("");
+  if (controls.mode !== MODE.BOARD) {
+    document.getElementById("modehint").textContent = document.pointerLockElement ? "ESC \u2014 free the cursor  \xB7  TAB \u2014 rise to the board" : "click the view to look around  \xB7  TAB \u2014 rise to the board";
+  }
   const labelLot = controls.mode === MODE.BOARD ? ui.selected : visionLot || nearbyNotable();
   ui.updateWorldLabel(labelLot, scene.camera);
   uiAccum += dt;

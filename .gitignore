@@ -1,4 +1,4 @@
 node_modules/
 .testvendor/
-test.html
+test*.html
 *.png
