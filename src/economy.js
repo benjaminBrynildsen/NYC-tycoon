@@ -254,6 +254,7 @@ export function netWorth(state, actorId) {
 
 export function leaderboard(state) {
   return Object.values(state.actors)
+    .filter((a) => !a.retired)
     .map((a) => ({ ...a, worth: netWorth(state, a.id) }))
     .sort((x, y) => y.worth - x.worth);
 }
@@ -294,6 +295,66 @@ function checkUnlocks(state) {
       logEvent(state, id, '— crossed $1B and is looking at the boroughs');
     }
   }
+}
+
+// ------------------------------------------------------- taking over a firm
+
+/** A firm's books, for the screen where you choose which one to become. */
+export function firmSummary(state, id) {
+  const a = state.actors[id];
+  const b = worthBreakdown(state, id);
+  let flagship = null;
+  for (const lot of state.city.lots) {
+    if (lot.owner !== id || !lot.building) continue;
+    if (!flagship || lot.building.floors > flagship.building.floors) flagship = lot;
+  }
+  const building = state.projects.filter((p) => p.owner === id).length;
+  return { id, name: a.name, color: a.color, blurb: a.blurb, strategy: a.strategy,
+           ...b, flagship, building, regions: [...a.regions] };
+}
+
+export function takeableFirms(state) {
+  return RIVALS.filter((r) => !state.actors[r.id].retired).map((r) => firmSummary(state, r.id));
+}
+
+/**
+ * Step into an existing firm rather than starting from nothing: its land, its
+ * cash, its debt, its unlocks and its name. Nothing is created — the position
+ * already existed, which is why this keeps a running game balanced.
+ */
+export function takeOverFirm(state, targetId, actorId = 'player') {
+  const target = state.actors[targetId];
+  const me = state.actors[actorId];
+  if (!target || target.isPlayer || target.retired) return { ok: false, why: 'That firm is not available.' };
+
+  let lots = 0;
+  for (const lot of state.city.lots) {
+    if (lot.owner !== targetId) continue;
+    lot.owner = actorId;
+    lots++;
+  }
+  for (const p of state.projects) if (p.owner === targetId) p.owner = actorId;
+  for (const f of state.fills) if (f.owner === targetId) f.owner = actorId;
+  for (const lot of state.city.lots) {
+    if (lot.building && lot.building.builtBy === targetId) lot.building.builtBy = actorId;
+  }
+
+  me.cash = target.cash;
+  me.debt = target.debt;
+  me.gsfBuilt = target.gsfBuilt;
+  me.regions = new Set(target.regions);
+  me.name = target.name;
+  me.firm = targetId;
+  target.retired = true;
+  target.cash = 0; target.debt = 0; target.gsfBuilt = 0;
+
+  logEvent(state, actorId, `took control of ${target.name} — ${lots} lots, ${money(me.debt)} of debt`);
+  pushNews(state, 'takeover', `${target.name.toUpperCase()} CHANGES HANDS`,
+    `New ownership has taken control of ${target.name}, inheriting ${lots} lots, `
+    + `${sf(me.gsfBuilt)} of built floor area and ${money(me.debt)} of debt. The firm keeps its `
+    + `name, its buildings and its obligations.`);
+  state._dirtyGeometry = true;
+  return { ok: true, lots, cash: me.cash, debt: me.debt };
 }
 
 // ------------------------------------------------------------- making land
@@ -662,7 +723,10 @@ function monthTick(state) {
   }
 
   checkUnlocks(state);
-  for (const r of RIVALS) rivalTurn(state, state.actors[r.id]);
+  for (const r of RIVALS) {
+    const a = state.actors[r.id];
+    if (!a.retired) rivalTurn(state, a);
+  }
   marketStory(state);
 }
 

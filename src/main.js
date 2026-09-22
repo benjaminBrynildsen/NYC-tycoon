@@ -2,8 +2,9 @@
 
 import * as THREE from 'three';
 import { generateCity, CONFIG, cellOf, canReclaim, minFloors } from './world.js';
-import { createState, advance, netWorth, leaderboard, money, logEvent,
-         reclaimCost, startReclaim, canReclaimHere, sellAll } from './economy.js';
+import { createState, advance, netWorth, leaderboard, money, sf, logEvent, formatDate,
+         reclaimCost, startReclaim, canReclaimHere, sellAll,
+         takeableFirms, takeOverFirm } from './economy.js';
 import { CityScene } from './scene.js';
 import { Controls, MODE, requestLock, isTyping } from './controls.js';
 import { UI } from './ui.js';
@@ -262,11 +263,100 @@ function restart(sameCity) {
 document.getElementById('reset-new').onclick = () => restart(false);
 document.getElementById('reset-same').onclick = () => restart(true);
 
-document.getElementById('begin').onclick = () => {
-  document.getElementById('start').remove();
+function beginGame(message) {
+  document.getElementById('start')?.remove();
+  document.getElementById('firms')?.remove();
   requestLock(canvas);
-  ui.toast('You own one building. Find something under-built and take it.');
+  ui.refreshTop();
+  ui.refreshNews();
+  ui.toast(message);
+}
+
+document.getElementById('begin').onclick = () => {
+  beginGame('You own one building. Find something under-built and take it.');
 };
+
+// --- joining a game already under way
+document.getElementById('begin-takeover').onclick = () => {
+  document.getElementById('yearpick').classList.remove('hidden');
+  document.getElementById('begin-takeover').disabled = true;
+};
+
+for (const btn of document.querySelectorAll('#yearpick .yearrow button')) {
+  btn.onclick = () => runAhead(+btn.dataset.years);
+}
+
+/**
+ * Let the city develop without you, then offer whoever is left. The player
+ * starts owning nothing, so during these years there is no empty slot in the
+ * field and nothing is conjured up when you finally step in.
+ */
+function runAhead(years) {
+  document.getElementById('yearpick').innerHTML =
+    '<p class="sub small">Simulating ' + years + ' years…</p>';
+  setTimeout(() => {
+    for (const lot of city.lots) if (lot.owner === 'player') lot.owner = 'npc';
+    state.actors.player.gsfBuilt = 0;
+    state.log.length = 0;
+    advance(state, years * 365);
+    scene.syncBuildings();
+    scene.refreshCorridorLabels();
+    showFirms();
+  }, 40);
+}
+
+function showFirms() {
+  const firms = takeableFirms(state);
+  document.getElementById('start').remove();
+  const panel = document.getElementById('firms');
+  panel.classList.remove('hidden');
+  const words = ['No', 'One firm is', 'Two firms are', 'Three firms are'][firms.length] || `${firms.length} firms are`;
+  document.getElementById('firms-head').textContent = `${words} working the city`;
+  document.getElementById('firms-sub').textContent =
+    `${formatDate(state)}. Pick the books you want to inherit — the land, the cash and the debt `
+    + 'all come with the name.';
+
+  const row = (k, v, cls = '') =>
+    `<div class="kv"><span>${k}</span><b class="${cls}">${v}</b></div>`;
+  document.getElementById('firmlist').innerHTML = firms.map((f) => `
+    <div class="firmcard" style="border-top-color:#${f.color.toString(16).padStart(6, '0')}">
+      <h3>${f.name}</h3>
+      <p class="blurb">${f.blurb}</p>
+      <div class="nwl">Net worth</div>
+      <div class="nw">${money(f.total)}</div>
+      <div class="rows">
+        ${row('Cash', money(f.cash), f.cash > 0 ? 'good' : 'bad')}
+        ${row('Debt', money(f.debt), f.debt > f.total ? 'bad' : '')}
+        ${row('Income', `${money(f.netIncome)}/yr`, f.netIncome < 0 ? 'bad' : 'good')}
+        ${row('Holdings', `${f.lots} lots · ${f.built} built`)}
+        ${row('Floor area', sf(f.gsf))}
+        ${row('Building now', f.building ? `${f.building} site${f.building > 1 ? 's' : ''}` : '—')}
+      </div>
+      <div class="flag">${f.flagship
+        ? `Flagship: ${f.flagship.building.floors} floors at ${f.flagship.address}`
+        : 'No completed buildings.'}${f.regions.length > 1 ? ' · boroughs unlocked' : ''}</div>
+      <button data-firm="${f.id}">Take over ${f.name.split(' ')[0]}</button>
+    </div>`).join('');
+
+  for (const btn of document.querySelectorAll('#firmlist button')) {
+    btn.onclick = () => {
+      const r = takeOverFirm(state, btn.dataset.firm);
+      if (!r.ok) return;
+      scene.syncBuildings();
+      ui.refreshBoard();
+      // Stand the player outside their biggest building.
+      const flag = city.lots.find((l) => l.owner === 'player' && l.building)
+        || city.lots.find((l) => l.owner === 'player');
+      if (flag) {
+        controls.pos.set(flag.x, 0, flag.z + CONFIG.LOT * 1.6);
+        controls.board.target.set(flag.x, 0, flag.z);
+        scene.playerCar.position.set(flag.x + 18, 0, flag.z + CONFIG.LOT * 1.6);
+        controls.car.pos.copy(scene.playerCar.position);
+      }
+      beginGame(`You are ${state.actors.player.name}: ${r.lots} lots and ${money(r.debt)} of debt.`);
+    };
+  }
+}
 
 function resize() {
   scene.resize(innerWidth, innerHeight);

@@ -185,8 +185,29 @@
       </div>
     </div>
     <p class="sub small">Buy land. Build on it. Rent pays you monthly and development pulls up the value of everything around it — including your rivals' land. The market runs in cycles; leverage is how you go fast and how you die.</p>
-    <button id="begin" class="primary big">Break ground</button>
+    <div class="startrow">
+      <button id="begin" class="primary big">Break ground</button>
+      <button id="begin-takeover" class="big">Take over a firm…</button>
+    </div>
+    <div id="yearpick" class="hidden">
+      <p class="sub small">Join a game already under way. The city develops without you, then you step
+        into an established firm — its land, its cash, its debt and its name. Nothing is handed to you
+        that somebody didn't already build.</p>
+      <div class="yearrow">
+        <button data-years="5">Join in 2003</button>
+        <button data-years="10">Join in 2008</button>
+        <button data-years="15">Join in 2013</button>
+      </div>
+    </div>
     <div id="buildstamp"></div>
+  </div>
+</div>
+
+<div id="firms" class="hidden">
+  <div class="card">
+    <h2 id="firms-head">Three firms are working the city</h2>
+    <p class="sub" id="firms-sub"></p>
+    <div id="firmlist"></div>
   </div>
 </div>
 

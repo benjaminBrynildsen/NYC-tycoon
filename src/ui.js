@@ -221,8 +221,11 @@ export class UI {
     const c = s.cycle;
     $('s-cycle').textContent = c > 1.15 ? `Boom ${c.toFixed(2)}` : c < 0.9 ? `Slump ${c.toFixed(2)}` : `Steady ${c.toFixed(2)}`;
     $('s-cycle').className = c > 1.15 ? 'good' : c < 0.9 ? 'bad' : '';
-    const rank = leaderboard(s).findIndex((a) => a.isPlayer) + 1;
-    $('s-rank').textContent = `${rank}${['st', 'nd', 'rd', 'th'][Math.min(rank - 1, 3)]} of 4`;
+    // The field shrinks when a firm is taken over, so count who is left.
+    const board = leaderboard(s);
+    const rank = board.findIndex((a) => a.isPlayer) + 1;
+    $('s-rank').textContent =
+      `${rank}${['st', 'nd', 'rd', 'th'][Math.min(rank - 1, 3)]} of ${board.length}`;
     if (!$('portfolio').classList.contains('hidden')) this.refreshPortfolio();
   }
 
