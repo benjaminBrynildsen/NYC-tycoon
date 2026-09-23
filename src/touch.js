@@ -77,7 +77,10 @@ export function setupTouch(controls, ui, scene, canvas, actions) {
       // Zoom on the spread, rotate on the twist, tilt on the slide.
       const ratio = clamp(pinch.d / (now.d || 1), 0.7, 1.45);
       controls.board.dist = clamp(controls.board.dist * ratio, 90, 2600);
-      controls.board.yaw -= (now.a - pinch.a);
+      // Twist the map the way the fingers turn. Screen y runs downward, so a
+      // visually clockwise twist increases the angle between the fingers, and
+      // the scene has to turn clockwise with it — which is +yaw, not -yaw.
+      controls.board.yaw += (now.a - pinch.a);
       controls.board.pitch = clamp(controls.board.pitch + (pinch.cy - now.cy) * 0.004, -1.5, -0.10);
       pinch = now;
       // A pinch always counts as travel, so the lift never reads as a tap.
