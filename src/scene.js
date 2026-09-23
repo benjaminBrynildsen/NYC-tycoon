@@ -170,6 +170,7 @@ export class CityScene {
     this._vision();
     this._avatar();
     this._playerCar();
+    this._playerShip();
 
     this.rebuildCollision();
 
@@ -1068,6 +1069,43 @@ export class CityScene {
       rigging: new THREE.MeshStandardMaterial({ color: 0x3b4046, roughness: 0.7, metalness: 0.3 }),
       lights: new THREE.MeshStandardMaterial({ color: 0xfff0cf, emissive: 0xffd89a, emissiveIntensity: 0.2 }),
     };
+  }
+
+  /** The mooring mast on one building, if it is tall enough to have one. */
+  mastFor(lotId) {
+    return this.buildingByLot.get(lotId)?.userData.mast ?? null;
+  }
+
+  /** The airship you fly yourself. Hidden until you charter one. */
+  _playerShip() {
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(this._airshipGeo.hull, this._airshipMats.hull));
+    g.add(new THREE.Mesh(this._airshipGeo.rigging, this._airshipMats.rigging));
+    g.add(new THREE.Mesh(this._airshipGeo.lights, this._airshipMats.lights));
+    g.children[0].castShadow = true;
+    g.visible = false;
+    this.playerShip = g;
+    this.scene.add(g);
+  }
+
+  /**
+   * Hand the ship you were flying back to the city: it drifts off the way the
+   * scheduled ones do, rather than vanishing the moment you step out.
+   */
+  releasePlayerShip(pos, yaw) {
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(this._airshipGeo.hull, this._airshipMats.hull));
+    g.add(new THREE.Mesh(this._airshipGeo.rigging, this._airshipMats.rigging));
+    g.add(new THREE.Mesh(this._airshipGeo.lights, this._airshipMats.lights));
+    g.children[0].castShadow = true;
+    g.position.copy(pos);
+    g.rotation.y = yaw;
+    this.airshipGroup.add(g);
+    const a = Math.random() * Math.PI * 2;
+    this.airships.push({
+      g, target: { x: pos.x, y: pos.y, z: pos.z }, phase: 'departing', t: 0, speed: 22,
+      away: new THREE.Vector3(pos.x + Math.cos(a) * 1500, pos.y + 180, pos.z + Math.sin(a) * 1500),
+    });
   }
 
   /** Every mooring mast currently standing in the city. */

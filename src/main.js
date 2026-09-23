@@ -247,9 +247,42 @@ addEventListener('keydown', (e) => {
   }
 });
 
+/**
+ * The mooring mast you could reach from where you're standing, if any.
+ *
+ * The reach has to scale with the deck. A supertall's top deck can be four
+ * metres across, and a fixed reach would swallow the whole of it — leaving
+ * nowhere to stand where E still means the lift down.
+ */
+function mastInReach() {
+  if (controls.mode !== MODE.STREET || !controls.platform || controls.riding) return null;
+  const lot = controls.currentLot(city);
+  if (!lot) return null;
+  const mast = scene.mastFor(lot.id);
+  if (!mast) return null;
+  const p = controls.platform;
+  const reach = Math.min(5.5, Math.max(1.6, Math.min(p.hw, p.hd) * 0.45));
+  return Math.hypot(controls.pos.x - mast.x, controls.pos.z - mast.z) < reach ? mast : null;
+}
+
 /** E does the obvious thing for wherever you're standing. */
 function useElevatorOrCar() {
   if (controls.riding) return;
+  if (controls.mode === MODE.AIRSHIP) {
+    const left = controls.leaveAirship();
+    if (left) {
+      scene.releasePlayerShip(left.pos, left.yaw);
+      ui.toast('Over the side. Mind the landing.');
+    }
+    return;
+  }
+  const mast = mastInReach();
+  if (mast) {
+    if (controls.boardAirship(mast)) {
+      ui.toast('Cast off. Look where you want to go and hold forward · E steps out.');
+    }
+    return;
+  }
   if (controls.platform) {
     controls.startRide(null);
     return;
@@ -498,13 +531,17 @@ function frame(now) {
     const lot = controls.currentLot(city);
     const roof = lot && lot.building ? scene.roofOf(lot.id) : null;
     const nearCar = controls.pos.distanceTo(scene.playerCar.position) < 6;
-    if (controls.platform) ui.prompt('E — take the lift down');
+    // At the mast, E is the airship; anywhere else on the roof it is the lift.
+    if (mastInReach()) ui.prompt('E — take the airship');
+    else if (controls.platform) ui.prompt('E — take the lift down');
     else if (roof && lot.building.floors >= 6) ui.prompt(`E — lift to the roof (${lot.building.floors} floors)  ·  V — the Vision`);
     else if (nearCar) ui.prompt('E — get in the car');
     else if (lot) ui.prompt(`V — raise the Vision on lot #${lot.id}`);
     else ui.prompt('');
   } else if (controls.mode === MODE.CAR) {
     ui.prompt('E — get out');
+  } else if (controls.mode === MODE.AIRSHIP) {
+    ui.prompt(`${Math.round(controls.ship.pos.y)} m · ${Math.round(controls.ship.speed * 2.24)} mph · E — over the side`);
   } else ui.prompt('');
 
   // While the pointer is locked the canvas swallows every click, so no HUD
@@ -578,4 +615,4 @@ if (TOUCH) {
 
 // Handy when poking at the running game from the console.
 window.__game = { state, city, scene, controls, ui, showWater, startReclaim, reclaimCost,
-                  advance, ray, pickAt };
+                  advance, ray, pickAt, mastInReach, use: useElevatorOrCar };

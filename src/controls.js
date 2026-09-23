@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { CONFIG, lotAt } from './world.js';
 import { WATER_Y } from './scene.js';
 
-export const MODE = { STREET: 'street', CAR: 'car', BOARD: 'board' };
+export const MODE = { STREET: 'street', CAR: 'car', BOARD: 'board', AIRSHIP: 'airship' };
 
 /** True while a text field or dropdown has focus, so game keys must stand down. */
 export function isTyping() {
@@ -28,6 +28,16 @@ const TERMINAL = 58;
 const JUMP_SPEED = 7.6;   // 1.3m — honestly clears a 1.15m parapet
 const AIR_CONTROL = 0.92; // a jump keeps nearly all the speed it left with
 
+// An airship is enormous and unhurried. It turns by flying, not on the spot.
+const SHIP = {
+  // accel/drag is the speed it actually settles at — about 32 m/s, 70mph,
+  // which crosses the island in under a minute without feeling like a jet.
+  maxSpeed: 34, reverse: -9, accel: 9, drag: 0.28,
+  turn: 0.55,             // radians/s at full chat
+  climb: 0.85,            // how much of your speed a nose-up converts to lift
+  floor: 16, ceiling: 940,
+};
+
 export class Controls {
   constructor(scene, canvas) {
     this.s = scene;
@@ -46,6 +56,8 @@ export class Controls {
     this.yaw = Math.PI;
     this.pitch = -0.08;
     this.vel = new THREE.Vector3();
+
+    this.ship = { pos: new THREE.Vector3(), yaw: 0, speed: 0, roll: 0 };
 
     this.car = {
       pos: new THREE.Vector3(CONFIG.PITCH * 0.5 - CONFIG.STREET / 2 - 4, 0, CONFIG.PITCH * 2.2),
@@ -133,7 +145,9 @@ export class Controls {
   }
 
   get focusPoint() {
-    return this.mode === MODE.CAR ? this.car.pos : this.pos;
+    if (this.mode === MODE.CAR) return this.car.pos;
+    if (this.mode === MODE.AIRSHIP) return this.ship.pos;
+    return this.pos;
   }
 
   toggleBoard() {
@@ -218,8 +232,106 @@ export class Controls {
   update(dt, sceneRef) {
     if (this.riding) this._updateRide(dt);
     else if (this.mode === MODE.CAR) this._updateCar(dt);
+    else if (this.mode === MODE.AIRSHIP) this._updateAirship(dt);
     else if (this.mode === MODE.STREET) this._updateWalk(dt);
     this._updateCamera(dt, sceneRef);
+  }
+
+  // ------------------------------------------------------------- the airship
+
+  /** Take the ship moored at a mast. Returns false if you cannot reach it. */
+  boardAirship(mast) {
+    if (!mast || this.mode !== MODE.STREET || this.riding) return false;
+    if (this.airborne || this.swimming) return false;
+    const s = this.ship;
+    s.pos.set(mast.x, mast.y + 6, mast.z + 49);
+    s.yaw = Math.PI;
+    s.speed = 0;
+    s.roll = 0;
+    this.yaw = Math.PI;
+    this.pitch = -0.05;
+    this.mode = MODE.AIRSHIP;
+    if (document.pointerLockElement) return true;
+    return true;
+  }
+
+  /**
+   * Step out of the gondola. You do not land the ship — you leave it and
+   * fall, which the same gravity that handles a parapet takes care of. Over
+   * water you go in; over a roof you land on it; low and slow it is a step.
+   */
+  leaveAirship() {
+    if (this.mode !== MODE.AIRSHIP) return null;
+    const s = this.ship;
+    const out = { pos: s.pos.clone(), yaw: s.yaw };
+    this.mode = MODE.STREET;
+    this.pos.set(s.pos.x, 0, s.pos.z);
+    this.groundY = Math.max(0, s.pos.y - 4);
+    this.platform = null;
+    this.airborne = true;
+    this.swimming = false;
+    this.vy = 0;
+    this.airSpeed = 4.2;
+    this.fellFrom = this.groundY;
+    return out;
+  }
+
+  _updateAirship(dt) {
+    const s = this.ship;
+    const { fx, fz } = this.moveAxis();
+
+    // Forward on the stick is throttle; back is reverse, which on an airship
+    // means the engines in reverse and a very slow walk backwards.
+    s.speed += (-fz) * SHIP.accel * dt;
+    s.speed -= s.speed * SHIP.drag * dt;
+    s.speed = Math.max(SHIP.reverse, Math.min(SHIP.maxSpeed, s.speed));
+
+    // You fly where you look. The hull swings round to the heading you are
+    // looking at, faster the harder you are driving it, and the stick trims
+    // that heading directly so you can hold a line without turning your head.
+    const authority = 0.25 + 0.75 * Math.min(1, Math.abs(s.speed) / SHIP.maxSpeed);
+    let wanted = this.yaw - fx * 0.6;
+    let d = wanted - s.yaw;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    const turn = Math.max(-SHIP.turn * authority, Math.min(SHIP.turn * authority, d * 1.6)) * dt;
+    s.yaw += turn;
+    s.roll += (-turn * 9 - s.roll) * Math.min(1, dt * 2.4);      // bank into it
+
+    // Nose up climbs, nose down dives, both in proportion to how fast you are
+    // going — a stationary airship does not levitate.
+    const climb = Math.sin(this.pitch) * Math.abs(s.speed) * SHIP.climb;
+    s.pos.x -= Math.sin(s.yaw) * s.speed * dt;
+    s.pos.z -= Math.cos(s.yaw) * s.speed * dt;
+    s.pos.y += climb * dt;
+
+    const lx = CONFIG.WIDTH / 2 + 400, lz = CONFIG.DEPTH / 2 + 400;
+    s.pos.x = Math.max(-lx, Math.min(lx, s.pos.x));
+    s.pos.z = Math.max(-lz, Math.min(lz, s.pos.z));
+
+    // It will not fly through the city: the skyline pushes it up.
+    const below = this.s.surfaceAt(s.pos.x, s.pos.z).y;
+    s.pos.y = Math.max(below + SHIP.floor, Math.min(SHIP.ceiling, s.pos.y));
+
+    this.pos.set(s.pos.x, 0, s.pos.z);
+    this.moving = Math.abs(s.speed) > 0.2;
+  }
+
+  _shipCameraPose() {
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
+    const eye = new THREE.Vector3(this.ship.pos.x, this.ship.pos.y + 3.5, this.ship.pos.z);
+    if (this.firstPerson) {
+      // The gondola hangs under the hull, forward of centre.
+      const nose = new THREE.Vector3(-Math.sin(this.ship.yaw), 0, -Math.cos(this.ship.yaw));
+      return { pos: eye.clone().addScaledVector(nose, 26).add(new THREE.Vector3(0, -11, 0)), q };
+    }
+    // The hull is ninety metres long, so a car's chase distance puts the
+    // camera inside it. Sit back past the tail and a little above.
+    const back = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
+    const pos = eye.clone().addScaledVector(back, 96).add(new THREE.Vector3(0, 16, 0));
+    const floor = this.s.surfaceAt(pos.x, pos.z).y + 3;
+    pos.y = Math.max(pos.y, floor);
+    return { pos, q };
   }
 
   /** Ask for a jump; the next walk step decides whether you get one. */
@@ -448,7 +560,9 @@ export class Controls {
     const cam = s.camera;
     if (this.mode === MODE.BOARD && !this.transition) this._boardPan(dt);
 
-    const target = this.mode === MODE.BOARD ? this._boardCameraPose() : this._streetCameraPose();
+    const target = this.mode === MODE.BOARD ? this._boardCameraPose()
+      : this.mode === MODE.AIRSHIP ? this._shipCameraPose()
+      : this._streetCameraPose();
 
     if (this.transition) {
       const tr = this.transition;
@@ -469,7 +583,16 @@ export class Controls {
     // Keep the avatar and the car where they belong in the world.
     s.avatar.position.set(this.pos.x, this.groundY, this.pos.z);
     s.avatar.rotation.y = this.yaw + Math.PI;
-    s.avatar.visible = !(this.firstPerson && this.mode === MODE.STREET && !this.transition) && this.mode !== MODE.CAR;
+    s.avatar.visible = !(this.firstPerson && this.mode === MODE.STREET && !this.transition)
+      && this.mode !== MODE.CAR && this.mode !== MODE.AIRSHIP;
+    if (s.playerShip) {
+      s.playerShip.visible = this.mode === MODE.AIRSHIP
+        || (this.mode === MODE.BOARD && this.prevMode === MODE.AIRSHIP);
+      s.playerShip.position.copy(this.ship.pos);
+      // The hull models its nose on +Z, and the ship flies toward -Z at yaw
+      // zero — so the model is half a turn round from the heading.
+      s.playerShip.rotation.set(0, this.ship.yaw + Math.PI, this.ship.roll);
+    }
     if (this.mode === MODE.CAR) {
       s.playerCar.position.copy(this.car.pos);
       s.playerCar.rotation.y = this.car.yaw;
