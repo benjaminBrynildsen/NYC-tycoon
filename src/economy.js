@@ -3,10 +3,11 @@
 
 import { CONFIG, DISTRICTS, USES, STYLES, FORMS, REGIONS, HOODS, ERAS, eraAt, buildableSf,
          massing, minFloors, maxFloors, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS, canReclaim,
-         shoreContact, mulberry32 } from './world.js';
+         shoreContact, mulberry32, recomputeParkFront } from './world.js';
 import { tickContracts, contractBias, titleFor, rankFor, nextRank } from './contracts.js';
 
 export const START_CASH = 100_000_000;
+export const RACE_YEARS = 70;         // however long a career is
 export const CAP_RATE = 0.055;        // what a stabilised building is worth per $ of NOI
 export const INTEREST = 0.065;        // annual, interest-only
 export const MAX_LTC = 0.75;          // the most anyone can borrow, at the top rank
@@ -52,6 +53,7 @@ export function createState(city, seed = 11, startYear = 1998) {
     actors,
     day: 0,
     startYear,
+    endYear: startYear + RACE_YEARS,
     era: eraAt(startYear).name,
     cycle: 1.0,          // market multiplier on rents and land
     cyclePhase: rnd() * Math.PI * 2,
@@ -304,6 +306,97 @@ function checkEra(state) {
 }
 
 /** Crossing a billion opens the rest of the city. */
+// -------------------------------------------------------------- green space
+
+// What share of a district the city would like to see left open. Below this it
+// will pay well for a block; above it, it has better things to do with public
+// money. Roughly what a real planning department aims at.
+export const PARK_TARGET = 0.14;
+
+/**
+ * How badly the city wants a park on this block: how far short the district
+ * is of its open-space target, weighted by how built-up the area actually is.
+ * Empty blocks on the edge of Harlem are not a parks crisis.
+ */
+export function parkAppetite(state, block) {
+  const near = state.city.blocks.filter(
+    (b) => Math.abs(b.col - block.col) <= 3 && Math.abs(b.row - block.row) <= 3);
+  if (!near.length) return 0;
+  const ratio = near.filter((b) => b.isPark).length / near.length;
+  const shortfall = Math.max(0, (PARK_TARGET - ratio) / PARK_TARGET);
+  const density = Math.min(1, block.lots.reduce(
+    (n, l) => n + (l._intensity ?? 0.3), 0) / Math.max(1, block.lots.length));
+  return Math.max(0, Math.min(1, shortfall * (0.35 + density * 0.9)));
+}
+
+/**
+ * What the city will pay for a block to turn into a park, and why not.
+ *
+ * It buys blocks rather than lots because a park is a block here — which also
+ * means this is the other thing an assembled block is good for, and the land
+ * you kept around it goes up by the park premium the moment the deal closes.
+ */
+export function parkOffer(state, block, actorId = 'player') {
+  if (block.isPark) return { ok: false, why: 'Already a park.' };
+  if (!block.lots.length) return { ok: false, why: 'Nothing here to buy.' };
+  if (!block.lots.every((l) => l.owner === actorId)) {
+    const held = block.lots.filter((l) => l.owner === actorId).length;
+    return { ok: false, why: `The city buys whole blocks. You hold ${held} of ${block.lots.length}.` };
+  }
+  if (block.lots.some((l) => l.project)) {
+    return { ok: false, why: 'Not while something is under construction.' };
+  }
+  if (block.lots.some((l) => l.building && l.building.floors >= LANDMARK_FLOORS)) {
+    return { ok: false, why: `Nothing ${LANDMARK_FLOORS} floors or over comes down for a lawn.` };
+  }
+
+  const appetite = parkAppetite(state, block);
+  const land = block.lots.reduce((n, l) => n + landValue(state, l), 0);
+  const loans = block.lots.reduce((n, l) => n + (l.loan ?? 0), 0);
+  if (appetite < 0.12) {
+    return { ok: false, appetite, why: 'This district has all the green space the city thinks it needs.',
+             price: 0 };
+  }
+  // A park-starved, built-up district pays over the odds for the land; a
+  // comfortable one barely covers it. The buildings are not paid for — the
+  // city is buying ground, and it will clear whatever is on it.
+  const price = land * (0.75 + appetite * 0.85);
+  return { ok: true, appetite, price, land, loans, net: price - loans };
+}
+
+/** Sell it, and watch everything you kept around it get better. */
+export function sellBlockToCity(state, block, actorId = 'player') {
+  const offer = parkOffer(state, block, actorId);
+  if (!offer.ok) return offer;
+  const a = state.actors[actorId];
+
+  let proceeds = offer.price;
+  for (const lot of block.lots) {
+    const share = proceeds / block.lots.length;
+    const { net } = settleLoan(state, lot, actorId, share);
+    a.cash += net;
+    lot.owner = 'city';
+    lot.building = null;
+    block.soldBy = actorId;
+    lot.project = null;
+    lot.name = null;
+  }
+  block.isPark = true;
+  recomputeParkFront(state.city);
+  a.standing = (a.standing ?? 0) + 1;
+  state._dirtyTerrain = true;
+  state._dirtyGeometry = true;
+
+  const where = block.lots[0];
+  logEvent(state, actorId, `sold the block at ${where.crossStreet} to the city for a park`);
+  pushNews(state, 'park', `A PARK FOR ${where.crossStreet.toUpperCase()}`,
+    `${a.name === 'You' ? 'You have' : `${a.name} has`} sold the whole block at `
+    + `${where.crossStreet} and ${where.avenue.name} to the city for ${money(offer.price)}, `
+    + `and it comes down for open ground. Every lot that now looks onto it is worth more than `
+    + `it was this morning — including the ones nobody sold.`, where);
+  return { ok: true, price: offer.price };
+}
+
 // ------------------------------------------------------------- margin calls
 
 export const CALL_LTV = 0.80;      // where the bank stops being relaxed
@@ -865,11 +958,15 @@ export function logEvent(state, actorId, text) {
 // ---------------------------------------------------------------- the tick
 
 export function advance(state, days) {
+  if (state.finished) return;
   const target = state.day + days;
   while (state.day < target) {
     const step = Math.min(1, target - state.day);
     state.day += step;
     if (Math.floor(state.day) !== Math.floor(state.day - step)) dayTick(state);
+    // The bell stops the clock where it rings, rather than letting the rest of
+    // the call run on and bury the result under another year of headlines.
+    if (state.finished) return;
   }
 }
 
@@ -974,6 +1071,7 @@ function monthTick(state) {
   tickContracts(state, CONTRACT_API);
   annualReview(state);
   marketStory(state);
+  checkFinish(state);
 }
 
 /**
@@ -1023,6 +1121,41 @@ function annualReview(state) {
         : `You are ${rank}${['st', 'nd', 'rd', 'th'][Math.min(rank - 1, 3)]} on income, `
           + `${money(top.noi - me.noi)} a year behind ${top.name}.`)
       : ''));
+}
+
+/** Years left in the race, and whether it is over. */
+export function yearsLeft(state) {
+  return Math.max(0, state.endYear - currentYear(state));
+}
+export function raceOver(state) {
+  return currentYear(state) >= state.endYear;
+}
+
+/**
+ * The bell. Seventy years is one career: you start with a hundred million and
+ * whatever the age can build, and you finish with whatever you made of it.
+ * Without an end there is no race, only an accumulation.
+ */
+function checkFinish(state) {
+  if (state.finished || !raceOver(state)) return;
+  const board = leaderboard(state);
+  state.finished = {
+    year: state.endYear,
+    board: board.map((a) => ({
+      id: a.id, name: a.name, worth: a.worth, standing: a.standing ?? 0,
+      title: a.title, gsf: a.gsfBuilt,
+      lots: state.city.lots.filter((l) => l.owner === a.id).length,
+      tallest: state.city.lots.reduce(
+        (n, l) => (l.owner === a.id ? Math.max(n, l.building?.floors ?? 0) : n), 0),
+    })),
+    contracts: (state.contracts ?? []).filter((c) => c.claimedBy === 'player').length,
+    parks: state.city.blocks.filter((b) => b.isPark && b.soldBy).length,
+  };
+  const win = board[0];
+  pushNews(state, 'finish', `${state.endYear}: ${win.name.toUpperCase()} ENDS THE CENTURY ON TOP`,
+    `Seventy years of building, and the ledger closes. ${board.map(
+      (a, i) => `${i + 1}. ${a.name}, ${money(a.worth)}`).join('. ')}. `
+    + `The city that stands now is the one these four made.`);
 }
 
 /** The paper notices when the market turns. */
@@ -1213,7 +1346,10 @@ function rivalTurn(state, a) {
     }
   }
 
-  const threshold = { institution: 8.5, cowboy: 6, grinder: 9 }[a.strategy];
+  // These are read against a score built from yield on cost, and construction
+  // costs half again as much as it used to — which halved every yield in the
+  // city and, left alone, quietly stopped the rivals building at all.
+  const threshold = { institution: 5.0, cowboy: 3.5, grinder: 5.5 }[a.strategy];
   if (best && bestScore > threshold) {
     if (best.lot.owner === 'npc' || best.lot.owner === null) {
       const price = askPrice(state, best.lot);
@@ -1251,7 +1387,7 @@ function chaseAssemblage(state, a) {
     targets.sort((x, y) => askPrice(state, x) - askPrice(state, y));
     const lot = targets[0];
     const price = askPrice(state, lot);
-    if (price > a.cash * 0.34) continue;
+    if (price > a.cash * 0.55) continue;
     if (!buyLot(state, lot, a.id).ok) continue;
     logEvent(state, a.id, `bought ${lot.address} to assemble the block`);
     a.cooldown = 1;

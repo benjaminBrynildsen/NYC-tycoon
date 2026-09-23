@@ -13,6 +13,7 @@ import {
   premiums, blockCharacter, rushQuote, rushProject, nameBuilding, worthBreakdown,
   makeOffer, reservePrice, regionGate, canWorkIn, demolitionBlock, LANDMARK_FLOORS,
   blockSpareSf, sellAll, currentYear, currentEra, maxLtcFor,
+  parkOffer, sellBlockToCity, yearsLeft,
 } from './economy.js';
 
 const $ = (id) => document.getElementById(id);
@@ -236,6 +237,9 @@ export class UI {
     const c = s.cycle;
     $('s-cycle').textContent = c > 1.15 ? `Boom ${c.toFixed(2)}` : c < 0.9 ? `Slump ${c.toFixed(2)}` : `Steady ${c.toFixed(2)}`;
     $('s-cycle').className = c > 1.15 ? 'good' : c < 0.9 ? 'bad' : '';
+    const left = yearsLeft(s);
+    $('s-race').textContent = left > 0 ? `${s.endYear} · ${left}y` : 'over';
+    $('s-race').className = left <= 3 ? 'last' : left <= 10 ? 'soon' : '';
     // The field shrinks when a firm is taken over, so count who is left.
     const board = leaderboard(s);
     const rank = board.findIndex((a) => a.isPlayer) + 1;
@@ -638,10 +642,24 @@ export class UI {
       acts.push('<button id="a-sell">Sell</button>');
     }
     if (owned && lot.project) acts.push('<button id="a-rush" class="primary">Speed up</button>');
+    const park = parkOffer(s, lot.block, 'player');
+    if (park.ok) {
+      acts.push(`<button id="a-park" title="${esc(park.why ?? '')}">Sell the block for a park — ${money(park.price)}</button>`);
+    } else if (owned && lot.block.lots.every((l) => l.owner === 'player') && !lot.block.isPark) {
+      acts.push(`<button disabled title="${esc(park.why)}">City won't buy for a park</button>`);
+    }
     if (this.controls.mode === 'board') acts.push('<button id="a-travel">Go there</button>');
     $('lot-actions').innerHTML = acts.join('');
 
     const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+    on('a-park', () => {
+      const r = sellBlockToCity(s, lot.block, 'player');
+      if (!r.ok) return this.toast(r.why, true);
+      this.toast(`The city takes the block for ${money(r.price)}. Everything of yours that looks `
+        + `onto it is worth more than it was.`);
+      this._lotSig = null;
+      this.closeLot(); this.refreshTop(); this.refreshBoard(); this.onDirty();
+    });
     on('a-buy', () => {
       const r = buyLot(s, lot, 'player');
       if (!r.ok) return this.toast(r.why, true);

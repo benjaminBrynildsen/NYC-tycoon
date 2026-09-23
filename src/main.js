@@ -577,6 +577,7 @@ function frame(now) {
     }
     checkMilestones();
     checkContractWins();
+    showFinishIfOver();
   }
 
   if (scene.post?.watchCost(dt)) {
@@ -588,11 +589,44 @@ function frame(now) {
 }
 requestAnimationFrame(frame);
 
+/** Seventy years are up: stop the clock and total the ledger. */
+function showFinishIfOver() {
+  if (!state.finished || finishShown) return;
+  finishShown = true;
+  const f = state.finished;
+  ui.setSpeed(0);
+  const me = f.board.find((a) => a.id === 'player');
+  const rank = f.board.indexOf(me) + 1;
+  document.getElementById('fin-head').textContent =
+    rank === 1 ? `${f.year}. You built the city.` : `${f.year}. The ledger closes.`;
+  document.getElementById('fin-sub').textContent = rank === 1
+    ? 'Seventy years, and nobody in this town is worth more than you.'
+    : `Seventy years, and you finish ${rank}${['st', 'nd', 'rd', 'th'][Math.min(rank - 1, 3)]} of ${f.board.length}.`;
+  document.getElementById('fin-board').innerHTML = f.board.map((a, i) => `
+    <li class="${a.id === 'player' ? 'me' : ''}">
+      <span class="pos">${i + 1}</span>
+      <span class="who"><b>${a.name}</b>
+        <span>${a.title} · ${sf(a.gsf)} built · ${a.lots} lots${
+          a.tallest ? ` · tallest ${a.tallest} floors` : ''}</span></span>
+      <span class="amt">${money(a.worth)}</span>
+    </li>`).join('');
+  document.getElementById('fin-notes').innerHTML =
+    `You delivered <b>${f.contracts}</b> contract${f.contracts === 1 ? '' : 's'}, `
+    + `gave the city <b>${f.parks}</b> block${f.parks === 1 ? '' : 's'} of park, `
+    + `and finished as a <b>${me.title}</b> on ${me.standing} standing.`;
+  document.getElementById('finish').classList.remove('hidden');
+}
+document.getElementById('fin-again').onclick = () => {
+  writeStart(Math.floor(Math.random() * 1e6), START_YEAR);
+  location.reload();
+};
+
 /**
  * The paper reports every contract, but the one you just won deserves to land
  * in the moment rather than three headlines down the page.
  */
 let seenWins = 0;
+let finishShown = false;
 function checkContractWins() {
   const mine = state.contracts.filter((c) => c.claimedBy === 'player');
   if (mine.length <= seenWins) { seenWins = mine.length; return; }

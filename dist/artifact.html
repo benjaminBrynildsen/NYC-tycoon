@@ -558,6 +558,30 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
 .rankrow span { font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
 #pf-rank .perk { margin: 4px 0 8px; font-size: 10.5px; color: var(--dim); line-height: 1.45; }
 #pf-rank > span { font-size: 10.5px; color: var(--dim); line-height: 1.45; display: block; }
+
+/* ---------------------------------------------------------- the final bell */
+#finish {
+  position: fixed; inset: 0; z-index: 70; overflow-y: auto;
+  display: grid; place-items: center; padding: 30px 16px;
+  background: radial-gradient(120% 100% at 50% 0%, #1a2436 0%, #080a0e 70%);
+}
+#finish .card { max-width: 720px; width: 100%; padding: 34px 38px; }
+#finish h2 { margin: 0 0 6px; font-size: 30px; font-weight: 700; }
+#fin-board { list-style: none; margin: 22px 0 0; padding: 0; counter-reset: fin; }
+#fin-board li {
+  display: flex; align-items: baseline; gap: 12px; padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+#fin-board li.me { background: rgba(74,222,128,.09); margin: 0 -10px; padding: 12px 10px; border-radius: 6px; }
+#fin-board .pos { width: 24px; font-size: 18px; font-weight: 700; color: var(--dim); }
+#fin-board .who { flex: 1; }
+#fin-board .who b { font-size: 15px; }
+#fin-board .who span { display: block; font-size: 11px; color: var(--dim); margin-top: 2px; }
+#fin-board .amt { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+#fin-notes { margin-top: 18px; font-size: 12.5px; color: var(--dim); line-height: 1.6; }
+#fin-notes b { color: var(--ink); }
+#s-race.soon { color: #e0b341; }
+#s-race.last { color: var(--bad); }
 </style>
 <script type="importmap">
 { "imports": {
@@ -578,6 +602,7 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
     <div class="stat"><label>Built</label><b id="s-gsf">—</b></div>
     <div class="stat"><label>Rank</label><b id="s-rank">—</b></div>
     <div class="stat"><label>Market</label><b id="s-cycle">—</b></div>
+    <div class="stat"><label>Race ends</label><b id="s-race">—</b></div>
     <div id="resetwrap">
       <button id="reset" class="sp" title="Start over">&#8635; Reset</button>
       <div id="resetmenu" class="hidden">
@@ -779,6 +804,16 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
       </div>
     </div>
     <div id="buildstamp"></div>
+  </div>
+</div>
+
+<div id="finish" class="hidden">
+  <div class="card">
+    <h2 id="fin-head">The ledger closes</h2>
+    <p class="sub" id="fin-sub"></p>
+    <ol id="fin-board"></ol>
+    <div id="fin-notes"></div>
+    <button id="fin-again" class="primary big">Another seventy years</button>
   </div>
 </div>
 
@@ -1134,10 +1169,6 @@ function generateCity(seed = 7, startYear = 1998) {
       condition: 0.45 + rnd() * 0.45
     };
   }
-  const parkBlocks = blocks.filter((b) => b.isPark);
-  for (const lot of lots) {
-    lot.parkFront = parkBlocks.some((b) => Math.abs(b.cx - lot.x) < PITCH * 1.05 && Math.abs(b.cz - lot.z) < PITCH * 1.05);
-  }
   const lanes = { ns: /* @__PURE__ */ new Map(), ew: /* @__PURE__ */ new Map() };
   for (let col = 0; col < COLS; col++) {
     let lo = null, hi = null;
@@ -1156,6 +1187,7 @@ function generateCity(seed = 7, startYear = 1998) {
     if (lo !== null) lanes.ew.set(row, [cellCenter(lo, row).x - PITCH / 2, cellCenter(hi, row).x + PITCH / 2]);
   }
   const city2 = { lots, blocks, corridors, lanes, land, isLand, seed };
+  recomputeParkFront(city2);
   city2.rebuildLanes = () => {
     lanes.ns.clear();
     lanes.ew.clear();
@@ -1248,6 +1280,12 @@ function generateCity(seed = 7, startYear = 1998) {
   };
   return city2;
 }
+function recomputeParkFront(city2) {
+  const parks = city2.blocks.filter((b) => b.isPark);
+  for (const lot of city2.lots) {
+    lot.parkFront = parks.some((b) => Math.abs(b.cx - lot.x) < CONFIG.PITCH * 1.05 && Math.abs(b.cz - lot.z) < CONFIG.PITCH * 1.05);
+  }
+}
 function cellOf(x, z) {
   return {
     col: Math.round((x + CONFIG.WIDTH / 2 - CONFIG.PITCH / 2) / CONFIG.PITCH),
@@ -1289,9 +1327,9 @@ var FORMS = {
   point: { name: "Point", cost: 1.13, rent: 1.1 }
 };
 var USES = {
-  office: { name: "Office", rent: 78, cost: 400, opex: 0.34 },
-  residential: { name: "Residential", rent: 62, cost: 360, opex: 0.3 },
-  mixed: { name: "Mixed-use", rent: 70, cost: 385, opex: 0.32 }
+  office: { name: "Office", rent: 78, cost: 600, opex: 0.34 },
+  residential: { name: "Residential", rent: 62, cost: 540, opex: 0.3 },
+  mixed: { name: "Mixed-use", rent: 70, cost: 578, opex: 0.32 }
 };
 
 // src/contracts.js
@@ -1306,7 +1344,7 @@ var KINDS = {
       const hood = pickHood(state2, rnd);
       if (!hood) return null;
       const office = rnd() < 0.62;
-      const gsf = Math.round((60 + Math.floor(rnd() * 4) * 35) * 1e3);
+      const gsf = Math.round((45 + Math.floor(rnd() * 4) * 25) * 1e3);
       const client = pick(rnd, office ? OFFICE_CLIENTS : RESI_CLIENTS);
       return {
         kind: "tenant",
@@ -1314,8 +1352,8 @@ var KINDS = {
         title: `${HOODS[hood].name}: ${fmtSf(gsf)} of ${office ? "office" : "apartments"}`,
         brief: office ? `${client} have outgrown their building and will sign for ${fmtSf(gsf)} of new office space in ${HOODS[hood].name}. They will take the first one finished.` : `${client} are placing ${fmtSf(gsf)} of new apartments in ${HOODS[hood].name}. The first completed scheme gets the whole requirement.`,
         need: { hood, gsf, use: office ? "office" : "residential" },
-        reward: reward(Math.round(gsf * (office ? 90 : 65)), 2),
-        years: 6
+        reward: reward(Math.round(gsf * (office ? 130 : 95)), 2),
+        years: 8
       };
     },
     progress(state2, c, id) {
@@ -1324,7 +1362,7 @@ var KINDS = {
         if (lot.owner !== id || lot.hood !== c.need.hood) continue;
         const b = lot.building;
         if (!b || !matchesUse(b.use, c.need.use)) continue;
-        if (b.age > 25) continue;
+        if (b.age > 45) continue;
         have += b.gsf;
       }
       return { have, want: c.need.gsf, text: `${fmtSf(have)} of ${fmtSf(c.need.gsf)}` };
@@ -1339,7 +1377,7 @@ var KINDS = {
       if (!avenues.length) return null;
       const av = pick(rnd, avenues);
       const cap = api.floorCap(state2);
-      const floors = Math.max(8, Math.round(cap * (0.3 + rnd() * 0.18)));
+      const floors = Math.max(6, Math.round(cap * (0.22 + rnd() * 0.15)));
       if (floors < 8) return null;
       return {
         kind: "civic",
@@ -1348,7 +1386,7 @@ var KINDS = {
         brief: `The city wants a building of at least ${floors} floors fronting ${av.name}, and is offering ten years free of property tax on it. It does not care who builds it.`,
         need: { corridorId: av.id, corridorName: av.name, floors },
         reward: reward(0, 3, 10),
-        years: 6
+        years: 8
       };
     },
     progress(state2, c, id) {
@@ -1379,8 +1417,8 @@ var KINDS = {
           blockKey: `${block.col},${block.row}`,
           where: `${where.crossStreet} & ${where.avenue.name}`
         },
-        reward: reward(34e6, 3),
-        years: 8
+        reward: reward(44e6, 3),
+        years: 10
       };
     },
     progress(state2, c, id) {
@@ -1399,15 +1437,15 @@ var KINDS = {
       });
       if (!hoods.length) return null;
       const hood = pick(rnd, hoods);
-      const count = 2 + Math.floor(rnd() * 2);
+      const count = 2;
       return {
         kind: "renewal",
         client: "The Improvement Commission",
         title: `${HOODS[hood].name}: rebuild ${count} run-down buildings`,
         brief: `${HOODS[hood].name} has blocks that are dragging their neighbours down. Put up ${count} sound new buildings there and the commission will pay for the trouble.`,
         need: { hood, count },
-        reward: reward(48e6, 4),
-        years: 6
+        reward: reward(62e6, 4),
+        years: 8
       };
     },
     progress(state2, c, id) {
@@ -1415,7 +1453,7 @@ var KINDS = {
       for (const lot of state2.city.lots) {
         if (lot.owner !== id || lot.hood !== c.need.hood) continue;
         const b = lot.building;
-        if (b && b.age <= 20 && (b.condition ?? 1) > 0.8) have++;
+        if (b && b.age <= 25 && (b.condition ?? 1) > 0.7) have++;
       }
       return { have, want: c.need.count, text: `${have} of ${c.need.count} rebuilt` };
     }
@@ -1433,8 +1471,8 @@ var KINDS = {
         title: `The tallest building in New York \u2014 ${floors} floors`,
         brief: `The Record will name the tallest building in the city, and the house that owns it. Nothing under ${floors} floors will do, and the title goes to whoever holds it on the day.`,
         need: { floors },
-        reward: reward(6e7, 8),
-        years: 10
+        reward: reward(78e6, 8),
+        years: 12
       };
     },
     progress(state2, c, id) {
@@ -1449,7 +1487,7 @@ var KINDS = {
     }
   }
 };
-var MAX_OPEN = 3;
+var MAX_OPEN = 2;
 function tickContracts(state2, api) {
   if (!state2.contracts) state2.contracts = [];
   if (!state2.contractsPostedAt) state2.contractsPostedAt = -999;
@@ -1714,6 +1752,7 @@ function money(n) {
 
 // src/economy.js
 var START_CASH = 1e8;
+var RACE_YEARS = 70;
 var CAP_RATE = 0.055;
 function termsFor(state2, actorId) {
   return rankFor(state2.actors[actorId]?.standing ?? 0);
@@ -1780,6 +1819,7 @@ function createState(city2, seed = 11, startYear = 1998) {
     actors,
     day: 0,
     startYear,
+    endYear: startYear + RACE_YEARS,
     era: eraAt(startYear).name,
     cycle: 1,
     // market multiplier on rents and land
@@ -1993,6 +2033,78 @@ function checkEra(state2) {
     `${era.note} ${era.styles.length} facade system${era.styles.length > 1 ? "s" : ""} are now available, and nothing taller than ${era.maxFloors} storeys can be engineered yet.`
   );
   logEvent(state2, "player", `\u2014 the city enters ${era.name}`);
+}
+var PARK_TARGET = 0.14;
+function parkAppetite(state2, block) {
+  const near = state2.city.blocks.filter(
+    (b) => Math.abs(b.col - block.col) <= 3 && Math.abs(b.row - block.row) <= 3
+  );
+  if (!near.length) return 0;
+  const ratio = near.filter((b) => b.isPark).length / near.length;
+  const shortfall = Math.max(0, (PARK_TARGET - ratio) / PARK_TARGET);
+  const density = Math.min(1, block.lots.reduce(
+    (n, l) => n + (l._intensity ?? 0.3),
+    0
+  ) / Math.max(1, block.lots.length));
+  return Math.max(0, Math.min(1, shortfall * (0.35 + density * 0.9)));
+}
+function parkOffer(state2, block, actorId = "player") {
+  if (block.isPark) return { ok: false, why: "Already a park." };
+  if (!block.lots.length) return { ok: false, why: "Nothing here to buy." };
+  if (!block.lots.every((l) => l.owner === actorId)) {
+    const held = block.lots.filter((l) => l.owner === actorId).length;
+    return { ok: false, why: `The city buys whole blocks. You hold ${held} of ${block.lots.length}.` };
+  }
+  if (block.lots.some((l) => l.project)) {
+    return { ok: false, why: "Not while something is under construction." };
+  }
+  if (block.lots.some((l) => l.building && l.building.floors >= LANDMARK_FLOORS)) {
+    return { ok: false, why: `Nothing ${LANDMARK_FLOORS} floors or over comes down for a lawn.` };
+  }
+  const appetite = parkAppetite(state2, block);
+  const land = block.lots.reduce((n, l) => n + landValue(state2, l), 0);
+  const loans = block.lots.reduce((n, l) => n + (l.loan ?? 0), 0);
+  if (appetite < 0.12) {
+    return {
+      ok: false,
+      appetite,
+      why: "This district has all the green space the city thinks it needs.",
+      price: 0
+    };
+  }
+  const price = land * (0.75 + appetite * 0.85);
+  return { ok: true, appetite, price, land, loans, net: price - loans };
+}
+function sellBlockToCity(state2, block, actorId = "player") {
+  const offer = parkOffer(state2, block, actorId);
+  if (!offer.ok) return offer;
+  const a = state2.actors[actorId];
+  let proceeds = offer.price;
+  for (const lot of block.lots) {
+    const share = proceeds / block.lots.length;
+    const { net } = settleLoan(state2, lot, actorId, share);
+    a.cash += net;
+    lot.owner = "city";
+    lot.building = null;
+    block.soldBy = actorId;
+    lot.project = null;
+    lot.name = null;
+  }
+  block.isPark = true;
+  recomputeParkFront(state2.city);
+  a.standing = (a.standing ?? 0) + 1;
+  state2._dirtyTerrain = true;
+  state2._dirtyGeometry = true;
+  const where = block.lots[0];
+  logEvent(state2, actorId, `sold the block at ${where.crossStreet} to the city for a park`);
+  pushNews(
+    state2,
+    "park",
+    `A PARK FOR ${where.crossStreet.toUpperCase()}`,
+    `${a.name === "You" ? "You have" : `${a.name} has`} sold the whole block at ${where.crossStreet} and ${where.avenue.name} to the city for ${money2(offer.price)}, and it comes down for open ground. Every lot that now looks onto it is worth more than it was this morning \u2014 including the ones nobody sold.`,
+    where
+  );
+  return { ok: true, price: offer.price };
 }
 var CALL_LTV = 0.8;
 var CALL_MONTHS = 6;
@@ -2492,11 +2604,13 @@ function logEvent(state2, actorId, text) {
   if (state2.log.length > 60) state2.log.pop();
 }
 function advance(state2, days) {
+  if (state2.finished) return;
   const target = state2.day + days;
   while (state2.day < target) {
     const step = Math.min(1, target - state2.day);
     state2.day += step;
     if (Math.floor(state2.day) !== Math.floor(state2.day - step)) dayTick(state2);
+    if (state2.finished) return;
   }
 }
 function dayTick(state2) {
@@ -2602,6 +2716,7 @@ function monthTick(state2) {
   tickContracts(state2, CONTRACT_API);
   annualReview(state2);
   marketStory(state2);
+  checkFinish(state2);
 }
 function annualReview(state2) {
   const year = dateOf(state2).getUTCFullYear();
@@ -2642,6 +2757,43 @@ function annualReview(state2) {
     "review",
     `${year - 1} IN REVIEW: ${top.name.toUpperCase()} LEADS ON RENTS`,
     `The year's rent rolls, side by side. ${rows.map(line).join(". ")}. ` + (me ? rank === 1 ? `You collect more rent than anyone in this city.` : `You are ${rank}${["st", "nd", "rd", "th"][Math.min(rank - 1, 3)]} on income, ${money2(top.noi - me.noi)} a year behind ${top.name}.` : "")
+  );
+}
+function yearsLeft(state2) {
+  return Math.max(0, state2.endYear - currentYear(state2));
+}
+function raceOver(state2) {
+  return currentYear(state2) >= state2.endYear;
+}
+function checkFinish(state2) {
+  if (state2.finished || !raceOver(state2)) return;
+  const board = leaderboard(state2);
+  state2.finished = {
+    year: state2.endYear,
+    board: board.map((a) => ({
+      id: a.id,
+      name: a.name,
+      worth: a.worth,
+      standing: a.standing ?? 0,
+      title: a.title,
+      gsf: a.gsfBuilt,
+      lots: state2.city.lots.filter((l) => l.owner === a.id).length,
+      tallest: state2.city.lots.reduce(
+        (n, l) => l.owner === a.id ? Math.max(n, l.building?.floors ?? 0) : n,
+        0
+      )
+    })),
+    contracts: (state2.contracts ?? []).filter((c) => c.claimedBy === "player").length,
+    parks: state2.city.blocks.filter((b) => b.isPark && b.soldBy).length
+  };
+  const win = board[0];
+  pushNews(
+    state2,
+    "finish",
+    `${state2.endYear}: ${win.name.toUpperCase()} ENDS THE CENTURY ON TOP`,
+    `Seventy years of building, and the ledger closes. ${board.map(
+      (a, i) => `${i + 1}. ${a.name}, ${money2(a.worth)}`
+    ).join(". ")}. The city that stands now is the one these four made.`
   );
 }
 function marketStory(state2) {
@@ -2827,7 +2979,7 @@ function rivalTurn(state2, a) {
       }
     }
   }
-  const threshold = { institution: 8.5, cowboy: 6, grinder: 9 }[a.strategy];
+  const threshold = { institution: 5, cowboy: 3.5, grinder: 5.5 }[a.strategy];
   if (best && bestScore > threshold) {
     if (best.lot.owner === "npc" || best.lot.owner === null) {
       const price = askPrice(state2, best.lot);
@@ -2859,7 +3011,7 @@ function chaseAssemblage(state2, a) {
     targets.sort((x, y) => askPrice(state2, x) - askPrice(state2, y));
     const lot = targets[0];
     const price = askPrice(state2, lot);
-    if (price > a.cash * 0.34) continue;
+    if (price > a.cash * 0.55) continue;
     if (!buyLot(state2, lot, a.id).ok) continue;
     logEvent(state2, a.id, `bought ${lot.address} to assemble the block`);
     a.cooldown = 1;
@@ -5997,6 +6149,9 @@ var UI = class {
     const c = s.cycle;
     $("s-cycle").textContent = c > 1.15 ? `Boom ${c.toFixed(2)}` : c < 0.9 ? `Slump ${c.toFixed(2)}` : `Steady ${c.toFixed(2)}`;
     $("s-cycle").className = c > 1.15 ? "good" : c < 0.9 ? "bad" : "";
+    const left = yearsLeft(s);
+    $("s-race").textContent = left > 0 ? `${s.endYear} \xB7 ${left}y` : "over";
+    $("s-race").className = left <= 3 ? "last" : left <= 10 ? "soon" : "";
     const board = leaderboard(s);
     const rank = board.findIndex((a) => a.isPlayer) + 1;
     $("s-rank").textContent = `${rank}${["st", "nd", "rd", "th"][Math.min(rank - 1, 3)]} of ${board.length}`;
@@ -6323,12 +6478,28 @@ var UI = class {
       acts.push('<button id="a-sell">Sell</button>');
     }
     if (owned && lot.project) acts.push('<button id="a-rush" class="primary">Speed up</button>');
+    const park = parkOffer(s, lot.block, "player");
+    if (park.ok) {
+      acts.push(`<button id="a-park" title="${esc(park.why ?? "")}">Sell the block for a park \u2014 ${money2(park.price)}</button>`);
+    } else if (owned && lot.block.lots.every((l) => l.owner === "player") && !lot.block.isPark) {
+      acts.push(`<button disabled title="${esc(park.why)}">City won't buy for a park</button>`);
+    }
     if (this.controls.mode === "board") acts.push('<button id="a-travel">Go there</button>');
     $("lot-actions").innerHTML = acts.join("");
     const on = (id, fn) => {
       const el = $(id);
       if (el) el.onclick = fn;
     };
+    on("a-park", () => {
+      const r = sellBlockToCity(s, lot.block, "player");
+      if (!r.ok) return this.toast(r.why, true);
+      this.toast(`The city takes the block for ${money2(r.price)}. Everything of yours that looks onto it is worth more than it was.`);
+      this._lotSig = null;
+      this.closeLot();
+      this.refreshTop();
+      this.refreshBoard();
+      this.onDirty();
+    });
     on("a-buy", () => {
       const r = buyLot(s, lot, "player");
       if (!r.ok) return this.toast(r.why, true);
@@ -6854,7 +7025,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "f70b301 \xB7 2026-09-23 13:46" : "dev";
+var BUILD = true ? "8e2b864 \xB7 2026-09-23 14:01" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
@@ -7047,6 +7218,7 @@ function frame(now) {
     }
     checkMilestones();
     checkContractWins();
+    showFinishIfOver();
   }
   if (scene.post?.watchCost(dt)) {
     ui.toast("Ambient occlusion off \u2014 this device was spending more on corners than it could afford.");
@@ -7055,7 +7227,31 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+function showFinishIfOver() {
+  if (!state.finished || finishShown) return;
+  finishShown = true;
+  const f = state.finished;
+  ui.setSpeed(0);
+  const me = f.board.find((a) => a.id === "player");
+  const rank = f.board.indexOf(me) + 1;
+  document.getElementById("fin-head").textContent = rank === 1 ? `${f.year}. You built the city.` : `${f.year}. The ledger closes.`;
+  document.getElementById("fin-sub").textContent = rank === 1 ? "Seventy years, and nobody in this town is worth more than you." : `Seventy years, and you finish ${rank}${["st", "nd", "rd", "th"][Math.min(rank - 1, 3)]} of ${f.board.length}.`;
+  document.getElementById("fin-board").innerHTML = f.board.map((a, i) => `
+    <li class="${a.id === "player" ? "me" : ""}">
+      <span class="pos">${i + 1}</span>
+      <span class="who"><b>${a.name}</b>
+        <span>${a.title} \xB7 ${sf(a.gsf)} built \xB7 ${a.lots} lots${a.tallest ? ` \xB7 tallest ${a.tallest} floors` : ""}</span></span>
+      <span class="amt">${money2(a.worth)}</span>
+    </li>`).join("");
+  document.getElementById("fin-notes").innerHTML = `You delivered <b>${f.contracts}</b> contract${f.contracts === 1 ? "" : "s"}, gave the city <b>${f.parks}</b> block${f.parks === 1 ? "" : "s"} of park, and finished as a <b>${me.title}</b> on ${me.standing} standing.`;
+  document.getElementById("finish").classList.remove("hidden");
+}
+document.getElementById("fin-again").onclick = () => {
+  writeStart(Math.floor(Math.random() * 1e6), START_YEAR);
+  location.reload();
+};
 var seenWins = 0;
+var finishShown = false;
 function checkContractWins() {
   const mine = state.contracts.filter((c2) => c2.claimedBy === "player");
   if (mine.length <= seenWins) {

@@ -556,3 +556,27 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
 .rankrow span { font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
 #pf-rank .perk { margin: 4px 0 8px; font-size: 10.5px; color: var(--dim); line-height: 1.45; }
 #pf-rank > span { font-size: 10.5px; color: var(--dim); line-height: 1.45; display: block; }
+
+/* ---------------------------------------------------------- the final bell */
+#finish {
+  position: fixed; inset: 0; z-index: 70; overflow-y: auto;
+  display: grid; place-items: center; padding: 30px 16px;
+  background: radial-gradient(120% 100% at 50% 0%, #1a2436 0%, #080a0e 70%);
+}
+#finish .card { max-width: 720px; width: 100%; padding: 34px 38px; }
+#finish h2 { margin: 0 0 6px; font-size: 30px; font-weight: 700; }
+#fin-board { list-style: none; margin: 22px 0 0; padding: 0; counter-reset: fin; }
+#fin-board li {
+  display: flex; align-items: baseline; gap: 12px; padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+#fin-board li.me { background: rgba(74,222,128,.09); margin: 0 -10px; padding: 12px 10px; border-radius: 6px; }
+#fin-board .pos { width: 24px; font-size: 18px; font-weight: 700; color: var(--dim); }
+#fin-board .who { flex: 1; }
+#fin-board .who b { font-size: 15px; }
+#fin-board .who span { display: block; font-size: 11px; color: var(--dim); margin-top: 2px; }
+#fin-board .amt { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+#fin-notes { margin-top: 18px; font-size: 12.5px; color: var(--dim); line-height: 1.6; }
+#fin-notes b { color: var(--ink); }
+#s-race.soon { color: #e0b341; }
+#s-race.last { color: var(--bad); }

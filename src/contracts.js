@@ -35,7 +35,7 @@ const KINDS = {
       const hood = pickHood(state, rnd);
       if (!hood) return null;
       const office = rnd() < 0.62;
-      const gsf = Math.round((60 + Math.floor(rnd() * 4) * 35) * 1000);
+      const gsf = Math.round((45 + Math.floor(rnd() * 4) * 25) * 1000);
       const client = pick(rnd, office ? OFFICE_CLIENTS : RESI_CLIENTS);
       return {
         kind: 'tenant', client,
@@ -46,8 +46,8 @@ const KINDS = {
           : `${client} are placing ${fmtSf(gsf)} of new apartments in ${HOODS[hood].name}. `
             + `The first completed scheme gets the whole requirement.`,
         need: { hood, gsf, use: office ? 'office' : 'residential' },
-        reward: reward(Math.round(gsf * (office ? 90 : 65)), 2),
-        years: 6,
+        reward: reward(Math.round(gsf * (office ? 130 : 95)), 2),
+        years: 8,
       };
     },
     progress(state, c, id) {
@@ -56,7 +56,11 @@ const KINDS = {
         if (lot.owner !== id || lot.hood !== c.need.hood) continue;
         const b = lot.building;
         if (!b || !matchesUse(b.use, c.need.use)) continue;
-        if (b.age > 25) continue;                 // they want new space, not a hand-me-down
+        // Any decent space of the right sort counts, not only space you put
+        // up yourself — buying the building the tenant wants is a perfectly
+        // good way to win the job, and in a slow-building city it may be the
+        // only one.
+        if (b.age > 45) continue;
         have += b.gsf;
       }
       return { have, want: c.need.gsf, text: `${fmtSf(have)} of ${fmtSf(c.need.gsf)}` };
@@ -71,7 +75,7 @@ const KINDS = {
       if (!avenues.length) return null;
       const av = pick(rnd, avenues);
       const cap = api.floorCap(state);
-      const floors = Math.max(8, Math.round(cap * (0.30 + rnd() * 0.18)));
+      const floors = Math.max(6, Math.round(cap * (0.22 + rnd() * 0.15)));
       if (floors < 8) return null;
       return {
         kind: 'civic', client: 'The Board of Estimate',
@@ -80,7 +84,7 @@ const KINDS = {
           + `offering ten years free of property tax on it. It does not care who builds it.`,
         need: { corridorId: av.id, corridorName: av.name, floors },
         reward: reward(0, 3, 10),
-        years: 6,
+        years: 8,
       };
     },
     progress(state, c, id) {
@@ -114,8 +118,8 @@ const KINDS = {
           + `${where.avenue.name} — all four lots, one owner. Whoever gets there first is paid.`,
         need: { blockKey: `${block.col},${block.row}`,
                 where: `${where.crossStreet} & ${where.avenue.name}` },
-        reward: reward(34_000_000, 3),
-        years: 8,
+        reward: reward(44_000_000, 3),
+        years: 10,
       };
     },
     progress(state, c, id) {
@@ -136,15 +140,15 @@ const KINDS = {
       });
       if (!hoods.length) return null;
       const hood = pick(rnd, hoods);
-      const count = 2 + Math.floor(rnd() * 2);
+      const count = 2;
       return {
         kind: 'renewal', client: 'The Improvement Commission',
         title: `${HOODS[hood].name}: rebuild ${count} run-down buildings`,
         brief: `${HOODS[hood].name} has blocks that are dragging their neighbours down. Put up `
           + `${count} sound new buildings there and the commission will pay for the trouble.`,
         need: { hood, count },
-        reward: reward(48_000_000, 4),
-        years: 6,
+        reward: reward(62_000_000, 4),
+        years: 8,
       };
     },
     progress(state, c, id) {
@@ -152,7 +156,7 @@ const KINDS = {
       for (const lot of state.city.lots) {
         if (lot.owner !== id || lot.hood !== c.need.hood) continue;
         const b = lot.building;
-        if (b && b.age <= 20 && (b.condition ?? 1) > 0.8) have++;
+        if (b && b.age <= 25 && (b.condition ?? 1) > 0.7) have++;
       }
       return { have, want: c.need.count, text: `${have} of ${c.need.count} rebuilt` };
     },
@@ -174,8 +178,8 @@ const KINDS = {
         brief: `The Record will name the tallest building in the city, and the house that owns it. `
           + `Nothing under ${floors} floors will do, and the title goes to whoever holds it on the day.`,
         need: { floors },
-        reward: reward(60_000_000, 8),
-        years: 10,
+        reward: reward(78_000_000, 8),
+        years: 12,
       };
     },
     progress(state, c, id) {
@@ -193,7 +197,9 @@ const KINDS = {
 
 // ------------------------------------------------------------------- the loop
 
-const MAX_OPEN = 3;
+// Fewer jobs on the table at once. Every open contract pulls the rivals'
+// attention, and three at a time spread it so thin that none of them got done.
+const MAX_OPEN = 2;
 
 /** Post, award and expire. Called once a month from the sim. */
 export function tickContracts(state, api) {

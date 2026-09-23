@@ -336,11 +336,6 @@ export function generateCity(seed = 7, startYear = 1998) {
     };
   }
 
-  const parkBlocks = blocks.filter((b) => b.isPark);
-  for (const lot of lots) {
-    lot.parkFront = parkBlocks.some((b) =>
-      Math.abs(b.cx - lot.x) < PITCH * 1.05 && Math.abs(b.cz - lot.z) < PITCH * 1.05);
-  }
 
   // Lane spans: how far traffic can run down each avenue and along each street
   // before it would drive into the river.
@@ -357,6 +352,7 @@ export function generateCity(seed = 7, startYear = 1998) {
   }
 
   const city = { lots, blocks, corridors, lanes, land, isLand, seed };
+  recomputeParkFront(city);
 
   city.rebuildLanes = () => {
     lanes.ns.clear(); lanes.ew.clear();
@@ -430,6 +426,18 @@ export function generateCity(seed = 7, startYear = 1998) {
 }
 
 /** Grid cell containing a world position. */
+/**
+ * Which lots look onto a park. Recomputed rather than fixed at generation,
+ * because the city can buy a block off you and make a new one.
+ */
+export function recomputeParkFront(city) {
+  const parks = city.blocks.filter((b) => b.isPark);
+  for (const lot of city.lots) {
+    lot.parkFront = parks.some((b) => Math.abs(b.cx - lot.x) < CONFIG.PITCH * 1.05
+                                   && Math.abs(b.cz - lot.z) < CONFIG.PITCH * 1.05);
+  }
+}
+
 export function cellOf(x, z) {
   return {
     col: Math.round((x + CONFIG.WIDTH / 2 - CONFIG.PITCH / 2) / CONFIG.PITCH),
@@ -488,8 +496,15 @@ export const FORMS = {
   stepped: { name: 'Stepped', cost: 1.04, rent: 1.04 },
   point:   { name: 'Point',   cost: 1.13, rent: 1.10 },
 };
+// Construction used to be so cheap against the rents that a finished building
+// was worth 2.6x what it cost and yielded 14% on it — against money at 5-7%.
+// A spread that wide makes gearing free: there is no level of borrowing that
+// is not obviously correct, and no downturn deep enough to punish it. At these
+// costs the yield lands near 9.5%, which is still a good business in the good
+// years and falls under the interest rate in the bad ones — which is the only
+// thing that makes an ungeared builder the better builder.
 export const USES = {
-  office:      { name: 'Office',      rent: 78, cost: 400, opex: 0.34 },
-  residential: { name: 'Residential', rent: 62, cost: 360, opex: 0.30 },
-  mixed:       { name: 'Mixed-use',   rent: 70, cost: 385, opex: 0.32 },
+  office:      { name: 'Office',      rent: 78, cost: 600, opex: 0.34 },
+  residential: { name: 'Residential', rent: 62, cost: 540, opex: 0.30 },
+  mixed:       { name: 'Mixed-use',   rent: 70, cost: 578, opex: 0.32 },
 };
