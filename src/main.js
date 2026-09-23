@@ -515,6 +515,10 @@ function frame(now) {
     checkMilestones();
   }
 
+  if (scene.post?.watchCost(dt)) {
+    ui.toast('Ambient occlusion off — this device was spending more on corners than it could afford.');
+  }
+
   scene.render();
   requestAnimationFrame(frame);
 }

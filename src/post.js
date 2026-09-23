@@ -23,7 +23,9 @@ export class Post {
     const size = renderer.getSize(new THREE.Vector2());
     const dpr = renderer.getPixelRatio();
     // MSAA is lost the moment we render into a target, so ask for it back.
-    const target = new THREE.WebGLRenderTarget(size.width * dpr, size.height * dpr, {
+    // Round: a device pixel ratio like 1.2 on an 844pt phone gives a
+    // fractional height, and a render target is measured in whole pixels.
+    const target = new THREE.WebGLRenderTarget(Math.round(size.width * dpr), Math.round(size.height * dpr), {
       type: THREE.HalfFloatType,
       samples: quality.msaa || 0,
     });
@@ -41,6 +43,18 @@ export class Post {
           thickness: 30, scale: 2.5, samples: quality.aoSamples ?? 16 },
         { lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, rings: 2, samples: 16 });
       this.ao.blendIntensity = 1.0;
+
+      // A phone computes the occlusion at half resolution and upscales it.
+      // Occlusion is low-frequency by nature — it is the shape of a corner,
+      // not the detail in it — so this costs a quarter and gives up very
+      // little. The depth and normal buffers it reads are halved with it, so
+      // the pass stays self-consistent.
+      const aoScale = quality.aoScale ?? 1;
+      if (aoScale !== 1) {
+        const baseSize = this.ao.setSize.bind(this.ao);
+        this.ao.setSize = (w, h) =>
+          baseSize(Math.max(1, Math.round(w * aoScale)), Math.max(1, Math.round(h * aoScale)));
+      }
 
       // Clouds and the sky are drawn into the same depth buffer the AO reads,
       // and a cloud that occludes a tower 400m below it is not a corner — it
@@ -88,6 +102,27 @@ export class Post {
   }
 
   setSize(w, h) { this.composer.setSize(w, h); }
+
+  /**
+   * Occlusion is the one pass here that can be genuinely unaffordable, and the
+   * range of phones is enormous. Watch what frames actually cost and give it
+   * up if the device cannot carry it — a city at twelve frames a second with
+   * lovely corners is worse than a city at thirty without them.
+   *
+   * Returns true the one time it drops the pass, so the caller can say so.
+   */
+  watchCost(dt) {
+    if (!this.ao?.enabled || !this.q.aoBudget) return false;
+    // A single stalled frame is a texture upload or a tab coming back, not a
+    // verdict on the hardware. Only a sustained average counts.
+    if (dt > 0.5) return false;
+    this._avg = this._avg === undefined ? dt : this._avg * 0.94 + dt * 0.06;
+    if (this._avg < this.q.aoBudget) { this._bad = 0; return false; }
+    this._bad = (this._bad ?? 0) + dt;
+    if (this._bad < 3) return false;
+    this.ao.enabled = false;
+    return true;
+  }
 
   render() { this.composer.render(); }
 

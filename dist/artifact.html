@@ -2686,7 +2686,7 @@ var Post = class {
     this.q = quality;
     const size = renderer.getSize(new THREE2.Vector2());
     const dpr = renderer.getPixelRatio();
-    const target = new THREE2.WebGLRenderTarget(size.width * dpr, size.height * dpr, {
+    const target = new THREE2.WebGLRenderTarget(Math.round(size.width * dpr), Math.round(size.height * dpr), {
       type: THREE2.HalfFloatType,
       samples: quality.msaa || 0
     });
@@ -2710,6 +2710,11 @@ var Post = class {
         { lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, rings: 2, samples: 16 }
       );
       this.ao.blendIntensity = 1;
+      const aoScale = quality.aoScale ?? 1;
+      if (aoScale !== 1) {
+        const baseSize = this.ao.setSize.bind(this.ao);
+        this.ao.setSize = (w, h) => baseSize(Math.max(1, Math.round(w * aoScale)), Math.max(1, Math.round(h * aoScale)));
+      }
       const base = this.ao.overrideVisibility.bind(this.ao);
       this.ao.overrideVisibility = () => {
         base();
@@ -2746,6 +2751,27 @@ var Post = class {
   }
   setSize(w, h) {
     this.composer.setSize(w, h);
+  }
+  /**
+   * Occlusion is the one pass here that can be genuinely unaffordable, and the
+   * range of phones is enormous. Watch what frames actually cost and give it
+   * up if the device cannot carry it — a city at twelve frames a second with
+   * lovely corners is worse than a city at thirty without them.
+   *
+   * Returns true the one time it drops the pass, so the caller can say so.
+   */
+  watchCost(dt) {
+    if (!this.ao?.enabled || !this.q.aoBudget) return false;
+    if (dt > 0.5) return false;
+    this._avg = this._avg === void 0 ? dt : this._avg * 0.94 + dt * 0.06;
+    if (this._avg < this.q.aoBudget) {
+      this._bad = 0;
+      return false;
+    }
+    this._bad = (this._bad ?? 0) + dt;
+    if (this._bad < 3) return false;
+    this.ao.enabled = false;
+    return true;
   }
   render() {
     this.composer.render();
@@ -3118,10 +3144,14 @@ var QUALITY = {
     bloomScale: 1,
     msaa: 4,
     ao: true,
-    aoSamples: 16
+    aoSamples: 16,
+    aoScale: 1,
+    aoBudget: 0.05
   },
-  // No AO on a phone yet: it costs a second pass over every building, and
-  // there are still thousands of them to draw. Revisit once they are merged.
+  // A phone gets occlusion too, at half resolution and half the samples, now
+  // that the buildings are merged and the pass has a few hundred draws to make
+  // rather than a few thousand. aoBudget is the escape hatch: if frames still
+  // cost more than this, the pass gives itself up.
   low: {
     peds: 120,
     cars: 38,
@@ -3132,7 +3162,10 @@ var QUALITY = {
     bloom: true,
     bloomScale: 0.5,
     msaa: 0,
-    ao: false
+    ao: true,
+    aoSamples: 8,
+    aoScale: 0.5,
+    aoBudget: 0.055
   }
 };
 var PICK_MAT = new THREE4.MeshBasicMaterial({ visible: false });
@@ -5795,7 +5828,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "388f1ce \xB7 2026-09-22 23:42" : "dev";
+var BUILD = true ? "49cb2e0 \xB7 2026-09-23 02:08" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
@@ -5982,6 +6015,9 @@ function frame(now) {
       ui.select(keep);
     }
     checkMilestones();
+  }
+  if (scene.post?.watchCost(dt)) {
+    ui.toast("Ambient occlusion off \u2014 this device was spending more on corners than it could afford.");
   }
   scene.render();
   requestAnimationFrame(frame);

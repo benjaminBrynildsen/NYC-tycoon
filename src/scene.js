@@ -108,11 +108,15 @@ function sliceGroups(src, groups) {
 /** What to draw at full fat, and what a phone gets instead. */
 export const QUALITY = {
   high: { peds: 430, cars: 110, clouds: 46, shadows: true, dpr: 1.75, shadowMap: 2048,
-          bloom: true, bloomScale: 1, msaa: 4, ao: true, aoSamples: 16 },
-  // No AO on a phone yet: it costs a second pass over every building, and
-  // there are still thousands of them to draw. Revisit once they are merged.
+          bloom: true, bloomScale: 1, msaa: 4,
+          ao: true, aoSamples: 16, aoScale: 1, aoBudget: 0.05 },
+  // A phone gets occlusion too, at half resolution and half the samples, now
+  // that the buildings are merged and the pass has a few hundred draws to make
+  // rather than a few thousand. aoBudget is the escape hatch: if frames still
+  // cost more than this, the pass gives itself up.
   low:  { peds: 120, cars: 38,  clouds: 20, shadows: false, dpr: 1.2, shadowMap: 1024,
-          bloom: true, bloomScale: 0.5, msaa: 0, ao: false },
+          bloom: true, bloomScale: 0.5, msaa: 0,
+          ao: true, aoSamples: 8, aoScale: 0.5, aoBudget: 0.055 },
 };
 
 const PICK_MAT = new THREE.MeshBasicMaterial({ visible: false });
