@@ -4,6 +4,7 @@
 import { CONFIG, DISTRICTS, USES, STYLES, FORMS, REGIONS, HOODS, ERAS, eraAt, buildableSf,
          massing, minFloors, maxFloors, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS, canReclaim,
          shoreContact, mulberry32 } from './world.js';
+import { tickContracts, contractBias, titleFor } from './contracts.js';
 
 export const START_CASH = 100_000_000;
 export const CAP_RATE = 0.055;        // what a stabilised building is worth per $ of NOI
@@ -49,6 +50,8 @@ export function createState(city, seed = 11, startYear = 1998) {
     cyclePhase: rnd() * Math.PI * 2,
     projects: [],
     fills: [],
+    contracts: [],
+    contractsPostedAt: -999,
     log: [],
     news: [],
     mood: 'steady',
@@ -259,7 +262,8 @@ export function netWorth(state, actorId) {
 export function leaderboard(state) {
   return Object.values(state.actors)
     .filter((a) => !a.retired)
-    .map((a) => ({ ...a, worth: netWorth(state, a.id) }))
+    .map((a) => ({ ...a, worth: netWorth(state, a.id),
+                   standing: a.standing ?? 0, title: titleFor(a.standing ?? 0) }))
     .sort((x, y) => y.worth - x.worth);
 }
 
@@ -733,6 +737,17 @@ function dayTick(state) {
   }
 }
 
+/** What the contract system is allowed to reach back into. */
+const CONTRACT_API = {
+  pushNews, logEvent,
+  floorCap: (state) => currentEra(state).maxFloors,
+  dateIn: (state, days) => {
+    const d = new Date(Date.UTC(state.startYear, 0, 1));
+    d.setUTCDate(d.getUTCDate() + Math.round(state.day + days));
+    return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  },
+};
+
 function monthTick(state) {
   // Refresh neighbourhood intensity — this is what makes land appreciate.
   for (const lot of state.city.lots) lot._intensity = localIntensity(state, lot);
@@ -746,7 +761,8 @@ function monthTick(state) {
     for (const lot of state.city.lots) {
       if (lot.owner !== id) continue;
       noi += buildingNOI(state, lot) / 12;
-      tax += landValue(state, lot) * 0.012 / 12;
+      // A civic contract can buy a building years free of property tax.
+      if (!(lot.abatedUntil > state.day)) tax += landValue(state, lot) * 0.012 / 12;
     }
     a.cash += noi - tax - (a.debt * INTEREST) / 12;
     a.lastNOI = noi;
@@ -758,6 +774,7 @@ function monthTick(state) {
     const a = state.actors[r.id];
     if (!a.retired) rivalTurn(state, a);
   }
+  tickContracts(state, CONTRACT_API);
   marketStory(state);
 }
 
@@ -907,6 +924,12 @@ function rivalTurn(state, a) {
     return;
   }
 
+  // Assembling a block is buying, not building, and the site scoring below
+  // only ever considers schemes that pencil. Without this a rival could never
+  // chase an assemblage contract, and the one kind of job that is pure
+  // land-grabbing would always be handed to the player unopposed.
+  if (chaseAssemblage(state, a)) return;
+
   const wants = {
     institution: (l) => (l.tier === 'core' ? 3 : l.tier === 'mid' ? 2 : 0.3),
     cowboy:      (l) => 1 + (l._intensity ?? 0.3) * 2,
@@ -924,7 +947,11 @@ function rivalTurn(state, a) {
     const q = quote(state, lot, floors, a.strategy === 'grinder' ? 'residential' : 'office',
                     a.ltc, rivalDesign(a, lot, floors, state), a.id);
     if (q.equity > a.cash * 0.6) continue;
-    const score = q.yieldOnCost * 100 * wants(lot) - (a.strategy === 'institution' ? q.equity / 9e7 : 0);
+    // A rival who can see an open contract leans towards the sites that would
+    // win it. This is the whole of their competitive behaviour: they are not
+    // told to beat you, they just want the same jobs you do.
+    const score = q.yieldOnCost * 100 * wants(lot) * contractBias(state, a.id, lot)
+      - (a.strategy === 'institution' ? q.equity / 9e7 : 0);
     if (score > bestScore) { bestScore = score; best = { lot, floors, q }; }
   }
 
@@ -955,6 +982,37 @@ function rivalTurn(state, a) {
 }
 
 /** Each rival has a house style, which you can read off the skyline. */
+/**
+ * Buy the next lot on a block somebody is paying to have assembled. A rival
+ * only commits once it already holds a foot on the block or the block is cheap
+ * enough to start on, and never spends more than a third of its cash.
+ */
+function chaseAssemblage(state, a) {
+  if (!state.contracts) return false;
+  for (const c of state.contracts) {
+    if (c.claimedBy || c.expired || c.kind !== 'assemble') continue;
+    const [col, row] = c.need.blockKey.split(',').map(Number);
+    const block = state.city.blocks.find((b) => b.col === col && b.row === row);
+    if (!block) continue;
+    const mine = block.lots.filter((l) => l.owner === a.id).length;
+    if (mine === 4) continue;
+    // Someone else is all but finished; do not throw good money after it.
+    if (block.lots.some((l) => l.owner && l.owner !== a.id && l.owner !== 'npc'
+        && block.lots.filter((x) => x.owner === l.owner).length >= 3)) continue;
+    const targets = block.lots.filter((l) => l.owner !== a.id && (!l.owner || l.owner === 'npc'));
+    if (!targets.length) continue;
+    targets.sort((x, y) => askPrice(state, x) - askPrice(state, y));
+    const lot = targets[0];
+    const price = askPrice(state, lot);
+    if (price > a.cash * 0.34) continue;
+    if (!buyLot(state, lot, a.id).ok) continue;
+    logEvent(state, a.id, `bought ${lot.address} to assemble the block`);
+    a.cooldown = 1;
+    return true;
+  }
+  return false;
+}
+
 function rivalDesign(a, lot, floors, state) {
   const allowed = currentEra(state).styles;
   const pick = (...wanted) => wanted.find((w) => allowed.includes(w)) ?? allowed[allowed.length - 1];

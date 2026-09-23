@@ -532,3 +532,21 @@ body.touch #crosshair, body.touch #modehint { display: none; }
 
 .touchline { display: none; }
 body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin-top: 10px; }
+
+/* ------------------------------------------------------------- contracts */
+.job { padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.07); }
+.job:last-child { border-bottom: 0; }
+.job .cli {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .1em; color: var(--dim);
+}
+.job .ttl { font-size: 12.5px; font-weight: 600; line-height: 1.3; margin: 2px 0 5px; }
+.job .prog { display: flex; align-items: center; gap: 7px; font-size: 10.5px; }
+.job .bar { flex: 1; height: 4px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
+.job .bar i { display: block; height: 100%; background: var(--accent); }
+.job.lead .bar i { background: var(--good); }
+.job .due { font-variant-numeric: tabular-nums; color: var(--dim); flex: none; }
+.job .due.soon { color: #e0b341; }
+.job .due.late { color: var(--bad); font-weight: 700; }
+.job .rival { font-size: 10px; color: var(--dim); margin-top: 4px; }
+.job .rival b { color: var(--bad); font-weight: 600; }
+.job .pay { font-size: 10px; color: var(--good); margin-top: 3px; }

@@ -9,6 +9,7 @@ import { createState, advance, netWorth, leaderboard, money, sf, logEvent, forma
 import { CityScene, QUALITY } from './scene.js';
 import { Controls, MODE, requestLock, isTyping } from './controls.js';
 import { UI } from './ui.js';
+import { rewardLine } from './contracts.js';
 import { isTouch, setupTouch } from './touch.js';
 
 // Game minutes that pass per real second, by speed setting.
@@ -568,12 +569,14 @@ function frame(now) {
     document.getElementById('speednote').textContent = capped ? 'street time — TAB to run the clock' : '';
     ui.refreshTop();
     ui.refreshNews();
+    ui.refreshJobs();
     if (controls.mode === MODE.BOARD) ui.refreshBoard();
     if (ui.selected) {
       const keep = ui.selected;
       ui.select(keep);
     }
     checkMilestones();
+    checkContractWins();
   }
 
   if (scene.post?.watchCost(dt)) {
@@ -584,6 +587,19 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+
+/**
+ * The paper reports every contract, but the one you just won deserves to land
+ * in the moment rather than three headlines down the page.
+ */
+let seenWins = 0;
+function checkContractWins() {
+  const mine = state.contracts.filter((c) => c.claimedBy === 'player');
+  if (mine.length <= seenWins) { seenWins = mine.length; return; }
+  seenWins = mine.length;
+  const c = mine[0];
+  ui.toast(`${c.client} pay out — ${c.title}. ${rewardLine(c)}`);
+}
 
 // ------------------------------------------------------------- milestones
 

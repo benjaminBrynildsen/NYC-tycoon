@@ -6,6 +6,7 @@ import { DISTRICTS, HOODS, REGIONS, USES, STYLES, FORMS, massing, minFloors, max
          buildableSf, floorsWithoutAir, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS,
          CONFIG } from './world.js';
 import { TYPES, massingVolumes, typologyFor } from './architecture.js';
+import { contractBoard, rewardLine } from './contracts.js';
 import {
   money, sf, askPrice, landValue, buildingNOI, buildingValue, quote, netWorth,
   leaderboard, buyLot, sellLot, startProject, formatDate, occupancyFor, rentPerSf,
@@ -15,6 +16,10 @@ import {
 } from './economy.js';
 
 const $ = (id) => document.getElementById(id);
+
+/** Anything going into innerHTML goes through here. */
+const esc = (v) => String(v ?? '').replace(/[&<>"]/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n) => `${Math.round(n * 100)}%`;
 
 /**
@@ -286,12 +291,50 @@ export class UI {
     $('leaderboard').innerHTML = leaderboard(s).map((a) => `
       <li data-actor="${a.id}" class="${a.isPlayer ? 'me' : ''}${this.highlightOwner === a.id ? ' lit' : ''}">
         <span class="dot" style="background:#${a.color.toString(16).padStart(6, '0')}"></span>
-        <span class="nm">${a.name}<br><span class="sub">${sf(a.gsfBuilt)} built</span></span>
+        <span class="nm">${esc(a.name)}<br><span class="sub">${esc(a.title)}${
+          a.standing ? ` · ${a.standing} standing` : ''} · ${sf(a.gsfBuilt)} built</span></span>
         <span class="wv">${money(a.worth)}</span>
       </li>`).join('');
     $('lb-hint').textContent = this.highlightOwner
       ? 'Click again to clear the highlight'
       : 'Click a firm to see what they own';
+  }
+
+  /**
+   * What the city is asking for, and who is winning it. This is the only
+   * panel that shows a rival gaining on you, which is the point of it.
+   */
+  refreshJobs() {
+    const jobs = contractBoard(this.state);
+    const panel = $('jobs');
+    panel.classList.toggle('hidden', !jobs.length);
+    if (!jobs.length) return;
+    // Rebuilt in place only when something actually changed, so the bars
+    // don't flicker four times a second.
+    const sig = jobs.map((j) => `${j.id}:${j.monthsLeft}:${Math.round((j.you?.ratio ?? 0) * 50)}`
+      + `:${j.leader.id}`).join('|');
+    if (sig === this._jobSig) return;
+    this._jobSig = sig;
+
+    $('joblist').innerHTML = jobs.map((j) => {
+      const mine = Math.round((j.you?.ratio ?? 0) * 100);
+      const due = j.monthsLeft <= 6 ? 'late' : j.monthsLeft <= 18 ? 'soon' : '';
+      const years = j.monthsLeft >= 24 ? `${Math.floor(j.monthsLeft / 12)}y` : `${j.monthsLeft}mo`;
+      return `<div class="job ${j.leader.id === 'player' && mine > 0 ? 'lead' : ''}">
+        <div class="cli">${esc(j.client)}</div>
+        <div class="ttl">${esc(j.title)}</div>
+        <div class="prog">
+          <span class="bar"><i style="width:${mine}%"></i></span>
+          <span class="due ${due}">${years}</span>
+        </div>
+        <div class="rival">${esc(j.you?.text ?? '')}${
+          j.threatened ? ` · <b>${esc(j.leader.name)} is ahead</b>` : ''}</div>
+        <div class="pay">${esc(rewardLine(j))}</div>
+      </div>`;
+    }).join('');
+    $('jobs-hint').textContent = jobs.some((j) => j.threatened)
+      ? 'Whoever finishes first is paid. Nothing is reserved for you.'
+      : 'Deliver before the date and the fee is yours.';
   }
 
   // -------------------------------------------------------------- the paper
