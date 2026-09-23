@@ -179,20 +179,35 @@ export function askPrice(state, lot) {
  * pumping, lift banks, wind engineering and a longer schedule all compound, so
  * cost per square foot runs away rather than creeping.
  */
+/**
+ * What a floor costs, as you pile them up. Steel, wind, lifts and the time it
+ * all takes.
+ *
+ * This used to rise so much faster than the view premium that height was a
+ * pure loss at every level — a 150-floor tower earned 59% less on its cost
+ * than a squat one, so no rational builder ever went up and the rivals put up
+ * 652 buildings without one of them passing thirty floors. It is a gentler
+ * curve now, and paired with a stronger premium on the view it crosses over
+ * around forty floors: a tall building is a premium play rather than a
+ * mistake, and what actually limits it is air rights, which is where the
+ * limit belongs.
+ */
 export function heightCostMul(floors) {
-  return 1 + 0.010 * floors + 0.00010 * floors * floors;
+  return 1 + 0.007 * floors + 0.00004 * floors * floors;
 }
 
 /** Lifts and structure eat a growing share of every floor as you go up. */
 export function coreEfficiency(floors) {
-  return Math.max(0.58, 0.88 - floors * 0.0016);
+  return Math.max(0.62, 0.88 - floors * 0.0011);
 }
 
 export function rentPerSf(state, lot, use, floors, quality = 1) {
   const u = USES[use];
   // Views are worth money and trophy height is worth disproportionately more,
   // but efficiency losses claw some of it back.
-  const view = 1 + floors / 200 + Math.pow(floors / 150, 2) * 0.9;
+  // Height sells. The top of a tower is worth disproportionately more than
+  // the middle of it, and this is the term that pays for going up at all.
+  const view = 1 + floors / 150 + Math.pow(floors / 105, 2) * 1.0;
   const eff = coreEfficiency(floors) / coreEfficiency(10);
   const p = premiums(state, lot);
   const place = p.water * p.park * p.corridor * p.blight;
@@ -1333,22 +1348,39 @@ function rivalTurn(state, a) {
     grinder:     (l) => (l.region !== 'manhattan' ? 3 : l.tier === 'edge' || l.tier === 'res' ? 2.5 : 0.5),
   }[a.strategy];
 
+  const use = a.strategy === 'grinder' ? 'residential' : 'office';
   let best = null, bestScore = -Infinity;
   for (const lot of state.city.lots) {
     if (lot.owner === a.id || lot.project) continue;
     if (lot.owner && lot.owner !== 'npc') continue;
     if (!a.regions.has(lot.region)) continue;
     if (demolitionBlock(lot)) continue;
-    const floors = Math.min(pickFloors(lot, a.strategy), currentEra(state).maxFloors);
-    const q = quote(state, lot, floors, a.strategy === 'grinder' ? 'residential' : 'office',
-                    a.ltc, rivalDesign(a, lot, floors, state), a.id);
-    if (q.equity > a.cash * 0.6) continue;
-    // A rival who can see an open contract leans towards the sites that would
-    // win it. This is the whole of their competitive behaviour: they are not
-    // told to beat you, they just want the same jobs you do.
-    const score = q.yieldOnCost * 100 * wants(lot) * contractBias(state, a.id, lot)
-      - (a.strategy === 'institution' ? q.equity / 9e7 : 0);
-    if (score > bestScore) { bestScore = score; best = { lot, floors, q }; }
+    // Cheap rejection before the expensive part: if the site alone is out of
+    // reach there is no scheme on it worth pricing.
+    if (lot.owner === 'npc' && askPrice(state, lot) > a.cash) continue;
+
+    for (const floors of heightOptions(lot, a, state)) {
+      const q = quote(state, lot, floors, use, a.ltc, rivalDesign(a, lot, floors, state), a.id);
+      // How much of the war chest a firm will put into one scheme. At a flat
+      // six-tenths nobody could ever fund a tower in the core — the equity on
+      // one runs to nearly a hundred million — so they ground away on cheap
+      // edge land for seventy years instead.
+      if (q.equity > a.cash * COMMIT[a.strategy]) continue;
+      // A house that has grown does not keep putting up walk-ups. Without a
+      // floor on the size of a scheme the rivals compounded quietly on cheap
+      // edge land for seventy years and never once entered the core.
+      if (q.total < smallestWorthDoing(state, a)) continue;
+      // Profit on the money they actually put in, rather than yield on total
+      // cost. Yield on cost quietly favours the smallest, cheapest scheme on
+      // the worst dirt — which is precisely what all three of them built.
+      const roe = (q.value - q.total) / Math.max(q.equity, 1);
+      // A rival who can see an open contract leans towards the sites that
+      // would win it. This is the whole of their competitive behaviour: they
+      // are not told to beat you, they just want the same jobs you do.
+      const score = roe * 100 * wants(lot) * contractBias(state, a.id, lot)
+        - (a.strategy === 'institution' ? q.equity / 9e7 : 0);
+      if (score > bestScore) { bestScore = score; best = { lot, floors, q }; }
+    }
   }
 
   // A rival past a billion will occasionally just make more city.
@@ -1365,7 +1397,7 @@ function rivalTurn(state, a) {
   // These are read against a score built from yield on cost, and construction
   // costs half again as much as it used to — which halved every yield in the
   // city and, left alone, quietly stopped the rivals building at all.
-  const threshold = { institution: 5.0, cowboy: 3.5, grinder: 5.5 }[a.strategy];
+  const threshold = { institution: 18, cowboy: 13, grinder: 20 }[a.strategy];
   if (best && bestScore > threshold) {
     if (best.lot.owner === 'npc' || best.lot.owner === null) {
       const price = askPrice(state, best.lot);
@@ -1373,7 +1405,6 @@ function rivalTurn(state, a) {
       a.cash -= price;
       best.lot.owner = a.id;
     }
-    const use = a.strategy === 'grinder' ? 'residential' : 'office';
     startProject(state, best.lot, a.id, best.floors, use, a.ltc, rivalDesign(a, best.lot, best.floors, state));
     a.cooldown = a.patience;
     state._dirtyGeometry = true;
@@ -1387,6 +1418,51 @@ function rivalTurn(state, a) {
  * enough to start on, and never spends more than a third of its cash.
  */
 function chaseAssemblage(state, a) {
+  return chaseContractBlocks(state, a) || chaseAirRights(state, a);
+}
+
+/**
+ * Buy the rest of a block you have a foot on, to get at its air rights.
+ *
+ * Past about thirty floors on a core lot a scheme needs more development
+ * rights than the lot carries, and buying them in the open market is dear —
+ * but the rights on the other lots of a block you own move across for nothing.
+ * This is the only route to a genuinely tall building, and without it the
+ * rivals topped out around fifty floors no matter how good the economics of
+ * height were. A firm with money and a foothold now goes and gets the rest.
+ */
+function chaseAirRights(state, a) {
+  if (a.strategy === 'grinder') return false;          // volume, not monuments
+  const era = currentEra(state);
+  if (era.maxFloors < 40) return false;                // nothing to reach for yet
+  // Land-banking has to stay an occasional move. Left unchecked it ate every
+  // turn and every dollar, and the firms stopped putting up buildings at all.
+  if (a.cash < 350e6 || state.rnd() > 0.3) return false;
+  let best = null, bestScore = 0;
+  for (const block of state.city.blocks) {
+    if (block.isPark || block.lots.length < 4) continue;
+    if (!a.regions.has(block.region)) continue;
+    if (block.lots[0].tier !== 'core' && block.lots[0].tier !== 'mid') continue;
+    // Only finish what is nearly finished: half the block already in hand.
+    const mine = block.lots.filter((l) => l.owner === a.id).length;
+    if (mine < 2 || mine === block.lots.length) continue;
+    const targets = block.lots.filter(
+      (l) => l.owner !== a.id && (!l.owner || l.owner === 'npc') && !demolitionBlock(l));
+    if (targets.length !== block.lots.length - mine) continue;   // a rival holds one; give up
+    targets.sort((x, y) => askPrice(state, x) - askPrice(state, y));
+    const price = askPrice(state, targets[0]);
+    if (price > a.cash * 0.22) continue;              // never at the cost of building
+    const score = mine / price;                        // nearest to done, cheapest to finish
+    if (score > bestScore) { bestScore = score; best = { lot: targets[0], price, mine }; }
+  }
+  if (!best) return false;
+  if (!buyLot(state, best.lot, a.id).ok) return false;
+  logEvent(state, a.id, `bought ${best.lot.address} — ${best.mine + 1} of 4 on the block`);
+  a.cooldown = 1;
+  return true;
+}
+
+function chaseContractBlocks(state, a) {
   if (!state.contracts) return false;
   for (const c of state.contracts) {
     if (c.claimedBy || c.expired || c.kind !== 'assemble') continue;
@@ -1422,9 +1498,35 @@ function rivalDesign(a, lot, floors, state) {
   return { style: pick(floors > 14 ? 'curtain' : 'brick', 'brick', 'loft'), form: 'slab', variant: 0 };
 }
 
-function pickFloors(lot, strategy, state) {
+/**
+ * The heights worth pricing on a site, for this firm.
+ *
+ * One height per site was the whole reason nothing tall ever went up: it was a
+ * flat multiple of the FAR minimum, so a rival priced a single squat scheme,
+ * found it penciled, and built it. Nobody ever asked what the same plot would
+ * do with forty floors on it. Pricing a few and taking the best is what lets
+ * the view premium — which grows with the square of height — be discovered.
+ */
+const COMMIT = { institution: 0.75, cowboy: 0.88, grinder: 0.6 };
+
+/** The smallest job a firm this size still bothers with. */
+function smallestWorthDoing(state, a) {
+  if (a.strategy === 'grinder') return 0;              // volume is the whole plan
+  return Math.min(140e6, netWorth(state, a.id) * 0.05);
+}
+
+function heightOptions(lot, a, state) {
   const lo = minFloors(lot);
-  if (strategy === 'cowboy') return Math.min(CONFIG.MAX_FLOORS, Math.round(lo * 1.8));
-  if (strategy === 'institution') return Math.round(lo * 1.35);
-  return lo;
+  const cap = Math.min(maxFloors(lot, a.id, currentYear(state)), currentEra(state).maxFloors);
+  const reach = {
+    institution: [1, 1.7, 2.8],     // prime sites, built properly
+    cowboy:      [1.5, 2.6, 4.5],   // as tall as the bank will wear
+    grinder:     [1, 1.4],          // volume, not monuments
+  }[a.strategy] ?? [1, 1.5];
+  const out = new Set();
+  for (const m of reach) out.add(Math.max(lo, Math.min(cap, Math.round(lo * m))));
+  // On a site worth having, everyone at least prices the tallest thing the age
+  // allows. That is how a skyline happens.
+  if (lot.tier === 'core' || lot.tier === 'mid') out.add(cap);
+  return [...out].filter((f) => f >= lo && f <= cap);
 }

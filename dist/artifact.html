@@ -1388,9 +1388,9 @@ var FORMS = {
   point: { name: "Point", cost: 1.13, rent: 1.1 }
 };
 var USES = {
-  office: { name: "Office", rent: 78, cost: 600, opex: 0.34 },
-  residential: { name: "Residential", rent: 62, cost: 540, opex: 0.3 },
-  mixed: { name: "Mixed-use", rent: 70, cost: 578, opex: 0.32 }
+  office: { name: "Office", rent: 78, cost: 700, opex: 0.34 },
+  residential: { name: "Residential", rent: 62, cost: 630, opex: 0.3 },
+  mixed: { name: "Mixed-use", rent: 70, cost: 675, opex: 0.32 }
 };
 
 // src/contracts.js
@@ -1972,14 +1972,14 @@ function askPrice(state2, lot) {
   return intrinsic * mood;
 }
 function heightCostMul(floors) {
-  return 1 + 0.01 * floors + 1e-4 * floors * floors;
+  return 1 + 7e-3 * floors + 4e-5 * floors * floors;
 }
 function coreEfficiency(floors) {
-  return Math.max(0.58, 0.88 - floors * 16e-4);
+  return Math.max(0.62, 0.88 - floors * 11e-4);
 }
 function rentPerSf(state2, lot, use, floors, quality = 1) {
   const u = USES[use];
-  const view = 1 + floors / 200 + Math.pow(floors / 150, 2) * 0.9;
+  const view = 1 + floors / 150 + Math.pow(floors / 105, 2) * 1;
   const eff = coreEfficiency(floors) / coreEfficiency(10);
   const p = premiums(state2, lot);
   const place = p.water * p.park * p.corridor * p.blight;
@@ -3007,27 +3007,24 @@ function rivalTurn(state2, a) {
     // The grinder is the one who actually wants the boroughs.
     grinder: (l) => l.region !== "manhattan" ? 3 : l.tier === "edge" || l.tier === "res" ? 2.5 : 0.5
   }[a.strategy];
+  const use = a.strategy === "grinder" ? "residential" : "office";
   let best = null, bestScore = -Infinity;
   for (const lot of state2.city.lots) {
     if (lot.owner === a.id || lot.project) continue;
     if (lot.owner && lot.owner !== "npc") continue;
     if (!a.regions.has(lot.region)) continue;
     if (demolitionBlock(lot)) continue;
-    const floors = Math.min(pickFloors(lot, a.strategy), currentEra(state2).maxFloors);
-    const q = quote(
-      state2,
-      lot,
-      floors,
-      a.strategy === "grinder" ? "residential" : "office",
-      a.ltc,
-      rivalDesign(a, lot, floors, state2),
-      a.id
-    );
-    if (q.equity > a.cash * 0.6) continue;
-    const score = q.yieldOnCost * 100 * wants(lot) * contractBias(state2, a.id, lot) - (a.strategy === "institution" ? q.equity / 9e7 : 0);
-    if (score > bestScore) {
-      bestScore = score;
-      best = { lot, floors, q };
+    if (lot.owner === "npc" && askPrice(state2, lot) > a.cash) continue;
+    for (const floors of heightOptions(lot, a, state2)) {
+      const q = quote(state2, lot, floors, use, a.ltc, rivalDesign(a, lot, floors, state2), a.id);
+      if (q.equity > a.cash * COMMIT[a.strategy]) continue;
+      if (q.total < smallestWorthDoing(state2, a)) continue;
+      const roe = (q.value - q.total) / Math.max(q.equity, 1);
+      const score = roe * 100 * wants(lot) * contractBias(state2, a.id, lot) - (a.strategy === "institution" ? q.equity / 9e7 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = { lot, floors, q };
+      }
     }
   }
   if (a.regions.size > 1 && a.cash > 9e8 && state2.rnd() < 0.05) {
@@ -3042,7 +3039,7 @@ function rivalTurn(state2, a) {
       }
     }
   }
-  const threshold = { institution: 5, cowboy: 3.5, grinder: 5.5 }[a.strategy];
+  const threshold = { institution: 18, cowboy: 13, grinder: 20 }[a.strategy];
   if (best && bestScore > threshold) {
     if (best.lot.owner === "npc" || best.lot.owner === null) {
       const price = askPrice(state2, best.lot);
@@ -3053,13 +3050,46 @@ function rivalTurn(state2, a) {
       a.cash -= price;
       best.lot.owner = a.id;
     }
-    const use = a.strategy === "grinder" ? "residential" : "office";
     startProject(state2, best.lot, a.id, best.floors, use, a.ltc, rivalDesign(a, best.lot, best.floors, state2));
     a.cooldown = a.patience;
     state2._dirtyGeometry = true;
   }
 }
 function chaseAssemblage(state2, a) {
+  return chaseContractBlocks(state2, a) || chaseAirRights(state2, a);
+}
+function chaseAirRights(state2, a) {
+  if (a.strategy === "grinder") return false;
+  const era = currentEra(state2);
+  if (era.maxFloors < 40) return false;
+  if (a.cash < 35e7 || state2.rnd() > 0.3) return false;
+  let best = null, bestScore = 0;
+  for (const block of state2.city.blocks) {
+    if (block.isPark || block.lots.length < 4) continue;
+    if (!a.regions.has(block.region)) continue;
+    if (block.lots[0].tier !== "core" && block.lots[0].tier !== "mid") continue;
+    const mine = block.lots.filter((l) => l.owner === a.id).length;
+    if (mine < 2 || mine === block.lots.length) continue;
+    const targets = block.lots.filter(
+      (l) => l.owner !== a.id && (!l.owner || l.owner === "npc") && !demolitionBlock(l)
+    );
+    if (targets.length !== block.lots.length - mine) continue;
+    targets.sort((x, y) => askPrice(state2, x) - askPrice(state2, y));
+    const price = askPrice(state2, targets[0]);
+    if (price > a.cash * 0.22) continue;
+    const score = mine / price;
+    if (score > bestScore) {
+      bestScore = score;
+      best = { lot: targets[0], price, mine };
+    }
+  }
+  if (!best) return false;
+  if (!buyLot(state2, best.lot, a.id).ok) return false;
+  logEvent(state2, a.id, `bought ${best.lot.address} \u2014 ${best.mine + 1} of 4 on the block`);
+  a.cooldown = 1;
+  return true;
+}
+function chaseContractBlocks(state2, a) {
   if (!state2.contracts) return false;
   for (const c of state2.contracts) {
     if (c.claimedBy || c.expired || c.kind !== "assemble") continue;
@@ -3091,11 +3121,26 @@ function rivalDesign(a, lot, floors, state2) {
   if (a.strategy === "cowboy") return { style: pick2("glass", "curtain", "deco", "loft"), form: "point", variant: 2 };
   return { style: pick2(floors > 14 ? "curtain" : "brick", "brick", "loft"), form: "slab", variant: 0 };
 }
-function pickFloors(lot, strategy, state2) {
+var COMMIT = { institution: 0.75, cowboy: 0.88, grinder: 0.6 };
+function smallestWorthDoing(state2, a) {
+  if (a.strategy === "grinder") return 0;
+  return Math.min(14e7, netWorth(state2, a.id) * 0.05);
+}
+function heightOptions(lot, a, state2) {
   const lo = minFloors(lot);
-  if (strategy === "cowboy") return Math.min(CONFIG.MAX_FLOORS, Math.round(lo * 1.8));
-  if (strategy === "institution") return Math.round(lo * 1.35);
-  return lo;
+  const cap = Math.min(maxFloors(lot, a.id, currentYear(state2)), currentEra(state2).maxFloors);
+  const reach = {
+    institution: [1, 1.7, 2.8],
+    // prime sites, built properly
+    cowboy: [1.5, 2.6, 4.5],
+    // as tall as the bank will wear
+    grinder: [1, 1.4]
+    // volume, not monuments
+  }[a.strategy] ?? [1, 1.5];
+  const out = /* @__PURE__ */ new Set();
+  for (const m of reach) out.add(Math.max(lo, Math.min(cap, Math.round(lo * m))));
+  if (lot.tier === "core" || lot.tier === "mid") out.add(cap);
+  return [...out].filter((f) => f >= lo && f <= cap);
 }
 
 // src/scene.js
@@ -7099,7 +7144,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "1eba69f \xB7 2026-09-23 15:04" : "dev";
+var BUILD = true ? "dbdb670 \xB7 2026-09-23 16:13" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");

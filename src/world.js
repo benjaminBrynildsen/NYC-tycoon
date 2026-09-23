@@ -504,7 +504,7 @@ export const FORMS = {
 // years and falls under the interest rate in the bad ones — which is the only
 // thing that makes an ungeared builder the better builder.
 export const USES = {
-  office:      { name: 'Office',      rent: 78, cost: 600, opex: 0.34 },
-  residential: { name: 'Residential', rent: 62, cost: 540, opex: 0.30 },
-  mixed:       { name: 'Mixed-use',   rent: 70, cost: 578, opex: 0.32 },
+  office:      { name: 'Office',      rent: 78, cost: 700, opex: 0.34 },
+  residential: { name: 'Residential', rent: 62, cost: 630, opex: 0.30 },
+  mixed:       { name: 'Mixed-use',   rent: 70, cost: 675, opex: 0.32 },
 };
