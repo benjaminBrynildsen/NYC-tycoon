@@ -1943,9 +1943,11 @@ function blockSpareSf(lot, actorId) {
   return spare;
 }
 function askPrice(state2, lot) {
-  const base = landValue(state2, lot);
-  const occupied = lot.building ? 1.25 + lot.building.gsf / (buildableSf(lot) + 1) * 0.5 : 1;
-  return base * occupied;
+  const land = landValue(state2, lot);
+  if (!lot.building) return land * 1.06;
+  const intrinsic = land + buildingValue(state2, lot);
+  const mood = state2.cycle > 1.15 ? 1.14 : state2.cycle < 0.85 ? 0.92 : 1.04;
+  return intrinsic * mood;
 }
 function heightCostMul(floors) {
   return 1 + 0.01 * floors + 1e-4 * floors * floors;
@@ -7075,7 +7077,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "87531b5 \xB7 2026-09-23 14:52" : "dev";
+var BUILD = true ? "c04cff2 \xB7 2026-09-23 14:55" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");

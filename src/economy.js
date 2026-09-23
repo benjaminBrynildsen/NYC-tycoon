@@ -151,11 +151,27 @@ export function blockSpareSf(lot, actorId) {
   return spare;
 }
 
+/**
+ * What the anonymous owner of a lot will take for it.
+ *
+ * This used to be priced off the land alone with a flat markup for anything
+ * standing on it, which meant a well-let eleven-storey building cost the same
+ * as a derelict walk-up on the identical plot — and about 60% less than the
+ * asset was worth the moment you signed. Buying out the npc pool was simply
+ * the best business in the game, and it made nonsense of the premise, which is
+ * that the bargain is the *under-built* lot, not any lot.
+ *
+ * You buy the site and whatever stands on it, so the price is the whole of it.
+ * An owner with no house behind them has less staying power than a rival firm:
+ * a modest premium when the market is with them, and a real discount when it
+ * is not, which is what makes buying in a slump worth waiting for.
+ */
 export function askPrice(state, lot) {
-  const base = landValue(state, lot);
-  // An owner-occupied building costs more than raw dirt — you're buying them out.
-  const occupied = lot.building ? 1.25 + lot.building.gsf / (buildableSf(lot) + 1) * 0.5 : 1.0;
-  return base * occupied;
+  const land = landValue(state, lot);
+  if (!lot.building) return land * 1.06;
+  const intrinsic = land + buildingValue(state, lot);
+  const mood = state.cycle > 1.15 ? 1.14 : state.cycle < 0.85 ? 0.92 : 1.04;
+  return intrinsic * mood;
 }
 
 /**
