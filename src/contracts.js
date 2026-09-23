@@ -162,6 +162,42 @@ const KINDS = {
     },
   },
 
+  /**
+   * New ground where there is currently water. Posted only once somebody in
+   * the city is licensed to fill, so it is never a requirement nobody can
+   * meet — and it is the thing that makes reaching out into the harbour worth
+   * starting, because the cells you fill for it are yours afterwards.
+   */
+  harbour: {
+    propose(state, rnd) {
+      // Licensed *and* able to pay for it. A fill runs to fifty million a
+      // cell, so posting this to a city of Speculators is posting it to
+      // nobody, and it expires unattempted.
+      const able = Object.values(state.actors)
+        .some((a) => !a.retired && rankFor(a.standing ?? 0).fill && a.cash > 150e6);
+      if (!able) return null;
+      // Measured from where everyone stands today, so the ground somebody
+      // filled last decade does not quietly satisfy it.
+      const mineAtPost = {};
+      for (const id in state.actors) mineAtPost[id] = cellsHeldBy(state, id);
+      const want = 3 + Math.floor(rnd() * 2);
+      return {
+        kind: 'harbour', client: 'The Harbour Commission',
+        title: `Make ${want} cells of new ground off the shore`,
+        brief: `The commission wants the waterline moved. Fill ${want} cells of open `
+          + `water and the ground on top is yours — and if what you make joins up into an island, `
+          + `the whole of it is rezoned as waterfront.`,
+        need: { want, mineAtPost },
+        reward: reward(120_000_000, 5),
+        years: 14,
+      };
+    },
+    progress(state, c, id) {
+      const have = Math.max(0, cellsHeldBy(state, id) - (c.need.mineAtPost?.[id] ?? 0));
+      return { have, want: c.need.want, text: `${have} of ${c.need.want} cells filled` };
+    },
+  },
+
   /** The tallest thing in the city, and everyone can see who has it. */
   trophy: {
     propose(state, rnd, api) {
@@ -338,6 +374,39 @@ export function contractBoard(state) {
     });
 }
 
+/**
+ * The lots a contract is actually about, so the board can light them up. A
+ * requirement posted into Tribeca is useless if you cannot find Tribeca, and
+ * nothing else in the game tells you where the districts are.
+ */
+export function contractSites(state, c) {
+  if (c.need.hood) return state.city.lots.filter((l) => l.hood === c.need.hood);
+  if (c.need.blockKey) {
+    const [col, row] = c.need.blockKey.split(',').map(Number);
+    const block = state.city.blocks.find((b) => b.col === col && b.row === row);
+    return block ? block.lots : [];
+  }
+  if (c.need.corridorId) {
+    const cor = state.city.corridors.find((x) => x.id === c.need.corridorId);
+    return cor ? cor.lots : [];
+  }
+  // The harbour commission wants ground that does not exist yet: show the
+  // made ground there already is, which is where the next cell goes.
+  if (c.kind === 'harbour') {
+    return state.city.lots.filter((l) => l.reclaimed);
+  }
+  return [];
+}
+
+/** What to call the place a contract points at. */
+export function contractWhere(c) {
+  if (c.need.hood) return HOODS[c.need.hood].name;
+  if (c.need.where) return c.need.where;
+  if (c.need.corridorName) return c.need.corridorName;
+  if (c.kind === 'harbour') return 'the made ground';
+  return null;
+}
+
 export function rewardLine(c) {
   const bits = [];
   if (c.reward.cash) bits.push(money(c.reward.cash));
@@ -419,13 +488,19 @@ function shuffle(rnd, list) {
 
 /** Pick a district, weighted towards the ones that get built in. */
 function pickHood(state, rnd) {
-  const weight = { core: 4, mid: 3, edge: 1.4, res: 1 };
+  const weight = { core: 4, mid: 3, island: 2.5, edge: 1.4, res: 1 };
   const pool = [];
   for (const h of usableHoods(state)) {
     const w = weight[HOODS[h].tier] ?? 1;
     for (let i = 0; i < Math.round(w * 2); i++) pool.push(h);
   }
   return pool.length ? pick(rnd, pool) : null;
+}
+
+/** Cells of made ground this developer owns a piece of. */
+function cellsHeldBy(state, id) {
+  return state.city.blocks
+    .filter((b) => b.reclaimed && b.lots.some((l) => l.owner === id)).length;
 }
 
 function usableHoods(state) {

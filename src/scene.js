@@ -1349,14 +1349,21 @@ export class CityScene {
   /** Light up everything one developer owns, so you can read their position. */
   setOwnerHighlight(ownerId) {
     this.highlightOwner = ownerId;
+    if (!ownerId) return this.setLotHighlight(null);
+    return this.setLotHighlight(this.city.lots.filter((l) => l.owner === ownerId),
+                                OWNER_TINT[ownerId] ?? 0xffffff);
+  }
+
+  /**
+   * Pads and beams on an arbitrary set of lots. Ownership was the first thing
+   * that wanted this; a contract that names a district is the second, and
+   * "where is Tribeca" is not a question the board answers on its own.
+   */
+  setLotHighlight(lots, color = 0xffd479) {
     for (const c of this.highlightGroup.children) c.geometry.dispose();
     this.highlightGroup.clear();
     this.highlightPulse = null;
-    if (!ownerId) return 0;
-
-    const lots = this.city.lots.filter((l) => l.owner === ownerId);
-    if (!lots.length) return 0;
-    const color = OWNER_TINT[ownerId] ?? 0xffffff;
+    if (!lots || !lots.length) return 0;
 
     const padMat = new THREE.MeshBasicMaterial({
       color, transparent: true, opacity: 0.34, depthWrite: false, fog: false });

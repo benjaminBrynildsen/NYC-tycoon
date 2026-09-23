@@ -74,6 +74,7 @@ export const HOODS = {
   upperEast: { name: 'Upper East Side',    tier: 'mid' },
   harlem:    { name: 'Harlem',             tier: 'res' },
   landfill:  { name: 'Reclaimed Land',     tier: 'mid' },
+  island:    { name: 'The New Island',     tier: 'island' },
   heights:   { name: 'Brooklyn Heights',   tier: 'edge' },
   lic:       { name: 'Long Island City',   tier: 'res' },
 };
@@ -96,6 +97,10 @@ export const DISTRICTS = {
   mid:  { far: 10, landBase: 140, rentMul: 1.05, name: 'C5' },
   edge: { far: 6,  landBase: 80,  rentMul: 0.95, name: 'C4' },
   res:  { far: 3,  landBase: 45,  rentMul: 0.85, name: 'R6' },
+  // Made ground that has grown into an island. Not the Financial District,
+  // but zoned harder than the spoil heap it started as, and with water on
+  // every side — which is the whole of what you paid for.
+  island: { far: 12, landBase: 175, rentMul: 1.10, name: 'C5-W' },
 };
 
 /**
@@ -418,11 +423,81 @@ export function generateCity(seed = 7, startYear = 1998) {
         l.waterDist = waterDist(l.x, l.z, l.col, l.row);
       }
     }
+    const island = promoteIsland(city, blocks, col, row);
     city.rebuildLanes();
-    return made;
+    return { made, island };
   };
 
   return city;
+}
+
+/**
+ * Four cells of made ground joined together stop being spoil heaps and start
+ * being an address. A causeway of one or two cells is a road to nowhere; an
+ * island somebody has to name is worth zoning properly, so the whole landmass
+ * is rezoned from C5 to C6 the moment it reaches that size.
+ *
+ * This is the whole reason to keep filling once you have somewhere to stand:
+ * the fourth cell is what pays for the first three.
+ */
+export const ISLAND_CELLS = 4;
+
+/** Every cell of made ground joined to this one, orthogonally. */
+function madeGroup(blocks, col, row, phantom = false) {
+  const made = new Map();
+  for (const b of blocks) if (b.reclaimed) made.set(`${b.col},${b.row}`, b);
+  // A cell that is only being considered counts towards the size but has no
+  // block behind it yet, so it is never returned as part of the group.
+  const pretend = phantom && !made.has(`${col},${row}`);
+  if (pretend) made.set(`${col},${row}`, null);
+
+  const seen = new Set();
+  const queue = made.has(`${col},${row}`) ? [[col, row]] : [];
+  if (queue.length) seen.add(`${col},${row}`);
+  const group = [];
+  while (queue.length) {
+    const [c, r] = queue.pop();
+    const block = made.get(`${c},${r}`);
+    if (block) group.push(block);
+    for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const key = `${c + dc},${r + dr}`;
+      if (seen.has(key) || !made.has(key)) continue;
+      seen.add(key);
+      queue.push([c + dc, r + dr]);
+    }
+  }
+  return { group, size: seen.size };
+}
+
+/**
+ * How big the landmass would be if this water cell were filled — what the
+ * water panel needs to tell you whether this is the cell that makes an island.
+ */
+export function islandSizeIfFilled(city, col, row) {
+  return madeGroup(city.blocks, col, row, true).size;
+}
+
+function promoteIsland(city, blocks, col, row) {
+  const group = madeGroup(blocks, col, row).group;
+  if (group.length < ISLAND_CELLS) return null;
+
+  const owners = new Set();
+  const lots = [];
+  let rezoned = 0;
+  for (const block of group) {
+    if (block.hood !== 'island') rezoned++;
+    block.hood = 'island';
+    for (const lot of block.lots) {
+      if (lot.owner) owners.add(lot.owner);
+      lot.hood = 'island';
+      lot.tier = 'island';
+      lot.district = 'island';
+      lot.far = DISTRICTS.island.far;
+      lot.landPerSf = DISTRICTS.island.landBase;
+      lots.push(lot);
+    }
+  }
+  return { cells: group.length, lots, rezoned, fresh: rezoned > 0, owners: [...owners] };
 }
 
 /** Grid cell containing a world position. */

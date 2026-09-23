@@ -604,6 +604,14 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
 .job .rival { font-size: 10px; color: var(--dim); margin-top: 4px; }
 .job .rival b { color: var(--bad); font-weight: 600; }
 .job .pay { font-size: 10px; color: var(--good); margin-top: 3px; }
+.job.lit { background: rgba(255,212,121,.10); box-shadow: inset 2px 0 0 #ffd479; padding-left: 7px; }
+.job .where {
+  margin-top: 6px; font: inherit; font-size: 10px; letter-spacing: .04em;
+  padding: 4px 9px; border-radius: 999px; cursor: pointer;
+  color: #ffd479; background: rgba(255,212,121,.10);
+  border: 1px solid rgba(255,212,121,.35);
+}
+.job .where.on { background: #ffd479; border-color: #ffd479; color: #16110a; font-weight: 700; }
 
 .rankrow { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
 .rankrow b { font-weight: 700; }

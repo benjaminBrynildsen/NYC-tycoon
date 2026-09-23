@@ -653,7 +653,7 @@ export function takeOverFirm(state, targetId, actorId = 'player') {
 
 // ------------------------------------------------------------- making land
 
-export const RECLAIM_BASE = 185_000_000;
+export const RECLAIM_BASE = 38_000_000;
 
 /**
  * Less shoreline to build off means more fill, more cofferdam, more money.
@@ -661,9 +661,13 @@ export const RECLAIM_BASE = 185_000_000;
  * gets its licences faster and its barges cheaper.
  */
 export function reclaimCost(state, col, row, actorId = 'player') {
+  // One side of shoreline used to cost 2.26x a sheltered corner, which made
+  // reaching out into open water — the only way to build an island — the most
+  // expensive thing in the game by a distance. It is a surcharge now, not a
+  // wall: a single contact runs about half again, not two and a quarter times.
   const contact = shoreContact(state.city, col, row);
   const discount = 1 - (termsFor(state, actorId).fillDiscount ?? 0);
-  return RECLAIM_BASE * (1 + (4 - contact) * 0.42) * state.cycle * discount;
+  return RECLAIM_BASE * (1 + (4 - contact) * 0.18) * state.cycle * discount;
 }
 
 export function canReclaimHere(state, actorId, col, row) {
@@ -697,6 +701,37 @@ export function startReclaim(state, col, row, actorId) {
     `${a.name} has committed ${money(cost)} to filling open water and zoning it for development. `
     + `Two years of rock and fill, and there will be four new lots where there is currently a river.`);
   return { ok: true, fill, cost };
+}
+
+/**
+ * The moment a run of made ground becomes an island, the city rezones the
+ * whole of it as waterfront rather than spoil heap — a third more floor area
+ * and a quarter more on the land under it. Everyone who owns a piece of it
+ * wakes up richer, which is exactly the point of reaching out into the water.
+ */
+function announceIsland(state, ownerId, island) {
+  for (const id of island.owners) {
+    const a = state.actors[id];
+    if (a) a.standing = (a.standing ?? 0) + 3;
+  }
+  const maker = state.actors[ownerId];
+  logEvent(state, ownerId, `made ground enough for an island — ${island.cells} cells rezoned C6`);
+  pushNews(state, 'reclaim', 'THE CITY REZONES THE NEW ISLAND',
+    `${island.cells} cells of made ground off the shore are now one landmass, and the commission `
+    + `has zoned the whole of it ${DISTRICTS.island.name} — FAR ${DISTRICTS.island.far}, up from `
+    + `${DISTRICTS.mid.far}, with water on every side. ${maker ? maker.name : 'The builder'} put in the `
+    + `cell that joined it up. ${island.lots.length} lots of new land, and none of it existed ten years ago.`,
+    island.lots[0]);
+}
+
+/** How many neighbouring cells of made ground this developer already owns. */
+function ownGroundNear(city, actorId, col, row) {
+  let n = 0;
+  for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const block = city.blocks.find((b) => b.reclaimed && b.col === col + dc && b.row === row + dr);
+    if (block && block.lots.some((l) => l.owner === actorId)) n++;
+  }
+  return n;
 }
 
 // ---------------------------------------------------------------- actions
@@ -1040,11 +1075,13 @@ function dayTick(state) {
   for (let i = state.fills.length - 1; i >= 0; i--) {
     const f = state.fills[i];
     if (state.day < f.endDay) continue;
-    const made = state.city.addLandCell(f.col, f.row, f.owner);
+    const { made, island } = state.city.addLandCell(f.col, f.row, f.owner);
     state.fills.splice(i, 1);
     state._dirtyTerrain = true;
     state._dirtyGeometry = true;
     if (made.length) {
+      const maker = state.actors[f.owner];
+      if (maker) maker.standing = (maker.standing ?? 0) + 1;
       logEvent(state, f.owner, `finished ${made.length} new lots on reclaimed land`);
       pushNews(state, 'reclaim', 'THE SHORELINE MOVES',
         `${state.actors[f.owner].name} has made ${made.length} lots of new ground where there was `
@@ -1052,6 +1089,7 @@ function dayTick(state) {
         + `land to come onto the market in years — and it belongs to whoever paid for the fill.`,
         made[0]);
     }
+    if (island && island.fresh) announceIsland(state, f.owner, island);
   }
 
   if (d.getUTCDate() === 1 && state.monthOfLastTick !== d.getUTCMonth()) {
@@ -1342,7 +1380,7 @@ function rivalTurn(state, a) {
   if (chaseAssemblage(state, a)) return;
 
   const wants = {
-    institution: (l) => (l.tier === 'core' ? 3 : l.tier === 'mid' ? 2 : 0.3),
+    institution: (l) => (l.tier === 'core' ? 3 : l.tier === 'island' ? 2.6 : l.tier === 'mid' ? 2 : 0.3),
     cowboy:      (l) => 1 + (l._intensity ?? 0.3) * 2,
     // The grinder is the one who actually wants the boroughs.
     grinder:     (l) => (l.region !== 'manhattan' ? 3 : l.tier === 'edge' || l.tier === 'res' ? 2.5 : 0.5),
@@ -1383,15 +1421,30 @@ function rivalTurn(state, a) {
     }
   }
 
-  // A rival past a billion will occasionally just make more city.
-  if (a.regions.size > 1 && a.cash > 900e6 && state.rnd() < 0.05) {
+  // A rival with money to spare will just make more city. They lean towards
+  // extending ground they already made, because four joined cells is an
+  // island and an island is rezoned C6 — the rivals are chasing that for the
+  // same reason you are, and they will race you to the fourth cell.
+  if (state.rnd() < 0.15) {
     const city = state.city;
+    let spot = null, bestV = -Infinity;
     for (let row = 0; row < CONFIG.ROWS; row++) {
       for (let col = 0; col < CONFIG.COLS; col++) {
-        if (!canReclaim(city, col, row)) continue;
-        if (startReclaim(state, col, row, a.id).ok) { a.cooldown = 3; return; }
+        if (canReclaimHere(state, a.id, col, row)) continue;   // returns a reason, or null
+        const cost = reclaimCost(state, col, row, a.id);
+        if (cost > a.cash * 0.35) continue;
+        const own = ownGroundNear(city, a.id, col, row);
+        const v = own * 1.2e8 - cost;
+        if (v > bestV) { bestV = v; spot = { col, row, cost, own }; }
       }
     }
+    // Extending their own made ground is the cheap half of an island, so they
+    // will do it out of working capital. A first cell into open water is a
+    // speculation, and they want to be flush before they start one. The old
+    // gate wanted $900M in cash, which no rival in seventy years ever held —
+    // so no rival ever filled so much as a single cell.
+    if (spot && (spot.own > 0 ? a.cash > spot.cost * 1.8 : a.cash > spot.cost * 3)
+        && startReclaim(state, spot.col, spot.row, a.id).ok) { a.cooldown = 3; return; }
   }
 
   // These are read against a score built from yield on cost, and construction
@@ -1527,6 +1580,6 @@ function heightOptions(lot, a, state) {
   for (const m of reach) out.add(Math.max(lo, Math.min(cap, Math.round(lo * m))));
   // On a site worth having, everyone at least prices the tallest thing the age
   // allows. That is how a skyline happens.
-  if (lot.tier === 'core' || lot.tier === 'mid') out.add(cap);
+  if (lot.tier === 'core' || lot.tier === 'mid' || lot.tier === 'island') out.add(cap);
   return [...out].filter((f) => f >= lo && f <= cap);
 }

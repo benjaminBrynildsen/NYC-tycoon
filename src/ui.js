@@ -6,7 +6,7 @@ import { DISTRICTS, HOODS, REGIONS, USES, STYLES, FORMS, massing, minFloors, max
          buildableSf, floorsWithoutAir, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS,
          CONFIG } from './world.js';
 import { TYPES, massingVolumes, typologyFor } from './architecture.js';
-import { contractBoard, rewardLine, rankFor, nextRank } from './contracts.js';
+import { contractBoard, contractSites, contractWhere, rewardLine, rankFor, nextRank } from './contracts.js';
 import {
   money, sf, askPrice, landValue, buildingNOI, buildingValue, quote, netWorth,
   leaderboard, buyLot, sellLot, startProject, formatDate, occupancyFor, rentPerSf,
@@ -118,7 +118,9 @@ export class UI {
     this.onDirty = () => {};
     this.onMassingPreview = () => {};
     this.onHighlight = () => 0;
+    this.onJobHighlight = () => 0;
     this.highlightOwner = null;
+    this.highlightJob = null;
     this.design = { style: 'masonry', form: 'stepped', variant: 1 };
 
     $('lot-close').onclick = () => this.closeLot();
@@ -152,6 +154,7 @@ export class UI {
       if (!li) return;
       const id = li.dataset.actor;
       this.highlightOwner = this.highlightOwner === id ? null : id;
+      if (this.highlightOwner) { this.highlightJob = null; this._jobSig = null; this.refreshJobs(); }
       const n = this.onHighlight(this.highlightOwner);
       this.toast(this.highlightOwner
         ? `${this.state.actors[id].name}: ${n} ${n === 1 ? 'property' : 'properties'} lit up on the map.`
@@ -342,7 +345,7 @@ export class UI {
     // Rebuilt in place only when something actually changed, so the bars
     // don't flicker four times a second.
     const sig = jobs.map((j) => `${j.id}:${j.monthsLeft}:${Math.round((j.you?.ratio ?? 0) * 50)}`
-      + `:${j.leader.id}`).join('|');
+      + `:${j.leader.id}`).join('|') + `|${this.highlightJob}`;
     if (sig === this._jobSig) return;
     this._jobSig = sig;
 
@@ -350,7 +353,9 @@ export class UI {
       const mine = Math.round((j.you?.ratio ?? 0) * 100);
       const due = j.monthsLeft <= 6 ? 'late' : j.monthsLeft <= 18 ? 'soon' : '';
       const years = j.monthsLeft >= 24 ? `${Math.floor(j.monthsLeft / 12)}y` : `${j.monthsLeft}mo`;
-      return `<div class="job ${j.leader.id === 'player' && mine > 0 ? 'lead' : ''}">
+      const where = contractWhere(j);
+      const lit = this.highlightJob === j.id;
+      return `<div class="job ${j.leader.id === 'player' && mine > 0 ? 'lead' : ''}${lit ? ' lit' : ''}">
         <div class="cli">${esc(j.client)}</div>
         <div class="ttl">${esc(j.title)}</div>
         <div class="prog">
@@ -360,11 +365,40 @@ export class UI {
         <div class="rival">${esc(j.you?.text ?? '')}${
           j.threatened ? ` · <b>${esc(j.leader.name)} is ahead</b>` : ''}</div>
         <div class="pay">${esc(rewardLine(j))}</div>
+        ${where ? `<button type="button" class="where${lit ? ' on' : ''}" data-job="${esc(j.id)}">${
+          lit ? `Hide ${esc(where)}` : `Show me ${esc(where)}`}</button>` : ''}
       </div>`;
     }).join('');
+    for (const b of $('joblist').querySelectorAll('.where')) {
+      b.onclick = () => this.showJobSite(b.dataset.job);
+    }
     $('jobs-hint').textContent = jobs.some((j) => j.threatened)
       ? 'Whoever finishes first is paid. Nothing is reserved for you.'
       : 'Deliver before the date and the fee is yours.';
+  }
+
+  /**
+   * Light up the district, avenue or block a contract names. Without this the
+   * brief says "Tribeca" and the board says nothing at all — you were meant to
+   * know where Tribeca is, and there was no way to find out.
+   */
+  showJobSite(id) {
+    const job = (this.state.contracts ?? []).find((c) => c.id === id);
+    if (!job) return;
+    const off = this.highlightJob === id;
+    this.highlightJob = off ? null : id;
+    if (!off) this.highlightOwner = null;        // one highlight on the board at a time
+    const lots = off ? [] : contractSites(this.state, job);
+    this.onJobHighlight(lots);
+    if (!off) {
+      const where = contractWhere(job);
+      this.toast(lots.length
+        ? `${where} — ${lots.length} lots lit on the board.`
+        : `Nothing to point at for ${where} yet.`);
+    }
+    this._jobSig = null;
+    this.refreshJobs();
+    this.refreshBoard();
   }
 
   // -------------------------------------------------------------- the paper

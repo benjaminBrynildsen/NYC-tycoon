@@ -606,6 +606,14 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
 .job .rival { font-size: 10px; color: var(--dim); margin-top: 4px; }
 .job .rival b { color: var(--bad); font-weight: 600; }
 .job .pay { font-size: 10px; color: var(--good); margin-top: 3px; }
+.job.lit { background: rgba(255,212,121,.10); box-shadow: inset 2px 0 0 #ffd479; padding-left: 7px; }
+.job .where {
+  margin-top: 6px; font: inherit; font-size: 10px; letter-spacing: .04em;
+  padding: 4px 9px; border-radius: 999px; cursor: pointer;
+  color: #ffd479; background: rgba(255,212,121,.10);
+  border: 1px solid rgba(255,212,121,.35);
+}
+.job .where.on { background: #ffd479; border-color: #ffd479; color: #16110a; font-weight: 700; }
 
 .rankrow { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
 .rankrow b { font-weight: 700; }
@@ -968,6 +976,7 @@ var HOODS = {
   upperEast: { name: "Upper East Side", tier: "mid" },
   harlem: { name: "Harlem", tier: "res" },
   landfill: { name: "Reclaimed Land", tier: "mid" },
+  island: { name: "The New Island", tier: "island" },
   heights: { name: "Brooklyn Heights", tier: "edge" },
   lic: { name: "Long Island City", tier: "res" }
 };
@@ -986,7 +995,11 @@ var DISTRICTS = {
   core: { far: 15, landBase: 220, rentMul: 1.15, name: "C6" },
   mid: { far: 10, landBase: 140, rentMul: 1.05, name: "C5" },
   edge: { far: 6, landBase: 80, rentMul: 0.95, name: "C4" },
-  res: { far: 3, landBase: 45, rentMul: 0.85, name: "R6" }
+  res: { far: 3, landBase: 45, rentMul: 0.85, name: "R6" },
+  // Made ground that has grown into an island. Not the Financial District,
+  // but zoned harder than the spoil heap it started as, and with water on
+  // every side — which is the whole of what you paid for.
+  island: { far: 12, landBase: 175, rentMul: 1.1, name: "C5-W" }
 };
 var ERAS = [
   {
@@ -1336,10 +1349,58 @@ function generateCity(seed = 7, startYear = 1998) {
         l.waterDist = waterDist(l.x, l.z, l.col, l.row);
       }
     }
+    const island = promoteIsland(city2, blocks, col, row);
     city2.rebuildLanes();
-    return made;
+    return { made, island };
   };
   return city2;
+}
+var ISLAND_CELLS = 4;
+function madeGroup(blocks, col, row, phantom = false) {
+  const made = /* @__PURE__ */ new Map();
+  for (const b of blocks) if (b.reclaimed) made.set(`${b.col},${b.row}`, b);
+  const pretend = phantom && !made.has(`${col},${row}`);
+  if (pretend) made.set(`${col},${row}`, null);
+  const seen = /* @__PURE__ */ new Set();
+  const queue = made.has(`${col},${row}`) ? [[col, row]] : [];
+  if (queue.length) seen.add(`${col},${row}`);
+  const group = [];
+  while (queue.length) {
+    const [c, r] = queue.pop();
+    const block = made.get(`${c},${r}`);
+    if (block) group.push(block);
+    for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const key = `${c + dc},${r + dr}`;
+      if (seen.has(key) || !made.has(key)) continue;
+      seen.add(key);
+      queue.push([c + dc, r + dr]);
+    }
+  }
+  return { group, size: seen.size };
+}
+function islandSizeIfFilled(city2, col, row) {
+  return madeGroup(city2.blocks, col, row, true).size;
+}
+function promoteIsland(city2, blocks, col, row) {
+  const group = madeGroup(blocks, col, row).group;
+  if (group.length < ISLAND_CELLS) return null;
+  const owners = /* @__PURE__ */ new Set();
+  const lots = [];
+  let rezoned = 0;
+  for (const block of group) {
+    if (block.hood !== "island") rezoned++;
+    block.hood = "island";
+    for (const lot of block.lots) {
+      if (lot.owner) owners.add(lot.owner);
+      lot.hood = "island";
+      lot.tier = "island";
+      lot.district = "island";
+      lot.far = DISTRICTS.island.far;
+      lot.landPerSf = DISTRICTS.island.landBase;
+      lots.push(lot);
+    }
+  }
+  return { cells: group.length, lots, rezoned, fresh: rezoned > 0, owners: [...owners] };
 }
 function recomputeParkFront(city2) {
   const parks = city2.blocks.filter((b) => b.isPark);
@@ -1519,6 +1580,34 @@ var KINDS = {
       return { have, want: c.need.count, text: `${have} of ${c.need.count} rebuilt` };
     }
   },
+  /**
+   * New ground where there is currently water. Posted only once somebody in
+   * the city is licensed to fill, so it is never a requirement nobody can
+   * meet — and it is the thing that makes reaching out into the harbour worth
+   * starting, because the cells you fill for it are yours afterwards.
+   */
+  harbour: {
+    propose(state2, rnd) {
+      const able = Object.values(state2.actors).some((a) => !a.retired && rankFor(a.standing ?? 0).fill && a.cash > 15e7);
+      if (!able) return null;
+      const mineAtPost = {};
+      for (const id in state2.actors) mineAtPost[id] = cellsHeldBy(state2, id);
+      const want = 3 + Math.floor(rnd() * 2);
+      return {
+        kind: "harbour",
+        client: "The Harbour Commission",
+        title: `Make ${want} cells of new ground off the shore`,
+        brief: `The commission wants the waterline moved. Fill ${want} cells of open water and the ground on top is yours \u2014 and if what you make joins up into an island, the whole of it is rezoned as waterfront.`,
+        need: { want, mineAtPost },
+        reward: reward(12e7, 5),
+        years: 14
+      };
+    },
+    progress(state2, c, id) {
+      const have = Math.max(0, cellsHeldBy(state2, id) - (c.need.mineAtPost?.[id] ?? 0));
+      return { have, want: c.need.want, text: `${have} of ${c.need.want} cells filled` };
+    }
+  },
   /** The tallest thing in the city, and everyone can see who has it. */
   trophy: {
     propose(state2, rnd, api) {
@@ -1676,6 +1765,29 @@ function contractBoard(state2) {
     };
   });
 }
+function contractSites(state2, c) {
+  if (c.need.hood) return state2.city.lots.filter((l) => l.hood === c.need.hood);
+  if (c.need.blockKey) {
+    const [col, row] = c.need.blockKey.split(",").map(Number);
+    const block = state2.city.blocks.find((b) => b.col === col && b.row === row);
+    return block ? block.lots : [];
+  }
+  if (c.need.corridorId) {
+    const cor = state2.city.corridors.find((x) => x.id === c.need.corridorId);
+    return cor ? cor.lots : [];
+  }
+  if (c.kind === "harbour") {
+    return state2.city.lots.filter((l) => l.reclaimed);
+  }
+  return [];
+}
+function contractWhere(c) {
+  if (c.need.hood) return HOODS[c.need.hood].name;
+  if (c.need.where) return c.need.where;
+  if (c.need.corridorName) return c.need.corridorName;
+  if (c.kind === "harbour") return "the made ground";
+  return null;
+}
 function rewardLine(c) {
   const bits = [];
   if (c.reward.cash) bits.push(money(c.reward.cash));
@@ -1783,13 +1895,16 @@ function shuffle(rnd, list) {
   return out;
 }
 function pickHood(state2, rnd) {
-  const weight = { core: 4, mid: 3, edge: 1.4, res: 1 };
+  const weight = { core: 4, mid: 3, island: 2.5, edge: 1.4, res: 1 };
   const pool = [];
   for (const h of usableHoods(state2)) {
     const w = weight[HOODS[h].tier] ?? 1;
     for (let i = 0; i < Math.round(w * 2); i++) pool.push(h);
   }
   return pool.length ? pick(rnd, pool) : null;
+}
+function cellsHeldBy(state2, id) {
+  return state2.city.blocks.filter((b) => b.reclaimed && b.lots.some((l) => l.owner === id)).length;
 }
 function usableHoods(state2) {
   const seen = /* @__PURE__ */ new Set();
@@ -2370,11 +2485,11 @@ function takeOverFirm(state2, targetId, actorId = "player") {
   state2._dirtyGeometry = true;
   return { ok: true, lots, cash: me.cash, debt: me.debt };
 }
-var RECLAIM_BASE = 185e6;
+var RECLAIM_BASE = 38e6;
 function reclaimCost(state2, col, row, actorId = "player") {
   const contact = shoreContact(state2.city, col, row);
   const discount = 1 - (termsFor(state2, actorId).fillDiscount ?? 0);
-  return RECLAIM_BASE * (1 + (4 - contact) * 0.42) * state2.cycle * discount;
+  return RECLAIM_BASE * (1 + (4 - contact) * 0.18) * state2.cycle * discount;
 }
 function canReclaimHere(state2, actorId, col, row) {
   const a = state2.actors[actorId];
@@ -2404,6 +2519,29 @@ function startReclaim(state2, col, row, actorId) {
     `${a.name} has committed ${money2(cost)} to filling open water and zoning it for development. Two years of rock and fill, and there will be four new lots where there is currently a river.`
   );
   return { ok: true, fill, cost };
+}
+function announceIsland(state2, ownerId, island) {
+  for (const id of island.owners) {
+    const a = state2.actors[id];
+    if (a) a.standing = (a.standing ?? 0) + 3;
+  }
+  const maker = state2.actors[ownerId];
+  logEvent(state2, ownerId, `made ground enough for an island \u2014 ${island.cells} cells rezoned C6`);
+  pushNews(
+    state2,
+    "reclaim",
+    "THE CITY REZONES THE NEW ISLAND",
+    `${island.cells} cells of made ground off the shore are now one landmass, and the commission has zoned the whole of it ${DISTRICTS.island.name} \u2014 FAR ${DISTRICTS.island.far}, up from ${DISTRICTS.mid.far}, with water on every side. ${maker ? maker.name : "The builder"} put in the cell that joined it up. ${island.lots.length} lots of new land, and none of it existed ten years ago.`,
+    island.lots[0]
+  );
+}
+function ownGroundNear(city2, actorId, col, row) {
+  let n = 0;
+  for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const block = city2.blocks.find((b) => b.reclaimed && b.col === col + dc && b.row === row + dr);
+    if (block && block.lots.some((l) => l.owner === actorId)) n++;
+  }
+  return n;
 }
 function settleLoan(state2, lot, actorId, proceeds) {
   const a = state2.actors[actorId];
@@ -2722,11 +2860,13 @@ function dayTick(state2) {
   for (let i = state2.fills.length - 1; i >= 0; i--) {
     const f = state2.fills[i];
     if (state2.day < f.endDay) continue;
-    const made = state2.city.addLandCell(f.col, f.row, f.owner);
+    const { made, island } = state2.city.addLandCell(f.col, f.row, f.owner);
     state2.fills.splice(i, 1);
     state2._dirtyTerrain = true;
     state2._dirtyGeometry = true;
     if (made.length) {
+      const maker = state2.actors[f.owner];
+      if (maker) maker.standing = (maker.standing ?? 0) + 1;
       logEvent(state2, f.owner, `finished ${made.length} new lots on reclaimed land`);
       pushNews(
         state2,
@@ -2736,6 +2876,7 @@ function dayTick(state2) {
         made[0]
       );
     }
+    if (island && island.fresh) announceIsland(state2, f.owner, island);
   }
   if (d.getUTCDate() === 1 && state2.monthOfLastTick !== d.getUTCMonth()) {
     state2.monthOfLastTick = d.getUTCMonth();
@@ -3002,7 +3143,7 @@ function rivalTurn(state2, a) {
   }
   if (chaseAssemblage(state2, a)) return;
   const wants = {
-    institution: (l) => l.tier === "core" ? 3 : l.tier === "mid" ? 2 : 0.3,
+    institution: (l) => l.tier === "core" ? 3 : l.tier === "island" ? 2.6 : l.tier === "mid" ? 2 : 0.3,
     cowboy: (l) => 1 + (l._intensity ?? 0.3) * 2,
     // The grinder is the one who actually wants the boroughs.
     grinder: (l) => l.region !== "manhattan" ? 3 : l.tier === "edge" || l.tier === "res" ? 2.5 : 0.5
@@ -3027,16 +3168,25 @@ function rivalTurn(state2, a) {
       }
     }
   }
-  if (a.regions.size > 1 && a.cash > 9e8 && state2.rnd() < 0.05) {
+  if (state2.rnd() < 0.15) {
     const city2 = state2.city;
+    let spot = null, bestV = -Infinity;
     for (let row = 0; row < CONFIG.ROWS; row++) {
       for (let col = 0; col < CONFIG.COLS; col++) {
-        if (!canReclaim(city2, col, row)) continue;
-        if (startReclaim(state2, col, row, a.id).ok) {
-          a.cooldown = 3;
-          return;
+        if (canReclaimHere(state2, a.id, col, row)) continue;
+        const cost = reclaimCost(state2, col, row, a.id);
+        if (cost > a.cash * 0.35) continue;
+        const own = ownGroundNear(city2, a.id, col, row);
+        const v = own * 12e7 - cost;
+        if (v > bestV) {
+          bestV = v;
+          spot = { col, row, cost, own };
         }
       }
+    }
+    if (spot && (spot.own > 0 ? a.cash > spot.cost * 1.8 : a.cash > spot.cost * 3) && startReclaim(state2, spot.col, spot.row, a.id).ok) {
+      a.cooldown = 3;
+      return;
     }
   }
   const threshold = { institution: 18, cowboy: 13, grinder: 20 }[a.strategy];
@@ -3139,7 +3289,7 @@ function heightOptions(lot, a, state2) {
   }[a.strategy] ?? [1, 1.5];
   const out = /* @__PURE__ */ new Set();
   for (const m of reach) out.add(Math.max(lo, Math.min(cap, Math.round(lo * m))));
-  if (lot.tier === "core" || lot.tier === "mid") out.add(cap);
+  if (lot.tier === "core" || lot.tier === "mid" || lot.tier === "island") out.add(cap);
   return [...out].filter((f) => f >= lo && f <= cap);
 }
 
@@ -5285,13 +5435,22 @@ var CityScene = class {
   /** Light up everything one developer owns, so you can read their position. */
   setOwnerHighlight(ownerId) {
     this.highlightOwner = ownerId;
+    if (!ownerId) return this.setLotHighlight(null);
+    return this.setLotHighlight(
+      this.city.lots.filter((l) => l.owner === ownerId),
+      OWNER_TINT[ownerId] ?? 16777215
+    );
+  }
+  /**
+   * Pads and beams on an arbitrary set of lots. Ownership was the first thing
+   * that wanted this; a contract that names a district is the second, and
+   * "where is Tribeca" is not a question the board answers on its own.
+   */
+  setLotHighlight(lots, color = 16766073) {
     for (const c of this.highlightGroup.children) c.geometry.dispose();
     this.highlightGroup.clear();
     this.highlightPulse = null;
-    if (!ownerId) return 0;
-    const lots = this.city.lots.filter((l) => l.owner === ownerId);
-    if (!lots.length) return 0;
-    const color = OWNER_TINT[ownerId] ?? 16777215;
+    if (!lots || !lots.length) return 0;
     const padMat = new THREE4.MeshBasicMaterial({
       color,
       transparent: true,
@@ -6147,7 +6306,9 @@ var UI = class {
     this.onMassingPreview = () => {
     };
     this.onHighlight = () => 0;
+    this.onJobHighlight = () => 0;
     this.highlightOwner = null;
+    this.highlightJob = null;
     this.design = { style: "masonry", form: "stepped", variant: 1 };
     $("lot-close").onclick = () => this.closeLot();
     $("build-close").onclick = () => $("build-panel").classList.add("hidden");
@@ -6175,6 +6336,11 @@ var UI = class {
       if (!li) return;
       const id = li.dataset.actor;
       this.highlightOwner = this.highlightOwner === id ? null : id;
+      if (this.highlightOwner) {
+        this.highlightJob = null;
+        this._jobSig = null;
+        this.refreshJobs();
+      }
       const n = this.onHighlight(this.highlightOwner);
       this.toast(this.highlightOwner ? `${this.state.actors[id].name}: ${n} ${n === 1 ? "property" : "properties"} lit up on the map.` : "Highlight cleared.");
       this.refreshBoard();
@@ -6323,14 +6489,16 @@ var UI = class {
     const panel = $("jobs");
     panel.classList.toggle("hidden", !jobs.length);
     if (!jobs.length) return;
-    const sig = jobs.map((j) => `${j.id}:${j.monthsLeft}:${Math.round((j.you?.ratio ?? 0) * 50)}:${j.leader.id}`).join("|");
+    const sig = jobs.map((j) => `${j.id}:${j.monthsLeft}:${Math.round((j.you?.ratio ?? 0) * 50)}:${j.leader.id}`).join("|") + `|${this.highlightJob}`;
     if (sig === this._jobSig) return;
     this._jobSig = sig;
     $("joblist").innerHTML = jobs.map((j) => {
       const mine = Math.round((j.you?.ratio ?? 0) * 100);
       const due = j.monthsLeft <= 6 ? "late" : j.monthsLeft <= 18 ? "soon" : "";
       const years = j.monthsLeft >= 24 ? `${Math.floor(j.monthsLeft / 12)}y` : `${j.monthsLeft}mo`;
-      return `<div class="job ${j.leader.id === "player" && mine > 0 ? "lead" : ""}">
+      const where = contractWhere(j);
+      const lit = this.highlightJob === j.id;
+      return `<div class="job ${j.leader.id === "player" && mine > 0 ? "lead" : ""}${lit ? " lit" : ""}">
         <div class="cli">${esc(j.client)}</div>
         <div class="ttl">${esc(j.title)}</div>
         <div class="prog">
@@ -6339,9 +6507,34 @@ var UI = class {
         </div>
         <div class="rival">${esc(j.you?.text ?? "")}${j.threatened ? ` \xB7 <b>${esc(j.leader.name)} is ahead</b>` : ""}</div>
         <div class="pay">${esc(rewardLine(j))}</div>
+        ${where ? `<button type="button" class="where${lit ? " on" : ""}" data-job="${esc(j.id)}">${lit ? `Hide ${esc(where)}` : `Show me ${esc(where)}`}</button>` : ""}
       </div>`;
     }).join("");
+    for (const b of $("joblist").querySelectorAll(".where")) {
+      b.onclick = () => this.showJobSite(b.dataset.job);
+    }
     $("jobs-hint").textContent = jobs.some((j) => j.threatened) ? "Whoever finishes first is paid. Nothing is reserved for you." : "Deliver before the date and the fee is yours.";
+  }
+  /**
+   * Light up the district, avenue or block a contract names. Without this the
+   * brief says "Tribeca" and the board says nothing at all — you were meant to
+   * know where Tribeca is, and there was no way to find out.
+   */
+  showJobSite(id) {
+    const job = (this.state.contracts ?? []).find((c) => c.id === id);
+    if (!job) return;
+    const off = this.highlightJob === id;
+    this.highlightJob = off ? null : id;
+    if (!off) this.highlightOwner = null;
+    const lots = off ? [] : contractSites(this.state, job);
+    this.onJobHighlight(lots);
+    if (!off) {
+      const where = contractWhere(job);
+      this.toast(lots.length ? `${where} \u2014 ${lots.length} lots lit on the board.` : `Nothing to point at for ${where} yet.`);
+    }
+    this._jobSig = null;
+    this.refreshJobs();
+    this.refreshBoard();
   }
   // -------------------------------------------------------------- the paper
   /** Front page. Only redrawn when a new story breaks. */
@@ -6919,6 +7112,7 @@ ui.onDirty = () => {
   ui.refreshBoard();
 };
 ui.onHighlight = (id) => scene.setOwnerHighlight(id);
+ui.onJobHighlight = (lots) => scene.setLotHighlight(lots, 16766073);
 ui.onTravel = (lot) => {
   const dist = controls.travelTo(lot.x, lot.z);
   advance(state, dist / 900);
@@ -6974,7 +7168,9 @@ function showWater(col, row) {
   const cost = reclaimCost(state, col, row, "player");
   const why = canReclaimHere(state, "player", col, row);
   const pending = state.fills.find((f) => f.col === col && f.row === row);
-  document.getElementById("water-meta").textContent = pending ? `Fill in progress \u2014 ${((pending.endDay - state.day) / 30).toFixed(1)} months to go.` : "Open water beside the shore. Fill it and the lots on top are yours.";
+  const size = islandSizeIfFilled(city, col, row);
+  const island = size >= ISLAND_CELLS ? "This cell joins up an island \u2014 the whole landmass is rezoned waterfront, FAR 12." : `${size} of ${ISLAND_CELLS} cells towards an island.`;
+  document.getElementById("water-meta").textContent = pending ? `Fill in progress \u2014 ${((pending.endDay - state.day) / 30).toFixed(1)} months to go.` : `Open water beside the shore. Four lots in two years, and they are yours. ${island}`;
   document.getElementById("water-cost").textContent = money2(cost);
   const btn = document.getElementById("do-reclaim");
   btn.disabled = !!why || !!pending;
@@ -7144,7 +7340,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "dbdb670 \xB7 2026-09-23 16:13" : "dev";
+var BUILD = true ? "15f78fa \xB7 2026-09-23 16:34" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
@@ -7422,6 +7618,9 @@ window.__game = {
   ray,
   pickAt,
   mastInReach,
-  use: useElevatorOrCar
+  use: useElevatorOrCar,
+  CONFIG,
+  canReclaim,
+  islandSizeIfFilled
 };
 </script>

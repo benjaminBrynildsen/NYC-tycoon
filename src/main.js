@@ -1,7 +1,8 @@
 // Bootstrap and the game loop. Wires the sim, the renderer, the controls and the HUD.
 
 import * as THREE from 'three';
-import { generateCity, CONFIG, cellOf, canReclaim, minFloors } from './world.js';
+import { generateCity, CONFIG, cellOf, canReclaim, minFloors,
+         islandSizeIfFilled, ISLAND_CELLS } from './world.js';
 import { createState, advance, netWorth, leaderboard, money, sf, logEvent, formatDate,
          currentEra, currentYear,
          reclaimCost, startReclaim, canReclaimHere, sellAll,
@@ -84,6 +85,7 @@ ui.onDirty = () => {
   ui.refreshBoard();
 };
 ui.onHighlight = (id) => scene.setOwnerHighlight(id);
+ui.onJobHighlight = (lots) => scene.setLotHighlight(lots, 0xffd479);
 ui.onTravel = (lot) => {
   const dist = controls.travelTo(lot.x, lot.z);
   advance(state, dist / 900);                 // walking across town costs you time
@@ -152,9 +154,15 @@ function showWater(col, row) {
   const cost = reclaimCost(state, col, row, 'player');
   const why = canReclaimHere(state, 'player', col, row);
   const pending = state.fills.find((f) => f.col === col && f.row === row);
+  // Whether this is the cell that turns a spit of made ground into an island
+  // is the only thing worth knowing before you pay for it.
+  const size = islandSizeIfFilled(city, col, row);
+  const island = size >= ISLAND_CELLS
+    ? 'This cell joins up an island — the whole landmass is rezoned waterfront, FAR 12.'
+    : `${size} of ${ISLAND_CELLS} cells towards an island.`;
   document.getElementById('water-meta').textContent = pending
     ? `Fill in progress — ${((pending.endDay - state.day) / 30).toFixed(1)} months to go.`
-    : 'Open water beside the shore. Fill it and the lots on top are yours.';
+    : `Open water beside the shore. Four lots in two years, and they are yours. ${island}`;
   document.getElementById('water-cost').textContent = money(cost);
   const btn = document.getElementById('do-reclaim');
   btn.disabled = !!why || !!pending;
@@ -669,4 +677,5 @@ if (TOUCH) {
 
 // Handy when poking at the running game from the console.
 window.__game = { state, city, scene, controls, ui, showWater, startReclaim, reclaimCost,
-                  advance, ray, pickAt, mastInReach, use: useElevatorOrCar };
+                  advance, ray, pickAt, mastInReach, use: useElevatorOrCar,
+                  CONFIG, canReclaim, islandSizeIfFilled };
