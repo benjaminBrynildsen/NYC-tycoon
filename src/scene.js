@@ -1199,15 +1199,17 @@ export class CityScene {
       // A tower steps back as it rises, so the thing under your feet is the
       // highest volume that actually covers this point — the top roof over
       // the tower, a setback terrace out at the edges, the street past that.
-      const dx = Math.abs(x - lot.x), dz = Math.abs(z - lot.z);
       const decks = g.userData.decks ?? [];
       for (let i = decks.length - 1; i >= 0; i--) {
         const d = decks[i];
-        if (dx <= d.hw && dz <= d.hd) {
+        // A signature design can put a volume off the lot's centreline, so a
+        // deck carries its own centre rather than assuming the lot's.
+        const cx = d.cx ?? lot.x, cz = d.cz ?? lot.z;
+        if (Math.abs(x - cx) <= d.hw && Math.abs(z - cz) <= d.hd) {
           const roof = this.roofOf(lot.id);
           // Only the top deck has a parapet to keep you on it.
           return { y: d.top, lot, roof: roof && i === decks.length - 1 ? roof
-                   : { x: lot.x, z: lot.z, y: d.top, hw: d.hw - 1.2, hd: d.hd - 1.2,
+                   : { x: cx, z: cz, y: d.top, hw: d.hw - 1.2, hd: d.hd - 1.2,
                        floors: roof?.floors ?? 0 } };
         }
       }

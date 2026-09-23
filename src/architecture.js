@@ -4,6 +4,7 @@
 
 import * as THREE from 'three';
 import { CONFIG, STYLES, MAST_FLOORS, mulberry32 } from './world.js';
+import { landmarkById } from './landmarks.js';
 
 const FH = CONFIG.FLOOR_H;
 
@@ -20,6 +21,8 @@ export const TYPES = {
 
 /** What kind of building this is, from its size, era and where it stands. */
 export function typologyFor(lot, b) {
+  const L = landmarkById(b.landmark);
+  if (L) return L.type;                                          // the architect chose it
   if (b.style && STYLES[b.style]) return STYLES[b.style].type;   // you chose it
   const rnd = mulberry32(lot.seed + b.floors * 13);
   const f = b.floors;
@@ -315,6 +318,18 @@ export function volumes(lot, b, rnd) {
   const f = b.floors;
   const out = [];
 
+  // A signature design is drawn, not generated: its silhouette is the point,
+  // so it ignores the form rules entirely.
+  const L = landmarkById(b.landmark);
+  if (L) {
+    return L.profile.map((p) => ({
+      w: lotW * p.w, d: lotD * p.d,
+      floors: Math.max(1, Math.round(p.f * f)),
+      y0: Math.round(p.y0 * f),
+      dx: lotW * (p.dx ?? 0),
+    }));
+  }
+
   if (f <= 6) {
     out.push({ w: lotW, d: lotD, floors: f, y0: 0 });
     return out;
@@ -355,6 +370,61 @@ export function volumes(lot, b, rnd) {
   return out;
 }
 
+// ------------------------------------------------------------------- crowns
+
+/**
+ * What sits on top of a signature design. These are the silhouettes people
+ * actually recognise a skyline by — a sunburst, a spire, a lit crown — and
+ * they are worth building as real geometry rather than as another box.
+ */
+function crownMeshes(kind, cache, x, y, z, w, floors) {
+  const out = [];
+  const add = (geo, mat, dy) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y + dy, z);
+    m.castShadow = true;
+    out.push(m);
+  };
+
+  if (kind === 'spire') {
+    // Gothic: a stone lantern stage, then a needle that carries the eye up.
+    const stone = solid(cache, 'crown_stone', 0xa79c86, 0.92);
+    const h = 10 + floors * 0.28;
+    add(new THREE.CylinderGeometry(w * 0.30, w * 0.36, 4, 8), stone, 2);
+    add(new THREE.ConeGeometry(w * 0.30, h, 8), stone, 4 + h / 2);
+    const gold = solid(cache, 'crown_gold', 0xd9b352, 0.4, 0.8);
+    add(new THREE.ConeGeometry(0.5, 4, 6), gold, 4 + h + 2);
+    return out;
+  }
+
+  if (kind === 'sunburst') {
+    // Seven stainless arches, each smaller than the last, then the needle
+    // they assembled inside the shaft and raised in an afternoon.
+    const steel = solid(cache, 'crown_steel', 0xc9d2d8, 0.2, 0.92);
+    let r = w * 0.48, dy = 0;
+    for (let i = 0; i < 7; i++) {
+      const h = 3.4 - i * 0.26;
+      add(new THREE.CylinderGeometry(r * 0.78, r, h, 12), steel, dy + h / 2);
+      dy += h;
+      r *= 0.78;
+    }
+    add(new THREE.ConeGeometry(0.55, 22, 8), steel, dy + 11);
+    return out;
+  }
+
+  if (kind === 'lantern') {
+    // Lit from the inside, all night, whatever the tenants think of it.
+    const glass = solid(cache, 'crown_glass', 0x9fd8ff, 0.16, 0.5, true);
+    const h = 8 + floors * 0.12;
+    add(new THREE.CylinderGeometry(w * 0.22, w * 0.46, h, 6), glass, h / 2);
+    const steel = solid(cache, 'crown_steel', 0xc9d2d8, 0.2, 0.92);
+    add(new THREE.CylinderGeometry(0.35, 0.35, 16, 6), steel, h + 8);
+    add(new THREE.SphereGeometry(0.9, 8, 6), glass, h + 16);
+    return out;
+  }
+  return out;
+}
+
 // -------------------------------------------------------------------- build
 
 /**
@@ -377,6 +447,9 @@ export function makeBuilding(lot, b, cache) {
     const v = vols[i];
     const h = v.floors * FH;
     const y0 = v.y0 * FH;
+    // A pair of towers on one plot needs volumes that are not on the lot's
+    // centreline, which nothing before the signature designs ever wanted.
+    const vx = lot.x + (v.dx ?? 0);
     const mat = facadeMaterial(cache, type, variant, condition);
     const roofMat = solid(cache, `roof_${condition > 0.5 ? 'ok' : 'bad'}`,
                           condition > 0.5 ? 0x3a3a3d : 0x2e2c29, 0.97);
@@ -384,7 +457,7 @@ export function makeBuilding(lot, b, cache) {
     // BoxGeometry face order: +x, -x, +y, -y, +z, -z — 2 and 3 are the caps.
     const mesh = new THREE.Mesh(tileUV(new THREE.BoxGeometry(v.w, h, v.d), rx, ry),
                                 [mat, mat, roofMat, roofMat, mat, mat]);
-    mesh.position.set(lot.x, y0 + h / 2 + 0.4, lot.z);
+    mesh.position.set(vx, y0 + h / 2 + 0.4, lot.z);
     mesh.castShadow = mesh.receiveShadow = true;
     mesh.userData.lotId = lot.id;
     group.add(mesh);
@@ -400,7 +473,7 @@ export function makeBuilding(lot, b, cache) {
       new THREE.BoxGeometry(v.w + over, capH, v.d + over),
       [corMat, corMat, roofMat, roofMat, corMat, corMat]
     );
-    cap.position.set(lot.x, y0 + h + 0.4, lot.z);
+    cap.position.set(vx, y0 + h + 0.4, lot.z);
     cap.castShadow = true;
     cap.userData.lotId = lot.id;
     group.add(cap);
@@ -452,6 +525,7 @@ export function makeBuilding(lot, b, cache) {
 
   // Roof kit. Every New York roof has something on it.
   const top = vols[vols.length - 1];
+  const topX = lot.x + (top.dx ?? 0);
   const roofY = (top.y0 + top.floors) * FH + 1.2;
 
   // A parapet, so a roof reads as somewhere you could stand.
@@ -462,29 +536,39 @@ export function makeBuilding(lot, b, cache) {
       [top.w / 2, 0, 0.45, top.d + 0.5], [-top.w / 2, 0, 0.45, top.d + 0.5],
     ]) {
       const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 1.15, d), pm);
-      wall.position.set(lot.x + dx, roofY + 0.58, lot.z + dz);
+      wall.position.set(topX + dx, roofY + 0.58, lot.z + dz);
       wall.castShadow = true;
       group.add(wall);
     }
   }
-  if (b.floors <= 20 && rnd() < 0.75) {
-    props.push({ kind: 'watertower', x: lot.x + (rnd() - 0.5) * top.w * 0.4,
+  const crown = landmarkById(b.landmark)?.crown ?? null;
+  if (b.floors <= 20 && !crown && rnd() < 0.75) {
+    props.push({ kind: 'watertower', x: topX + (rnd() - 0.5) * top.w * 0.4,
                  y: roofY, z: lot.z + (rnd() - 0.5) * top.d * 0.4, s: 0.9 + rnd() * 0.3 });
   }
-  props.push({ kind: 'bulkhead', x: lot.x + (rnd() - 0.5) * top.w * 0.3, y: roofY,
-               z: lot.z + (rnd() - 0.5) * top.d * 0.3, s: 0.8 + rnd() * 0.5 });
-  let mast = null;
-  if (b.floors >= MAST_FLOORS) {
-    // Tall enough to moor an airship. The mast is the reason the spire exists.
-    const s = 1 + rnd() * 0.4;
-    props.push({ kind: 'mooringMast', x: lot.x, y: roofY, z: lot.z, s });
-    mast = { x: lot.x, y: roofY + 34 * s, z: lot.z };
-  } else if (b.floors > 26) {
-    props.push({ kind: 'mast', x: lot.x, y: roofY, z: lot.z, s: 1 + rnd() * 1.4 });
+  if (!crown) {
+    props.push({ kind: 'bulkhead', x: topX + (rnd() - 0.5) * top.w * 0.3, y: roofY,
+                 z: lot.z + (rnd() - 0.5) * top.d * 0.3, s: 0.8 + rnd() * 0.5 });
   }
-  if (b.floors > 8 && rnd() < 0.5) {
-    props.push({ kind: 'ac', x: lot.x + (rnd() - 0.5) * top.w * 0.5, y: roofY,
+  let mast = null;
+  if (crown === 'mast' || b.floors >= MAST_FLOORS) {
+    // Tall enough to moor an airship. The mast is the reason the spire exists,
+    // and on the Empire Mast it is the whole point of the building.
+    const s = crown === 'mast' ? 2.1 : 1 + rnd() * 0.4;
+    props.push({ kind: 'mooringMast', x: topX, y: roofY, z: lot.z, s });
+    mast = { x: topX, y: roofY + 34 * s, z: lot.z };
+  } else if (b.floors > 26 && !crown) {
+    props.push({ kind: 'mast', x: topX, y: roofY, z: lot.z, s: 1 + rnd() * 1.4 });
+  }
+  if (b.floors > 8 && !crown && rnd() < 0.5) {
+    props.push({ kind: 'ac', x: topX + (rnd() - 0.5) * top.w * 0.5, y: roofY,
                  z: lot.z + (rnd() - 0.5) * top.d * 0.5, s: 0.7 + rnd() * 0.4 });
+  }
+  if (crown && crown !== 'mast') {
+    for (const m of crownMeshes(crown, cache, topX, roofY, lot.z, top.w, b.floors)) {
+      m.userData.lotId = lot.id;
+      group.add(m);
+    }
   }
 
   const topVol = vols[vols.length - 1];
@@ -494,11 +578,12 @@ export function makeBuilding(lot, b, cache) {
     // can land on, not a line drawn on a slab.
     decks: vols.map((v) => ({
       top: (v.y0 + v.floors) * FH + 1.2, hw: v.w / 2, hd: v.d / 2,
+      cx: lot.x + (v.dx ?? 0), cz: lot.z,
     })),
     // Where the lift lets you out, and how far you can walk before the parapet.
     roof: { y: (topVol.y0 + topVol.floors) * FH + 1.2,
             hw: topVol.w / 2 - 1.2, hd: topVol.d / 2 - 1.2,
-            x: lot.x, z: lot.z, floors: b.floors },
+            x: lot.x + (topVol.dx ?? 0), z: lot.z, floors: b.floors },
   };
   return group;
 }

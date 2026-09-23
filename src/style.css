@@ -383,7 +383,11 @@ input[type=text]::placeholder { color: #5f6b7a; }
 }
 .gatebar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #4ade80); }
 .tag-landmark { border-color: #5a8f6a; color: #9fd9b0; }
+.tag-signature { border-color: #b08d3c; color: #ffd479; }
 input[type=range].maxed { accent-color: #4ade80; }
+/* The architect's drawing decides the facade, the colour and the massing, so
+   the controls that would have decided them are visibly out of the argument. */
+.overridden { opacity: .3; pointer-events: none; filter: grayscale(1); }
 
 #water-panel { bottom: 18px; left: 14px; width: 300px; }
 #water-panel #do-reclaim { width: 100%; margin-top: 12px; }

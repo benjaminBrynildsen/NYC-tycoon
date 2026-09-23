@@ -4,6 +4,7 @@
 import { CONFIG, DISTRICTS, USES, STYLES, FORMS, REGIONS, HOODS, ERAS, eraAt, buildableSf,
          massing, minFloors, maxFloors, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS, canReclaim,
          shoreContact, mulberry32, recomputeParkFront } from './world.js';
+import { landmarkById, landmarkStatus, LANDMARKS } from './landmarks.js';
 import { tickContracts, contractBias, titleFor, rankFor, nextRank } from './contracts.js';
 
 export const START_CASH = 100_000_000;
@@ -59,6 +60,7 @@ export function createState(city, seed = 11, startYear = 1998) {
     cyclePhase: rnd() * Math.PI * 2,
     projects: [],
     fills: [],
+    landmarks: {},        // signature designs, one of each, ever
     contracts: [],
     contractsPostedAt: -999,
     log: [],
@@ -234,7 +236,10 @@ export function buildingNOI(state, lot) {
 }
 
 export function buildingValue(state, lot) {
-  return buildingNOI(state, lot) / CAP_RATE;
+  // A signature building is worth more than its rent roll says, because the
+  // next buyer is buying the address as well as the income. This is the whole
+  // of what the architect's fee bought.
+  return (buildingNOI(state, lot) / CAP_RATE) * (lot.building?.prestige ?? 1);
 }
 
 /** Storeys above which a finished building is part of the skyline for good. */
@@ -247,6 +252,12 @@ export const LANDMARK_FLOORS = 50;
  */
 export function demolitionBlock(lot) {
   const b = lot.building;
+  // There is one of each signature design ever. Knocking one down to put up
+  // something slightly bigger would take it out of the city for good.
+  const L = landmarkById(b?.landmark);
+  if (L) {
+    return `${L.name} stands at ${lot.address}. There is one of these, and it does not come down.`;
+  }
   if (!b || b.floors < LANDMARK_FLOORS) return null;
   return `${lot.name || lot.address} is ${b.floors} storeys. Nothing over `
        + `${LANDMARK_FLOORS} comes down — it can change hands, but not be cleared.`;
@@ -257,7 +268,11 @@ export const DEFAULT_DESIGN = { style: 'masonry', form: 'stepped', variant: 1 };
 export function designMul(design = DEFAULT_DESIGN) {
   const st = STYLES[design.style] || STYLES.masonry;
   const fm = FORMS[design.form] || FORMS.stepped;
-  return { cost: st.cost * fm.cost, rent: st.rent * fm.rent };
+  // A signature design overrides the form entirely — its silhouette is drawn,
+  // not chosen off a list — and the architect's fee is on top of everything.
+  const L = landmarkById(design.landmark);
+  if (L) return { cost: st.cost * L.fee, rent: L.rent, prestige: L.prestige };
+  return { cost: st.cost * fm.cost, rent: st.rent * fm.rent, prestige: 1 };
 }
 
 export function quote(state, lot, floors, use, ltc, design = DEFAULT_DESIGN, owner = 'player') {
@@ -282,7 +297,9 @@ export function quote(state, lot, floors, use, ltc, design = DEFAULT_DESIGN, own
   const months = Math.round(8 + floors * 0.42 + Math.pow(floors / 34, 2));
   return { ...m, land, air, freeAir, paidAir, spare, hard, soft, total, loan, equity, gross, noi,
            debtService, cashflow: noi - debtService,
-           yieldOnCost: noi / Math.max(total, 1), value: noi / CAP_RATE, months };
+           yieldOnCost: noi / Math.max(total, 1),
+           // A signature address is worth more than its income; see buildingValue.
+           value: (noi / CAP_RATE) * (dm.prestige ?? 1), months };
 }
 
 export function netWorth(state, actorId) {
@@ -379,6 +396,12 @@ export function parkOffer(state, block, actorId = 'player') {
   }
   if (block.lots.some((l) => l.building && l.building.floors >= LANDMARK_FLOORS)) {
     return { ok: false, why: `Nothing ${LANDMARK_FLOORS} floors or over comes down for a lawn.` };
+  }
+  const sig = block.lots.find((l) => l.building?.landmark);
+  if (sig) {
+    return { ok: false,
+             why: `${landmarkById(sig.building.landmark).name} stands on this block. The city is `
+                + 'not clearing it for grass.' };
   }
 
   const appetite = parkAppetite(state, block);
@@ -785,7 +808,13 @@ export function startProject(state, lot, actorId, floors, use, ltc, design = DEF
   const standing = demolitionBlock(lot);
   if (standing) return { ok: false, why: standing };
   const era = currentEra(state);
-  if (!era.styles.includes(design.style)) {
+  const L = landmarkById(design.landmark);
+  if (L) {
+    // The architect's date is the gate for a signature design; it comes with
+    // its own facade, so the era's list of styles has nothing to say about it.
+    const st = landmarkStatus(state, L, floors);
+    if (!st.ok) return { ok: false, why: st.why };
+  } else if (!era.styles.includes(design.style)) {
     return { ok: false, why: `${STYLES[design.style].name} has not been invented yet — this is ${era.name}.` };
   }
   if (floors > era.maxFloors) {
@@ -820,7 +849,9 @@ export function startProject(state, lot, actorId, floors, use, ltc, design = DEF
   const project = {
     lot, owner: actorId, floors, use, ltc,
     style: design.style, form: design.form, variant: design.variant,
+    landmark: L ? L.id : null,
     designRent: designMul(design).rent,
+    prestige: designMul(design).prestige ?? 1,
     // Redeveloping your own site rolls whatever is still owed on it into the
     // new loan, so nothing falls out of the ledger while the site is a hole.
     cost: q.total, loan: q.loan + (lot.loan ?? 0), spent: q.equity,
@@ -832,6 +863,16 @@ export function startProject(state, lot, actorId, floors, use, ltc, design = DEF
     demolished: !!lot.building,
   };
   lot.project = project;
+  // One of each, ever. Reserved the day ground is broken, not the day it tops
+  // out — otherwise two developers race to the same drawing and one of them
+  // has spent four years building something that cannot exist.
+  if (L) {
+    state.landmarks[L.id] = { by: actorId, lotId: lot.id, day: state.day, done: false };
+    if (!lot.name) nameBuilding(state, lot, L.name);
+    pushNews(state, 'groundbreaking', `${L.name.toUpperCase()} IS COMMISSIONED`,
+      `${a.name} has retained ${L.architect} for ${lot.address}. ${L.blurb} `
+      + `The drawing is exclusive: there will be one of these in New York and no more.`, lot);
+  }
   lot.loan = 0;                            // it is the project's while it is a site
   lot.building = null;                     // demolition is instant; this is a game
   state.projects.push(project);
@@ -1053,6 +1094,7 @@ function dayTick(state) {
         floors: p.floors, gsf: p.gsf, side: p.side, use: p.use,
         quality: 1, age: 0, builtBy: p.owner, condition: 1,
         style: p.style, form: p.form, variant: p.variant, designRent: p.designRent,
+        landmark: p.landmark, prestige: p.prestige ?? 1,
       };
       p.lot.project = null;
       p.lot.loan = p.loan;                 // the loan is secured on what it built
@@ -1067,6 +1109,7 @@ function dayTick(state) {
           + `at ${Math.round(occupancyFor(state, p.lot) * 100)}% occupancy.`,
           p.lot);
       }
+      if (p.landmark) topOutLandmark(state, p);
       state._dirtyGeometry = true;
     }
   }
@@ -1096,6 +1139,21 @@ function dayTick(state) {
     state.monthOfLastTick = d.getUTCMonth();
     monthTick(state);
   }
+}
+
+/** A signature design is finished, and the city has one of a thing forever. */
+function topOutLandmark(state, p) {
+  const L = landmarkById(p.landmark);
+  if (!L) return;
+  const a = state.actors[p.owner];
+  if (a) a.standing = (a.standing ?? 0) + L.standing;
+  if (state.landmarks?.[L.id]) state.landmarks[L.id].done = true;
+  pushNews(state, 'topout', `${L.name.toUpperCase()} IS FINISHED`,
+    `${L.architect}'s ${L.name} is complete at ${p.lot.address} — ${p.floors} floors for `
+    + `${a ? a.name : 'its owner'}. ${L.blurb} The building is assessed at a premium to its `
+    + `income: an address of this kind is worth more than the rent roll says it is.`,
+    p.lot);
+  logEvent(state, p.owner, `topped out ${L.name} — ${L.standing} standing`);
 }
 
 /** What the contract system is allowed to reach back into. */
@@ -1458,7 +1516,19 @@ function rivalTurn(state, a) {
       a.cash -= price;
       best.lot.owner = a.id;
     }
-    startProject(state, best.lot, a.id, best.floors, use, a.ltc, rivalDesign(a, best.lot, best.floors, state));
+    let design = rivalDesign(a, best.lot, best.floors, state);
+    // The architect's fee is on top of everything, so the famous drawing has
+    // to pay for itself against the ordinary scheme on the same site — and
+    // they have to be able to write the cheque. They price it, like you do.
+    if (design.landmark) {
+      const lq = quote(state, best.lot, best.floors, use, a.ltc, design, a.id);
+      const roeOf = (q) => (q.value - q.total) / Math.max(q.equity, 1);
+      if (lq.equity > a.cash || roeOf(lq) < roeOf(best.q) * 0.7) design = { ...design, landmark: null };
+    }
+    const r = startProject(state, best.lot, a.id, best.floors, use, a.ltc, design);
+    if (!r.ok && design.landmark) {
+      startProject(state, best.lot, a.id, best.floors, use, a.ltc, { ...design, landmark: null });
+    }
     a.cooldown = a.patience;
     state._dirtyGeometry = true;
   }
@@ -1544,11 +1614,31 @@ function chaseContractBlocks(state, a) {
 function rivalDesign(a, lot, floors, state) {
   const allowed = currentEra(state).styles;
   const pick = (...wanted) => wanted.find((w) => allowed.includes(w)) ?? allowed[allowed.length - 1];
-  if (a.strategy === 'institution') {
-    return { style: pick(floors > 20 ? 'deco' : 'masonry', 'masonry', 'brick'), form: 'stepped', variant: 1 };
-  }
-  if (a.strategy === 'cowboy') return { style: pick('glass', 'curtain', 'deco', 'loft'), form: 'point', variant: 2 };
-  return { style: pick(floors > 14 ? 'curtain' : 'brick', 'brick', 'loft'), form: 'slab', variant: 0 };
+  const base = a.strategy === 'institution'
+    ? { style: pick(floors > 20 ? 'deco' : 'masonry', 'masonry', 'brick'), form: 'stepped', variant: 1 }
+    : a.strategy === 'cowboy'
+      ? { style: pick('glass', 'curtain', 'deco', 'loft'), form: 'point', variant: 2 }
+      : { style: pick(floors > 14 ? 'curtain' : 'brick', 'brick', 'loft'), form: 'slab', variant: 0 };
+  const landmark = rivalLandmark(a, floors, state);
+  return landmark ? { ...base, landmark } : base;
+}
+
+/**
+ * The rivals want the famous drawings too, and there is one of each. A house
+ * that can pay the architect's fee on a scheme big enough to carry it will,
+ * which means the Chrysalis Crown is not sitting there waiting for you.
+ */
+function rivalLandmark(a, floors, state) {
+  // The grinder builds walk-ups in the boroughs and has no use for an
+  // architect. The other two are in this for the name on the building.
+  if (a.strategy === 'grinder') return null;
+  if (state.rnd() > 0.3) return null;
+  const open = LANDMARKS.filter((L) => floors >= L.minFloors && landmarkStatus(state, L, floors).ok);
+  if (!open.length) return null;
+  // The tallest thing they can carry: the fee is worth paying on the biggest
+  // building on the drawing board, not the smallest.
+  open.sort((x, y) => y.minFloors - x.minFloors);
+  return open[0].id;
 }
 
 /**

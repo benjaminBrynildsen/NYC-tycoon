@@ -385,7 +385,11 @@ input[type=text]::placeholder { color: #5f6b7a; }
 }
 .gatebar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #4ade80); }
 .tag-landmark { border-color: #5a8f6a; color: #9fd9b0; }
+.tag-signature { border-color: #b08d3c; color: #ffd479; }
 input[type=range].maxed { accent-color: #4ade80; }
+/* The architect's drawing decides the facade, the colour and the massing, so
+   the controls that would have decided them are visibly out of the argument. */
+.overridden { opacity: .3; pointer-events: none; filter: grayscale(1); }
 
 #water-panel { bottom: 18px; left: 14px; width: 300px; }
 #water-panel #do-reclaim { width: 100%; margin-top: 12px; }
@@ -785,6 +789,9 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
       <select id="i-style"></select></label>
     <div class="ctl">Colour<div id="i-colors" class="swatches"></div></div>
     <div class="ctl">Form<div id="i-form" class="formrow"></div></div>
+    <label class="ctl">Architect
+      <select id="i-landmark"></select></label>
+    <p class="hint" id="landmark-note"></p>
     <label class="ctl">Leverage <output id="o-ltc"></output>
       <input type="range" id="i-ltc" min="0" max="65" value="55"></label>
     <label class="ctl">Name (optional)
@@ -844,6 +851,10 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
         <p>Own all four lots on a block to build past 150 floors</p>
         <p>Deliver what the city asks for to climb from Speculator to Titan —
           rank is what buys you leverage, cheap money and a licence to fill water</p>
+        <p>Retain an architect for a signature design — there is one of each ever built,
+          and your rivals want the same drawings</p>
+        <p>Fill water beside the shore; four cells joined up is an island, and the city
+          rezones the whole of it</p>
       </div>
     </div>
     <p class="sub small">Buy land. Build on it. Rent pays you monthly and development pulls up the value of everything around it — including your rivals' land. The market runs in cycles; leverage is how you go fast and how you die.</p>
@@ -1454,6 +1465,235 @@ var USES = {
   mixed: { name: "Mixed-use", rent: 70, cost: 675, opex: 0.32 }
 };
 
+// src/landmarks.js
+var LANDMARKS = [
+  {
+    id: "cleaver",
+    name: "The Cleaver",
+    architect: "Halsted & Root",
+    from: 1898,
+    minFloors: 14,
+    maxFloors: 26,
+    type: "prewar",
+    variant: 2,
+    fee: 1.2,
+    rent: 1.1,
+    prestige: 1.07,
+    standing: 2,
+    blurb: "A blade of a building on a corner plot: twenty feet deep, a full block long, and a cornice the whole way round. Everybody photographs it.",
+    profile: [{ w: 1, d: 0.34, f: 1, y0: 0 }],
+    crown: null
+  },
+  {
+    id: "cathedral",
+    name: "The Woolwright Cathedral",
+    architect: "Cass Merrow",
+    from: 1908,
+    minFloors: 34,
+    maxFloors: 60,
+    type: "prewar",
+    variant: 0,
+    fee: 1.3,
+    rent: 1.16,
+    prestige: 1.1,
+    standing: 3,
+    blurb: "A cathedral of commerce \u2014 gothic stonework carried to the top of a tower and finished with a spire, because the client wanted a church that paid rent.",
+    profile: [
+      { w: 1, d: 1, f: 0.3, y0: 0 },
+      { w: 0.6, d: 0.6, f: 0.48, y0: 0.3 },
+      { w: 0.42, d: 0.42, f: 0.22, y0: 0.78 }
+    ],
+    crown: "spire"
+  },
+  {
+    id: "ziggurat",
+    name: "The Ziggurat",
+    architect: "Hugh Vandermere",
+    from: 1918,
+    minFloors: 24,
+    maxFloors: 48,
+    type: "deco",
+    variant: 1,
+    fee: 1.24,
+    rent: 1.13,
+    prestige: 1.08,
+    standing: 2,
+    blurb: "The setback resolution taken literally and without apology: five stone terraces stepping back for light, each one a garden. The wedding cake everyone copies.",
+    profile: [
+      { w: 1, d: 1, f: 0.2, y0: 0 },
+      { w: 0.84, d: 0.84, f: 0.2, y0: 0.2 },
+      { w: 0.68, d: 0.68, f: 0.2, y0: 0.4 },
+      { w: 0.52, d: 0.52, f: 0.2, y0: 0.6 },
+      { w: 0.36, d: 0.36, f: 0.2, y0: 0.8 }
+    ],
+    crown: null
+  },
+  {
+    id: "crown",
+    name: "The Chrysalis Crown",
+    architect: "William Van Alden",
+    from: 1927,
+    minFloors: 48,
+    maxFloors: 90,
+    type: "deco",
+    variant: 3,
+    fee: 1.44,
+    rent: 1.22,
+    prestige: 1.16,
+    standing: 4,
+    blurb: "Stainless arches stacked into a sunburst and a needle above them, assembled in secret inside the shaft and raised in ninety minutes to steal the record.",
+    profile: [
+      { w: 1, d: 1, f: 0.06, y0: 0 },
+      { w: 0.8, d: 0.8, f: 0.44, y0: 0.06 },
+      { w: 0.62, d: 0.62, f: 0.3, y0: 0.5 },
+      { w: 0.42, d: 0.42, f: 0.2, y0: 0.8 }
+    ],
+    crown: "sunburst"
+  },
+  {
+    id: "empire",
+    name: "The Empire Mast",
+    architect: "Shreve, Lamb & Ardsley",
+    from: 1929,
+    minFloors: 66,
+    maxFloors: 110,
+    type: "deco",
+    variant: 1,
+    fee: 1.42,
+    rent: 1.21,
+    prestige: 1.15,
+    standing: 5,
+    blurb: "Limestone and steel, five setbacks, and a mooring mast on top that was sold as an airship terminal and has never once been used as one.",
+    profile: [
+      { w: 1, d: 1, f: 0.05, y0: 0 },
+      { w: 0.88, d: 0.88, f: 0.07, y0: 0.05 },
+      { w: 0.72, d: 0.72, f: 0.5, y0: 0.12 },
+      { w: 0.5, d: 0.5, f: 0.26, y0: 0.62 },
+      { w: 0.32, d: 0.32, f: 0.12, y0: 0.88 }
+    ],
+    crown: "mast"
+  },
+  {
+    id: "bronze",
+    name: "The Seagate House",
+    architect: "Miesler & Jensen",
+    from: 1955,
+    minFloors: 32,
+    maxFloors: 60,
+    type: "midcentury",
+    variant: 1,
+    fee: 1.28,
+    rent: 1.15,
+    prestige: 1.09,
+    standing: 3,
+    blurb: "A bronze and smoked-glass slab set back behind its own plaza \u2014 half the plot given away as open ground, which is exactly why it is worth what it is.",
+    profile: [
+      { w: 0.62, d: 0.62, f: 0.06, y0: 0 },
+      { w: 0.54, d: 0.36, f: 0.94, y0: 0.06 }
+    ],
+    crown: null
+  },
+  {
+    id: "twins",
+    name: "The Ledger Twins",
+    architect: "Yamane Associates",
+    from: 1968,
+    minFloors: 72,
+    maxFloors: 120,
+    type: "midcentury",
+    variant: 2,
+    fee: 1.36,
+    rent: 1.19,
+    prestige: 1.12,
+    standing: 4,
+    blurb: "Two identical shafts on one podium, close enough that the gap between them is a weather system. Nobody agrees whether they are one building or two.",
+    profile: [
+      { w: 1, d: 1, f: 0.05, y0: 0 },
+      { w: 0.4, d: 0.44, f: 0.95, y0: 0.05, dx: -0.28 },
+      { w: 0.4, d: 0.44, f: 0.95, y0: 0.05, dx: 0.28 }
+    ],
+    crown: null
+  },
+  {
+    id: "arkwright",
+    name: "The Arkwright Spire",
+    architect: "Ada Marchetti",
+    from: 1992,
+    minFloors: 70,
+    maxFloors: 140,
+    type: "glass",
+    variant: 2,
+    fee: 1.5,
+    rent: 1.25,
+    prestige: 1.18,
+    standing: 6,
+    blurb: "A private tower for a man who builds engines: a tapering glass shaft, a landing deck cantilevered off the top, and a crown that is lit from the inside all night.",
+    profile: [
+      { w: 1, d: 1, f: 0.08, y0: 0 },
+      { w: 0.74, d: 0.74, f: 0.52, y0: 0.08 },
+      { w: 0.5, d: 0.5, f: 0.4, y0: 0.6 }
+    ],
+    crown: "lantern"
+  },
+  {
+    id: "lantern",
+    name: "The Lantern",
+    architect: "S\xF8rensen Ito",
+    from: 2006,
+    minFloors: 80,
+    maxFloors: 300,
+    type: "glass",
+    variant: 0,
+    fee: 1.46,
+    rent: 1.23,
+    prestige: 1.165,
+    standing: 5,
+    blurb: "A faceted shaft that narrows four times on the way up and ends in a glass crown you can see from the far end of the harbour.",
+    profile: [
+      { w: 1, d: 1, f: 0.05, y0: 0 },
+      { w: 0.78, d: 0.78, f: 0.35, y0: 0.05 },
+      { w: 0.6, d: 0.6, f: 0.3, y0: 0.4 },
+      { w: 0.44, d: 0.44, f: 0.3, y0: 0.7 }
+    ],
+    crown: "lantern"
+  }
+];
+var BY_ID = new Map(LANDMARKS.map((l) => [l.id, l]));
+function landmarkById(id) {
+  return id ? BY_ID.get(id) ?? null : null;
+}
+function landmarkStatus(state2, l, floors = null) {
+  const taken = state2.landmarks?.[l.id];
+  if (taken) {
+    const who = state2.actors[taken.by];
+    return {
+      ok: false,
+      taken: true,
+      why: `${l.name} was commissioned by ${who ? who.name : "somebody else"}. There is only ever one.`
+    };
+  }
+  const year = state2.startYear + Math.floor(state2.day / 360);
+  if (year < l.from) return { ok: false, why: `${l.architect} has not drawn it yet \u2014 ${l.from}.` };
+  if (floors !== null && floors < l.minFloors) {
+    return {
+      ok: false,
+      short: true,
+      why: `${l.name} does not work under ${l.minFloors} floors.`
+    };
+  }
+  if (floors !== null && floors > l.maxFloors) {
+    return {
+      ok: false,
+      tall: true,
+      why: `${l.name} does not work above ${l.maxFloors} floors.`
+    };
+  }
+  return { ok: true };
+}
+function landmarkOptions(state2, floors = null) {
+  return LANDMARKS.map((l) => ({ ...l, status: landmarkStatus(state2, l, floors) }));
+}
+
 // src/contracts.js
 var YEAR = 360;
 function reward(cash, standing, abatementYears = 0) {
@@ -2002,6 +2242,8 @@ function createState(city2, seed = 11, startYear = 1998) {
     cyclePhase: rnd() * Math.PI * 2,
     projects: [],
     fills: [],
+    landmarks: {},
+    // signature designs, one of each, ever
     contracts: [],
     contractsPostedAt: -999,
     log: [],
@@ -2116,11 +2358,15 @@ function buildingNOI(state2, lot) {
   return gross * occ * (1 - USES[b.use].opex);
 }
 function buildingValue(state2, lot) {
-  return buildingNOI(state2, lot) / CAP_RATE;
+  return buildingNOI(state2, lot) / CAP_RATE * (lot.building?.prestige ?? 1);
 }
 var LANDMARK_FLOORS = 50;
 function demolitionBlock(lot) {
   const b = lot.building;
+  const L = landmarkById(b?.landmark);
+  if (L) {
+    return `${L.name} stands at ${lot.address}. There is one of these, and it does not come down.`;
+  }
   if (!b || b.floors < LANDMARK_FLOORS) return null;
   return `${lot.name || lot.address} is ${b.floors} storeys. Nothing over ${LANDMARK_FLOORS} comes down \u2014 it can change hands, but not be cleared.`;
 }
@@ -2128,7 +2374,9 @@ var DEFAULT_DESIGN = { style: "masonry", form: "stepped", variant: 1 };
 function designMul(design = DEFAULT_DESIGN) {
   const st = STYLES[design.style] || STYLES.masonry;
   const fm = FORMS[design.form] || FORMS.stepped;
-  return { cost: st.cost * fm.cost, rent: st.rent * fm.rent };
+  const L = landmarkById(design.landmark);
+  if (L) return { cost: st.cost * L.fee, rent: L.rent, prestige: L.prestige };
+  return { cost: st.cost * fm.cost, rent: st.rent * fm.rent, prestige: 1 };
 }
 function quote(state2, lot, floors, use, ltc, design = DEFAULT_DESIGN, owner = "player") {
   const m = massing(lot, floors);
@@ -2165,7 +2413,8 @@ function quote(state2, lot, floors, use, ltc, design = DEFAULT_DESIGN, owner = "
     debtService,
     cashflow: noi - debtService,
     yieldOnCost: noi / Math.max(total, 1),
-    value: noi / CAP_RATE,
+    // A signature address is worth more than its income; see buildingValue.
+    value: noi / CAP_RATE * (dm.prestige ?? 1),
     months
   };
 }
@@ -2238,6 +2487,13 @@ function parkOffer(state2, block, actorId = "player") {
   }
   if (block.lots.some((l) => l.building && l.building.floors >= LANDMARK_FLOORS)) {
     return { ok: false, why: `Nothing ${LANDMARK_FLOORS} floors or over comes down for a lawn.` };
+  }
+  const sig = block.lots.find((l) => l.building?.landmark);
+  if (sig) {
+    return {
+      ok: false,
+      why: `${landmarkById(sig.building.landmark).name} stands on this block. The city is not clearing it for grass.`
+    };
   }
   const appetite = parkAppetite(state2, block);
   const land = block.lots.reduce((n, l) => n + landValue(state2, l), 0);
@@ -2575,7 +2831,11 @@ function startProject(state2, lot, actorId, floors, use, ltc, design = DEFAULT_D
   const standing = demolitionBlock(lot);
   if (standing) return { ok: false, why: standing };
   const era = currentEra(state2);
-  if (!era.styles.includes(design.style)) {
+  const L = landmarkById(design.landmark);
+  if (L) {
+    const st = landmarkStatus(state2, L, floors);
+    if (!st.ok) return { ok: false, why: st.why };
+  } else if (!era.styles.includes(design.style)) {
     return { ok: false, why: `${STYLES[design.style].name} has not been invented yet \u2014 this is ${era.name}.` };
   }
   if (floors > era.maxFloors) {
@@ -2609,7 +2869,9 @@ function startProject(state2, lot, actorId, floors, use, ltc, design = DEFAULT_D
     style: design.style,
     form: design.form,
     variant: design.variant,
+    landmark: L ? L.id : null,
     designRent: designMul(design).rent,
+    prestige: designMul(design).prestige ?? 1,
     // Redeveloping your own site rolls whatever is still owed on it into the
     // new loan, so nothing falls out of the ledger while the site is a hole.
     cost: q.total,
@@ -2624,6 +2886,17 @@ function startProject(state2, lot, actorId, floors, use, ltc, design = DEFAULT_D
     demolished: !!lot.building
   };
   lot.project = project;
+  if (L) {
+    state2.landmarks[L.id] = { by: actorId, lotId: lot.id, day: state2.day, done: false };
+    if (!lot.name) nameBuilding(state2, lot, L.name);
+    pushNews(
+      state2,
+      "groundbreaking",
+      `${L.name.toUpperCase()} IS COMMISSIONED`,
+      `${a.name} has retained ${L.architect} for ${lot.address}. ${L.blurb} The drawing is exclusive: there will be one of these in New York and no more.`,
+      lot
+    );
+  }
   lot.loan = 0;
   lot.building = null;
   state2.projects.push(project);
@@ -2837,7 +3110,9 @@ function dayTick(state2) {
         style: p.style,
         form: p.form,
         variant: p.variant,
-        designRent: p.designRent
+        designRent: p.designRent,
+        landmark: p.landmark,
+        prestige: p.prestige ?? 1
       };
       p.lot.project = null;
       p.lot.loan = p.loan;
@@ -2854,6 +3129,7 @@ function dayTick(state2) {
           p.lot
         );
       }
+      if (p.landmark) topOutLandmark(state2, p);
       state2._dirtyGeometry = true;
     }
   }
@@ -2882,6 +3158,21 @@ function dayTick(state2) {
     state2.monthOfLastTick = d.getUTCMonth();
     monthTick(state2);
   }
+}
+function topOutLandmark(state2, p) {
+  const L = landmarkById(p.landmark);
+  if (!L) return;
+  const a = state2.actors[p.owner];
+  if (a) a.standing = (a.standing ?? 0) + L.standing;
+  if (state2.landmarks?.[L.id]) state2.landmarks[L.id].done = true;
+  pushNews(
+    state2,
+    "topout",
+    `${L.name.toUpperCase()} IS FINISHED`,
+    `${L.architect}'s ${L.name} is complete at ${p.lot.address} \u2014 ${p.floors} floors for ${a ? a.name : "its owner"}. ${L.blurb} The building is assessed at a premium to its income: an address of this kind is worth more than the rent roll says it is.`,
+    p.lot
+  );
+  logEvent(state2, p.owner, `topped out ${L.name} \u2014 ${L.standing} standing`);
 }
 var CONTRACT_API = {
   pushNews,
@@ -3200,7 +3491,16 @@ function rivalTurn(state2, a) {
       a.cash -= price;
       best.lot.owner = a.id;
     }
-    startProject(state2, best.lot, a.id, best.floors, use, a.ltc, rivalDesign(a, best.lot, best.floors, state2));
+    let design = rivalDesign(a, best.lot, best.floors, state2);
+    if (design.landmark) {
+      const lq = quote(state2, best.lot, best.floors, use, a.ltc, design, a.id);
+      const roeOf = (q) => (q.value - q.total) / Math.max(q.equity, 1);
+      if (lq.equity > a.cash || roeOf(lq) < roeOf(best.q) * 0.7) design = { ...design, landmark: null };
+    }
+    const r = startProject(state2, best.lot, a.id, best.floors, use, a.ltc, design);
+    if (!r.ok && design.landmark) {
+      startProject(state2, best.lot, a.id, best.floors, use, a.ltc, { ...design, landmark: null });
+    }
     a.cooldown = a.patience;
     state2._dirtyGeometry = true;
   }
@@ -3265,11 +3565,17 @@ function chaseContractBlocks(state2, a) {
 function rivalDesign(a, lot, floors, state2) {
   const allowed = currentEra(state2).styles;
   const pick2 = (...wanted) => wanted.find((w) => allowed.includes(w)) ?? allowed[allowed.length - 1];
-  if (a.strategy === "institution") {
-    return { style: pick2(floors > 20 ? "deco" : "masonry", "masonry", "brick"), form: "stepped", variant: 1 };
-  }
-  if (a.strategy === "cowboy") return { style: pick2("glass", "curtain", "deco", "loft"), form: "point", variant: 2 };
-  return { style: pick2(floors > 14 ? "curtain" : "brick", "brick", "loft"), form: "slab", variant: 0 };
+  const base = a.strategy === "institution" ? { style: pick2(floors > 20 ? "deco" : "masonry", "masonry", "brick"), form: "stepped", variant: 1 } : a.strategy === "cowboy" ? { style: pick2("glass", "curtain", "deco", "loft"), form: "point", variant: 2 } : { style: pick2(floors > 14 ? "curtain" : "brick", "brick", "loft"), form: "slab", variant: 0 };
+  const landmark = rivalLandmark(a, floors, state2);
+  return landmark ? { ...base, landmark } : base;
+}
+function rivalLandmark(a, floors, state2) {
+  if (a.strategy === "grinder") return null;
+  if (state2.rnd() > 0.3) return null;
+  const open = LANDMARKS.filter((L) => floors >= L.minFloors && landmarkStatus(state2, L, floors).ok);
+  if (!open.length) return null;
+  open.sort((x, y) => y.minFloors - x.minFloors);
+  return open[0].id;
 }
 var COMMIT = { institution: 0.75, cowboy: 0.88, grinder: 0.6 };
 function smallestWorthDoing(state2, a) {
@@ -3309,6 +3615,8 @@ var TYPES = {
   glass: { pal: ["#4e6474", "#405767", "#5c7282", "#6b8496"], win: ["#a8cde4", "#243d4f"], mortar: 0.05, cornice: "#3a4f5e" }
 };
 function typologyFor(lot, b) {
+  const L = landmarkById(b.landmark);
+  if (L) return L.type;
   if (b.style && STYLES[b.style]) return STYLES[b.style].type;
   const rnd = mulberry32(lot.seed + b.floors * 13);
   const f = b.floors;
@@ -3544,6 +3852,16 @@ function volumes(lot, b, rnd) {
   const form = b.form || "stepped";
   const f = b.floors;
   const out = [];
+  const L = landmarkById(b.landmark);
+  if (L) {
+    return L.profile.map((p) => ({
+      w: lotW * p.w,
+      d: lotD * p.d,
+      floors: Math.max(1, Math.round(p.f * f)),
+      y0: Math.round(p.y0 * f),
+      dx: lotW * (p.dx ?? 0)
+    }));
+  }
   if (f <= 6) {
     out.push({ w: lotW, d: lotD, floors: f, y0: 0 });
     return out;
@@ -3574,6 +3892,46 @@ function volumes(lot, b, rnd) {
   out.push({ w: Math.max(w, floor), d: Math.max(d, floor), floors: remaining, y0: y });
   return out;
 }
+function crownMeshes(kind, cache, x, y, z, w, floors) {
+  const out = [];
+  const add = (geo, mat, dy) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y + dy, z);
+    m.castShadow = true;
+    out.push(m);
+  };
+  if (kind === "spire") {
+    const stone = solid(cache, "crown_stone", 10984582, 0.92);
+    const h = 10 + floors * 0.28;
+    add(new THREE.CylinderGeometry(w * 0.3, w * 0.36, 4, 8), stone, 2);
+    add(new THREE.ConeGeometry(w * 0.3, h, 8), stone, 4 + h / 2);
+    const gold = solid(cache, "crown_gold", 14267218, 0.4, 0.8);
+    add(new THREE.ConeGeometry(0.5, 4, 6), gold, 4 + h + 2);
+    return out;
+  }
+  if (kind === "sunburst") {
+    const steel = solid(cache, "crown_steel", 13226712, 0.2, 0.92);
+    let r = w * 0.48, dy = 0;
+    for (let i = 0; i < 7; i++) {
+      const h = 3.4 - i * 0.26;
+      add(new THREE.CylinderGeometry(r * 0.78, r, h, 12), steel, dy + h / 2);
+      dy += h;
+      r *= 0.78;
+    }
+    add(new THREE.ConeGeometry(0.55, 22, 8), steel, dy + 11);
+    return out;
+  }
+  if (kind === "lantern") {
+    const glass = solid(cache, "crown_glass", 10475775, 0.16, 0.5, true);
+    const h = 8 + floors * 0.12;
+    add(new THREE.CylinderGeometry(w * 0.22, w * 0.46, h, 6), glass, h / 2);
+    const steel = solid(cache, "crown_steel", 13226712, 0.2, 0.92);
+    add(new THREE.CylinderGeometry(0.35, 0.35, 16, 6), steel, h + 8);
+    add(new THREE.SphereGeometry(0.9, 8, 6), glass, h + 16);
+    return out;
+  }
+  return out;
+}
 function makeBuilding(lot, b, cache) {
   const rnd = mulberry32(lot.seed + 31);
   const type = typologyFor(lot, b);
@@ -3588,6 +3946,7 @@ function makeBuilding(lot, b, cache) {
     const v = vols[i];
     const h = v.floors * FH;
     const y0 = v.y0 * FH;
+    const vx = lot.x + (v.dx ?? 0);
     const mat = facadeMaterial(cache, type, variant, condition);
     const roofMat = solid(
       cache,
@@ -3600,7 +3959,7 @@ function makeBuilding(lot, b, cache) {
       tileUV(new THREE.BoxGeometry(v.w, h, v.d), rx, ry),
       [mat, mat, roofMat, roofMat, mat, mat]
     );
-    mesh.position.set(lot.x, y0 + h / 2 + 0.4, lot.z);
+    mesh.position.set(vx, y0 + h / 2 + 0.4, lot.z);
     mesh.castShadow = mesh.receiveShadow = true;
     mesh.userData.lotId = lot.id;
     group.add(mesh);
@@ -3611,7 +3970,7 @@ function makeBuilding(lot, b, cache) {
       new THREE.BoxGeometry(v.w + over, capH, v.d + over),
       [corMat, corMat, roofMat, roofMat, corMat, corMat]
     );
-    cap.position.set(lot.x, y0 + h + 0.4, lot.z);
+    cap.position.set(vx, y0 + h + 0.4, lot.z);
     cap.castShadow = true;
     cap.userData.lotId = lot.id;
     group.add(cap);
@@ -3654,6 +4013,7 @@ function makeBuilding(lot, b, cache) {
     group.add(fe);
   }
   const top = vols[vols.length - 1];
+  const topX = lot.x + (top.dx ?? 0);
   const roofY = (top.y0 + top.floors) * FH + 1.2;
   if (b.floors >= 6) {
     const pm = solid(cache, "parapet", 6972768, 0.93);
@@ -3664,43 +4024,52 @@ function makeBuilding(lot, b, cache) {
       [-top.w / 2, 0, 0.45, top.d + 0.5]
     ]) {
       const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 1.15, d), pm);
-      wall.position.set(lot.x + dx, roofY + 0.58, lot.z + dz);
+      wall.position.set(topX + dx, roofY + 0.58, lot.z + dz);
       wall.castShadow = true;
       group.add(wall);
     }
   }
-  if (b.floors <= 20 && rnd() < 0.75) {
+  const crown = landmarkById(b.landmark)?.crown ?? null;
+  if (b.floors <= 20 && !crown && rnd() < 0.75) {
     props.push({
       kind: "watertower",
-      x: lot.x + (rnd() - 0.5) * top.w * 0.4,
+      x: topX + (rnd() - 0.5) * top.w * 0.4,
       y: roofY,
       z: lot.z + (rnd() - 0.5) * top.d * 0.4,
       s: 0.9 + rnd() * 0.3
     });
   }
-  props.push({
-    kind: "bulkhead",
-    x: lot.x + (rnd() - 0.5) * top.w * 0.3,
-    y: roofY,
-    z: lot.z + (rnd() - 0.5) * top.d * 0.3,
-    s: 0.8 + rnd() * 0.5
-  });
-  let mast = null;
-  if (b.floors >= MAST_FLOORS) {
-    const s = 1 + rnd() * 0.4;
-    props.push({ kind: "mooringMast", x: lot.x, y: roofY, z: lot.z, s });
-    mast = { x: lot.x, y: roofY + 34 * s, z: lot.z };
-  } else if (b.floors > 26) {
-    props.push({ kind: "mast", x: lot.x, y: roofY, z: lot.z, s: 1 + rnd() * 1.4 });
+  if (!crown) {
+    props.push({
+      kind: "bulkhead",
+      x: topX + (rnd() - 0.5) * top.w * 0.3,
+      y: roofY,
+      z: lot.z + (rnd() - 0.5) * top.d * 0.3,
+      s: 0.8 + rnd() * 0.5
+    });
   }
-  if (b.floors > 8 && rnd() < 0.5) {
+  let mast = null;
+  if (crown === "mast" || b.floors >= MAST_FLOORS) {
+    const s = crown === "mast" ? 2.1 : 1 + rnd() * 0.4;
+    props.push({ kind: "mooringMast", x: topX, y: roofY, z: lot.z, s });
+    mast = { x: topX, y: roofY + 34 * s, z: lot.z };
+  } else if (b.floors > 26 && !crown) {
+    props.push({ kind: "mast", x: topX, y: roofY, z: lot.z, s: 1 + rnd() * 1.4 });
+  }
+  if (b.floors > 8 && !crown && rnd() < 0.5) {
     props.push({
       kind: "ac",
-      x: lot.x + (rnd() - 0.5) * top.w * 0.5,
+      x: topX + (rnd() - 0.5) * top.w * 0.5,
       y: roofY,
       z: lot.z + (rnd() - 0.5) * top.d * 0.5,
       s: 0.7 + rnd() * 0.4
     });
+  }
+  if (crown && crown !== "mast") {
+    for (const m of crownMeshes(crown, cache, topX, roofY, lot.z, top.w, b.floors)) {
+      m.userData.lotId = lot.id;
+      group.add(m);
+    }
   }
   const topVol = vols[vols.length - 1];
   group.userData = {
@@ -3714,14 +4083,16 @@ function makeBuilding(lot, b, cache) {
     decks: vols.map((v) => ({
       top: (v.y0 + v.floors) * FH + 1.2,
       hw: v.w / 2,
-      hd: v.d / 2
+      hd: v.d / 2,
+      cx: lot.x + (v.dx ?? 0),
+      cz: lot.z
     })),
     // Where the lift lets you out, and how far you can walk before the parapet.
     roof: {
       y: (topVol.y0 + topVol.floors) * FH + 1.2,
       hw: topVol.w / 2 - 1.2,
       hd: topVol.d / 2 - 1.2,
-      x: lot.x,
+      x: lot.x + (topVol.dx ?? 0),
       z: lot.z,
       floors: b.floors
     }
@@ -5279,15 +5650,15 @@ var CityScene = class {
     const lot = lotAt(this.city, x, z);
     const g = lot && this.buildingByLot.get(lot.id);
     if (g) {
-      const dx = Math.abs(x - lot.x), dz = Math.abs(z - lot.z);
       const decks = g.userData.decks ?? [];
       for (let i = decks.length - 1; i >= 0; i--) {
         const d = decks[i];
-        if (dx <= d.hw && dz <= d.hd) {
+        const cx = d.cx ?? lot.x, cz = d.cz ?? lot.z;
+        if (Math.abs(x - cx) <= d.hw && Math.abs(z - cz) <= d.hd) {
           const roof = this.roofOf(lot.id);
           return { y: d.top, lot, roof: roof && i === decks.length - 1 ? roof : {
-            x: lot.x,
-            z: lot.z,
+            x: cx,
+            z: cz,
             y: d.top,
             hw: d.hw - 1.2,
             hd: d.hd - 1.2,
@@ -6309,7 +6680,7 @@ var UI = class {
     this.onJobHighlight = () => 0;
     this.highlightOwner = null;
     this.highlightJob = null;
-    this.design = { style: "masonry", form: "stepped", variant: 1 };
+    this.design = { style: "masonry", form: "stepped", variant: 1, landmark: null };
     $("lot-close").onclick = () => this.closeLot();
     $("build-close").onclick = () => $("build-panel").classList.add("hidden");
     $("pf-close").onclick = () => $("portfolio").classList.add("hidden");
@@ -6369,7 +6740,34 @@ var UI = class {
         this.refreshBuild();
       };
     }
+    $("i-landmark").onchange = () => {
+      this.design.landmark = $("i-landmark").value || null;
+      this.refreshBuild();
+    };
     this.renderSwatches();
+  }
+  /**
+   * The signature designs, and why each one you cannot have is unavailable.
+   * A drawing you are eight floors short of is worth seeing — that is the
+   * whole of how you find out what to aim at.
+   */
+  refreshLandmarks(floors) {
+    const opts = landmarkOptions(this.state, floors);
+    const sel = $("i-landmark");
+    const sig = opts.map((l) => `${l.id}${l.status.ok ? "" : "!"}`).join(",");
+    if (sig !== this._lmSig) {
+      this._lmSig = sig;
+      sel.innerHTML = '<option value="">None \u2014 an ordinary good building</option>' + opts.map((l) => {
+        const why = l.status.ok ? "" : l.status.taken ? " \u2014 taken" : l.status.short ? ` \u2014 needs ${l.minFloors} floors` : l.status.tall ? ` \u2014 nothing over ${l.maxFloors} floors` : ` \u2014 ${l.from}`;
+        return `<option value="${esc(l.id)}"${l.status.ok ? "" : " disabled"}>${esc(l.name)} \xB7 ${esc(l.architect)}${esc(why)}</option>`;
+      }).join("");
+    }
+    const chosen = opts.find((l) => l.id === this.design.landmark);
+    if (chosen && !chosen.status.ok) this.design.landmark = null;
+    sel.value = this.design.landmark ?? "";
+    const L = chosen && chosen.status.ok ? chosen : null;
+    $("landmark-note").textContent = L ? `${L.blurb} One of these will ever be built. The facade, the massing and the crown are ${L.architect}'s \u2014 your own choices are set aside.` : "A signature design costs more, rents for more, is assessed above its income, and there is exactly one of each in New York. Whoever commissions it first has it for good.";
+    for (const id of ["i-style", "i-colors", "i-form"]) $(id).classList.toggle("overridden", !!L);
   }
   /** Only the facade systems the city has actually invented. */
   refreshStyles() {
@@ -6681,6 +7079,14 @@ var UI = class {
     if (lot.building && lot.building.floors >= LANDMARK_FLOORS) {
       tags.push(["Protected", "cannot be cleared", "tag-landmark"]);
     }
+    const signature = landmarkById(lot.building?.landmark ?? lot.project?.landmark);
+    if (signature) {
+      tags.push([
+        signature.name,
+        `+${Math.round((signature.prestige - 1) * 100)}% assessed`,
+        "tag-signature"
+      ]);
+    }
     $("lot-tags").innerHTML = tags.map(([n, v, c]) => `<span class="tag ${c}">${n} <b>${v}</b></span>`).join("");
     const rows = [];
     const row = (k, v, cls = "") => rows.push(`<div class="kv"><span>${k}</span><b class="${cls}">${v}</b></div>`);
@@ -6711,6 +7117,8 @@ var UI = class {
       row("Occupancy", pct(occupancyFor(s, lot)));
       row("NOI / yr", money2(buildingNOI(s, lot)), "good");
       row("Asset value", money2(buildingValue(s, lot)));
+      const L = landmarkById(b.landmark);
+      if (L) row("Signature design", `${L.architect} \xB7 one of one`, "good");
       const unused = buildableSf(lot) - b.gsf;
       if (unused > buildableSf(lot) * 0.25) row("Unbuilt capacity", sf(unused), "good");
     } else {
@@ -6884,6 +7292,7 @@ var UI = class {
     $("o-ltc").textContent = pct(ltc);
     for (const b of $("i-form").children) b.classList.toggle("on", b.dataset.form === this.design.form);
     for (const b of $("i-colors").children) b.classList.toggle("on", +b.dataset.v === this.design.variant);
+    this.refreshLandmarks(floors);
     const q = quote(this.state, lot, floors, use, ltc, this.design);
     const cash = this.state.actors.player.cash;
     const rows = [
@@ -6894,6 +7303,10 @@ var UI = class {
       ["Land", q.land > 0 ? money2(q.land) : "owned"],
       ...q.freeAir > 0 ? [[`Rights from your block (${sf(q.freeAir)})`, "free"]] : [],
       ...q.paidAir > 0 ? [[`Air rights bought (${sf(q.paidAir)})`, money2(q.air)]] : [],
+      ...this.design.landmark ? [[
+        `${landmarkById(this.design.landmark).architect}'s fee`,
+        `+${Math.round((landmarkById(this.design.landmark).fee - 1) * 100)}% on construction`
+      ]] : [],
       ["Total cost", money2(q.total), "sep"],
       ["Rent", `$${rentPerSf(this.state, lot, use, floors).toFixed(0)}/sf`],
       ["Loan", money2(q.loan)],
@@ -7340,7 +7753,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "29a56ab \xB7 2026-09-23 16:34" : "dev";
+var BUILD = true ? "a173c12 \xB7 2026-09-23 17:01" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");

@@ -7,6 +7,7 @@ import { DISTRICTS, HOODS, REGIONS, USES, STYLES, FORMS, massing, minFloors, max
          CONFIG } from './world.js';
 import { TYPES, massingVolumes, typologyFor } from './architecture.js';
 import { contractBoard, contractSites, contractWhere, rewardLine, rankFor, nextRank } from './contracts.js';
+import { landmarkOptions, landmarkById } from './landmarks.js';
 import {
   money, sf, askPrice, landValue, buildingNOI, buildingValue, quote, netWorth,
   leaderboard, buyLot, sellLot, startProject, formatDate, occupancyFor, rentPerSf,
@@ -121,7 +122,7 @@ export class UI {
     this.onJobHighlight = () => 0;
     this.highlightOwner = null;
     this.highlightJob = null;
-    this.design = { style: 'masonry', form: 'stepped', variant: 1 };
+    this.design = { style: 'masonry', form: 'stepped', variant: 1, landmark: null };
 
     $('lot-close').onclick = () => this.closeLot();
     $('build-close').onclick = () => $('build-panel').classList.add('hidden');
@@ -183,7 +184,47 @@ export class UI {
     for (const b of $('i-form').children) {
       b.onclick = () => { this.design.form = b.dataset.form; this.refreshBuild(); };
     }
+    $('i-landmark').onchange = () => {
+      this.design.landmark = $('i-landmark').value || null;
+      this.refreshBuild();
+    };
     this.renderSwatches();
+  }
+
+  /**
+   * The signature designs, and why each one you cannot have is unavailable.
+   * A drawing you are eight floors short of is worth seeing — that is the
+   * whole of how you find out what to aim at.
+   */
+  refreshLandmarks(floors) {
+    const opts = landmarkOptions(this.state, floors);
+    const sel = $('i-landmark');
+    const sig = opts.map((l) => `${l.id}${l.status.ok ? '' : '!'}`).join(',');
+    if (sig !== this._lmSig) {
+      this._lmSig = sig;
+      sel.innerHTML = '<option value="">None — an ordinary good building</option>'
+        + opts.map((l) => {
+          const why = l.status.ok ? '' : l.status.taken ? ' — taken'
+            : l.status.short ? ` — needs ${l.minFloors} floors`
+            : l.status.tall ? ` — nothing over ${l.maxFloors} floors`
+            : ` — ${l.from}`;
+          return `<option value="${esc(l.id)}"${l.status.ok ? '' : ' disabled'}>${
+            esc(l.name)} · ${esc(l.architect)}${esc(why)}</option>`;
+        }).join('');
+    }
+    // A drawing that has just gone out of reach must not stay selected.
+    const chosen = opts.find((l) => l.id === this.design.landmark);
+    if (chosen && !chosen.status.ok) this.design.landmark = null;
+    sel.value = this.design.landmark ?? '';
+
+    const L = chosen && chosen.status.ok ? chosen : null;
+    $('landmark-note').textContent = L
+      ? `${L.blurb} One of these will ever be built. The facade, the massing and the crown are `
+        + `${L.architect}'s — your own choices are set aside.`
+      : 'A signature design costs more, rents for more, is assessed above its income, and there '
+        + 'is exactly one of each in New York. Whoever commissions it first has it for good.';
+    // The architect's drawing overrides every choice below it.
+    for (const id of ['i-style', 'i-colors', 'i-form']) $(id).classList.toggle('overridden', !!L);
   }
 
   /** Only the facade systems the city has actually invented. */
@@ -575,6 +616,11 @@ export class UI {
     if (lot.building && lot.building.floors >= LANDMARK_FLOORS) {
       tags.push(['Protected', 'cannot be cleared', 'tag-landmark']);
     }
+    const signature = landmarkById(lot.building?.landmark ?? lot.project?.landmark);
+    if (signature) {
+      tags.push([signature.name, `+${Math.round((signature.prestige - 1) * 100)}% assessed`,
+                 'tag-signature']);
+    }
     $('lot-tags').innerHTML = tags.map(([n, v, c]) => `<span class="tag ${c}">${n} <b>${v}</b></span>`).join('');
 
     const rows = [];
@@ -601,6 +647,8 @@ export class UI {
       row('Occupancy', pct(occupancyFor(s, lot)));
       row('NOI / yr', money(buildingNOI(s, lot)), 'good');
       row('Asset value', money(buildingValue(s, lot)));
+      const L = landmarkById(b.landmark);
+      if (L) row('Signature design', `${L.architect} · one of one`, 'good');
       const unused = buildableSf(lot) - b.gsf;
       if (unused > buildableSf(lot) * 0.25) row('Unbuilt capacity', sf(unused), 'good');
     } else {
@@ -789,6 +837,7 @@ export class UI {
     $('o-ltc').textContent = pct(ltc);
     for (const b of $('i-form').children) b.classList.toggle('on', b.dataset.form === this.design.form);
     for (const b of $('i-colors').children) b.classList.toggle('on', +b.dataset.v === this.design.variant);
+    this.refreshLandmarks(floors);
 
     const q = quote(this.state, lot, floors, use, ltc, this.design);
     const cash = this.state.actors.player.cash;
@@ -800,6 +849,10 @@ export class UI {
       ['Land', q.land > 0 ? money(q.land) : 'owned'],
       ...(q.freeAir > 0 ? [[`Rights from your block (${sf(q.freeAir)})`, 'free']] : []),
       ...(q.paidAir > 0 ? [[`Air rights bought (${sf(q.paidAir)})`, money(q.air)]] : []),
+      ...(this.design.landmark
+        ? [[`${landmarkById(this.design.landmark).architect}'s fee`,
+            `+${Math.round((landmarkById(this.design.landmark).fee - 1) * 100)}% on construction`]]
+        : []),
       ['Total cost', money(q.total), 'sep'],
       ['Rent', `$${rentPerSf(this.state, lot, use, floors).toFixed(0)}/sf`],
       ['Loan', money(q.loan)],
