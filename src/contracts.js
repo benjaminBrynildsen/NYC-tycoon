@@ -363,15 +363,33 @@ export function contractBias(state, actorId, lot) {
  * asked for, not by being rich — so the two rankings can disagree, and a
  * patient builder can outrank a bigger balance sheet.
  */
-const TITLES = [
-  [0, 'Speculator'], [3, 'Builder'], [7, 'Developer'], [13, 'Magnate'], [21, 'Titan'],
+const RANKS = [
+  { at: 0,  title: 'Speculator', ltc: 0.50, interest: 0.070, fill: false,
+    perk: 'You buy and you build. Everything else has to be earned.' },
+  { at: 3,  title: 'Builder', ltc: 0.58, interest: 0.068, fill: false,
+    perk: 'Lenders will go to 58% of cost.' },
+  { at: 7,  title: 'Developer', ltc: 0.64, interest: 0.065, fill: true,
+    perk: 'Leverage to 64%, and the harbour commission will licence you to fill water.' },
+  { at: 13, title: 'Magnate', ltc: 0.70, interest: 0.060, fill: true, fillDiscount: 0.2,
+    perk: 'Leverage to 70%, cheaper money, and a fifth off the cost of fill.' },
+  { at: 21, title: 'Titan', ltc: 0.75, interest: 0.050, fill: true, fillDiscount: 0.3,
+    perk: 'The bond market opens: 5% money, leverage to 75%, a third off fill.' },
 ];
 
-export function titleFor(standing = 0) {
-  let name = TITLES[0][1];
-  for (const [at, t] of TITLES) if (standing >= at) name = t;
-  return name;
+export function rankFor(standing = 0) {
+  let r = RANKS[0];
+  for (const x of RANKS) if (standing >= x.at) r = x;
+  return r;
 }
+
+export function titleFor(standing = 0) { return rankFor(standing).title; }
+
+/** The next rung, and how far off it is. */
+export function nextRank(standing = 0) {
+  return RANKS.find((r) => r.at > standing) ?? null;
+}
+
+export { RANKS };
 
 // --------------------------------------------------------------------- odds
 

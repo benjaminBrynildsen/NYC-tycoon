@@ -550,3 +550,9 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
 .job .rival { font-size: 10px; color: var(--dim); margin-top: 4px; }
 .job .rival b { color: var(--bad); font-weight: 600; }
 .job .pay { font-size: 10px; color: var(--good); margin-top: 3px; }
+
+.rankrow { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
+.rankrow b { font-weight: 700; }
+.rankrow span { font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+#pf-rank .perk { margin: 4px 0 8px; font-size: 10.5px; color: var(--dim); line-height: 1.45; }
+#pf-rank > span { font-size: 10.5px; color: var(--dim); line-height: 1.45; display: block; }

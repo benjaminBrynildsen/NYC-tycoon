@@ -149,7 +149,7 @@ document.getElementById('water-close').onclick = hideWater;
 function showWater(col, row) {
   ui.closeLot();
   waterPanel.classList.remove('hidden');
-  const cost = reclaimCost(state, col, row);
+  const cost = reclaimCost(state, col, row, 'player');
   const why = canReclaimHere(state, 'player', col, row);
   const pending = state.fills.find((f) => f.col === col && f.row === row);
   document.getElementById('water-meta').textContent = pending

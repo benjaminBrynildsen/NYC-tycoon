@@ -6,13 +6,13 @@ import { DISTRICTS, HOODS, REGIONS, USES, STYLES, FORMS, massing, minFloors, max
          buildableSf, floorsWithoutAir, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS,
          CONFIG } from './world.js';
 import { TYPES, massingVolumes, typologyFor } from './architecture.js';
-import { contractBoard, rewardLine } from './contracts.js';
+import { contractBoard, rewardLine, rankFor, nextRank } from './contracts.js';
 import {
   money, sf, askPrice, landValue, buildingNOI, buildingValue, quote, netWorth,
   leaderboard, buyLot, sellLot, startProject, formatDate, occupancyFor, rentPerSf,
   premiums, blockCharacter, rushQuote, rushProject, nameBuilding, worthBreakdown,
   makeOffer, reservePrice, regionGate, canWorkIn, demolitionBlock, LANDMARK_FLOORS,
-  blockSpareSf, sellAll, currentYear, currentEra,
+  blockSpareSf, sellAll, currentYear, currentEra, maxLtcFor,
 } from './economy.js';
 
 const $ = (id) => document.getElementById(id);
@@ -282,6 +282,18 @@ export class UI {
       ? '<b class="good">Brooklyn and Queens are open.</b>'
       : `<div class="gatebar"><i style="width:${pct(Math.min(1, b.total / gate))}"></i></div>`
         + `<span>${money(b.total)} of ${money(gate)} — the boroughs open at a billion</span>`;
+    const me = this.state.actors.player;
+    const st = me.standing ?? 0;
+    const rank = rankFor(st);
+    const next = nextRank(st);
+    $('pf-rank').innerHTML =
+      `<div class="rankrow"><b>${esc(rank.title)}</b><span>${st} standing</span></div>`
+      + `<p class="perk">${esc(rank.perk)}</p>`
+      + (next
+        ? `<div class="gatebar"><i style="width:${pct(Math.min(1, st / next.at))}"></i></div>`
+          + `<span>${next.at - st} more delivered and you are a ${esc(next.title)} — ${esc(next.perk)}</span>`
+        : '<span>Nothing left to prove to the trade.</span>');
+
     $('pf-holdings').textContent =
       `${b.lots} lots · ${b.built} buildings · ${sf(b.gsf)} · ${this.state.projects.filter((p) => p.owner === 'player').length} under construction`;
   }
@@ -645,7 +657,9 @@ export class UI {
     on('a-sell', () => {
       const r = sellLot(s, lot, 'player');
       if (!r.ok) return this.toast(r.why, true);
-      this.toast(`Sold ${lot.address} for ${money(r.price * 0.97)}.`);
+      this.toast(r.repaid
+        ? `Sold ${lot.address} for ${money(r.price * 0.97)} — ${money(r.repaid)} of it to the bank.`
+        : `Sold ${lot.address} for ${money(r.price * 0.97)}.`);
       this._lotSig = null;
       this.select(lot); this.refreshTop(); this.onDirty();
     });
@@ -687,6 +701,11 @@ export class UI {
           : `You hold ${owned} of ${lot.block.lots.length} lots — take all `
             + `${lot.block.lots.length} to build past ${BLOCK_ASSEMBLY_FLOORS}.`)
       + ` ${currentEra(this.state).name} can engineer ${hi} floors.</span>`;
+    // Lenders go as far as your standing has earned, and no further.
+    const cap = Math.round(maxLtcFor(this.state, 'player') * 100);
+    const ltc = $('i-ltc');
+    ltc.max = cap;
+    if (+ltc.value > cap) ltc.value = cap;
     $('build-panel').classList.remove('hidden');
     this.refreshBuild();
   }

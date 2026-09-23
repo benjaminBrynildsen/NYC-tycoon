@@ -4,12 +4,19 @@
 import { CONFIG, DISTRICTS, USES, STYLES, FORMS, REGIONS, HOODS, ERAS, eraAt, buildableSf,
          massing, minFloors, maxFloors, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS, canReclaim,
          shoreContact, mulberry32 } from './world.js';
-import { tickContracts, contractBias, titleFor } from './contracts.js';
+import { tickContracts, contractBias, titleFor, rankFor, nextRank } from './contracts.js';
 
 export const START_CASH = 100_000_000;
 export const CAP_RATE = 0.055;        // what a stabilised building is worth per $ of NOI
 export const INTEREST = 0.065;        // annual, interest-only
-export const MAX_LTC = 0.65;          // most you can borrow against a project's cost
+export const MAX_LTC = 0.75;          // the most anyone can borrow, at the top rank
+
+/** What this developer's standing has earned them at the bank. */
+export function termsFor(state, actorId) {
+  return rankFor(state.actors[actorId]?.standing ?? 0);
+}
+export function maxLtcFor(state, actorId) { return termsFor(state, actorId).ltc; }
+export function interestFor(state, actorId) { return termsFor(state, actorId).interest; }
 
 export const RIVALS = [
   { id: 'r1', name: 'Halvorsen Estates', color: 0xd4664a, strategy: 'institution',
@@ -234,11 +241,11 @@ export function quote(state, lot, floors, use, ltc, design = DEFAULT_DESIGN, own
   const hard = m.gsf * costPerSf(lot, use, floors) * dm.cost;
   const soft = hard * 0.14;
   const total = land + air + hard + soft;
-  const loan = Math.min(total * ltc, total * MAX_LTC);
+  const loan = Math.min(total * ltc, total * maxLtcFor(state, owner));
   const equity = total - loan;
   const gross = m.gsf * rentPerSf(state, lot, use, floors, 1) * dm.rent;
   const noi = gross * occupancyFor(state, lot) * (1 - USES[use].opex);
-  const debtService = loan * INTEREST;
+  const debtService = loan * interestFor(state, owner);
   const months = Math.round(8 + floors * 0.42 + Math.pow(floors / 34, 2));
   return { ...m, land, air, freeAir, paidAir, spare, hard, soft, total, loan, equity, gross, noi,
            debtService, cashflow: noi - debtService,
@@ -297,6 +304,150 @@ function checkEra(state) {
 }
 
 /** Crossing a billion opens the rest of the city. */
+// ------------------------------------------------------------- margin calls
+
+export const CALL_LTV = 0.80;      // where the bank stops being relaxed
+export const CALL_MONTHS = 6;      // how long you get to put it right
+
+/** Loan to value on one lot, which is what the bank actually looks at. */
+export function ltvOf(state, lot) {
+  const loan = lot.loan ?? 0;
+  if (loan <= 0) return 0;
+  const value = landValue(state, lot) + (lot.building ? buildingValue(state, lot) : 0);
+  return value > 0 ? loan / value : 99;
+}
+
+/**
+ * Debt used to be free money: you could borrow to the hilt, watch values fall
+ * through the floor and nothing whatever would happen. Now the bank is
+ * watching, and the market cycle has something to bite on.
+ *
+ * A loan worth more than 85% of the asset is called. You get six months to
+ * sell it, pay it down or wait for values to recover. Miss that and the bank
+ * takes the asset and puts it on the market, where whoever is holding cash at
+ * the bottom of a cycle gets a very good price — which is the other half of
+ * why a slump matters.
+ */
+function checkMargin(state) {
+  // Running out of money is the other way a loan goes bad, and in this game it
+  // is by far the likelier one: a finished building is usually worth more than
+  // it cost, so values rarely fall through the loan, but a developer who has
+  // borrowed more than the rents can service bleeds out steadily.
+  for (const id in state.actors) {
+    const a = state.actors[id];
+    if (a.retired) continue;
+    // The clock only runs while there is something the bank could actually
+    // take. Warning a developer whose whole position is still a hole in the
+    // ground gives them six months they cannot use.
+    const seizable = state.city.lots.filter(
+      (l) => l.owner === id && !l.project && l.loan > 0);
+    const broke = a.cash < 0 && a.debt > 0 && seizable.length > 0;
+    if (!broke) { a.insolventSince = null; continue; }
+    if (!a.insolventSince) {
+      a.insolventSince = state.day;
+      logEvent(state, id, `cannot service ${money(a.debt)} of debt`);
+      if (a.isPlayer) {
+        pushNews(state, 'margin', 'YOUR BANKERS WANT A WORD',
+          `You are ${money(-a.cash)} overdrawn against ${money(a.debt)} of debt, and the rents are `
+          + `not covering it. Sell something within ${CALL_MONTHS} months or the bank will choose `
+          + `for you — and it will not choose well.`);
+      }
+    }
+    // Past the grace period the bank takes the weakest asset, every month,
+    // until the bleeding stops.
+    if (state.day - a.insolventSince < CALL_MONTHS * 30) continue;
+    seizable.sort((x, y) => ltvOf(state, y) - ltvOf(state, x));
+    foreclose(state, seizable[0], a);
+  }
+
+  for (const lot of state.city.lots) {
+    const owner = lot.owner && state.actors[lot.owner];
+    if (!owner || lot.project) { lot.calledOn = null; continue; }
+    if (!(lot.loan > 0)) { lot.calledOn = null; continue; }
+
+    const ltv = ltvOf(state, lot);
+    if (ltv <= CALL_LTV) {
+      if (lot.calledOn && owner.isPlayer) {
+        pushNews(state, 'margin', `${lot.address.toUpperCase()} IS OUT OF DANGER`,
+          `Values have come back far enough that the loan on ${lot.address} sits inside its `
+          + `covenant again. The bank has withdrawn the demand.`, lot);
+      }
+      lot.calledOn = null;
+      continue;
+    }
+
+    if (!lot.calledOn) {
+      lot.calledOn = state.day;
+      logEvent(state, owner.id, `margin call on ${lot.address} — ${Math.round(ltv * 100)}% LTV`);
+      if (owner.isPlayer) {
+        pushNews(state, 'margin', `THE BANK CALLS THE LOAN ON ${lot.address.toUpperCase()}`,
+          `${money(lot.loan)} is lent against a building the market now says is worth `
+          + `${money(landValue(state, lot) + (lot.building ? buildingValue(state, lot) : 0))}. `
+          + `You have ${CALL_MONTHS} months to sell it, pay it down, or see the value come back. `
+          + `After that the bank sells it for you.`, lot);
+      }
+      continue;
+    }
+
+    if (state.day - lot.calledOn < CALL_MONTHS * 30) continue;
+    foreclose(state, lot, owner);
+  }
+}
+
+/** The bank sells it, badly, and somebody with cash gets a bargain. */
+function foreclose(state, lot, owner) {
+  const gross = (landValue(state, lot) + (lot.building ? buildingValue(state, lot) : 0)) * 0.7;
+  const { shortfall } = settleLoan(state, lot, owner.id, gross);
+  owner.cash -= shortfall;                 // you still owe whatever it did not cover
+  lot.calledOn = null;
+
+  // Whoever has the deepest pockets picks it up at the forced price.
+  const buyer = Object.values(state.actors)
+    .filter((x) => x.id !== owner.id && !x.retired && x.cash > gross * 1.3
+            && x.regions.has(lot.region))
+    .sort((x, y) => y.cash - x.cash)[0];
+  if (buyer) {
+    buyer.cash -= gross;
+    lot.owner = buyer.id;
+    logEvent(state, buyer.id, `bought ${lot.address} out of foreclosure for ${money(gross)}`);
+  } else {
+    lot.owner = 'npc';
+  }
+  logEvent(state, owner.id, `lost ${lot.address} to the bank`);
+  // "YOU LOSES 41 BROADWAY" is not a headline.
+  const you = !!owner.isPlayer;
+  pushNews(state, 'margin',
+    you ? `THE BANK TAKES ${lot.address.toUpperCase()} FROM YOU`
+        : `${owner.name.toUpperCase()} LOSES ${lot.address.toUpperCase()}`,
+    `The bank has taken ${lot.address} ${you ? 'off you' : `from ${owner.name}`} `
+    + `and sold it for ${money(gross)}`
+    + `${buyer ? ` to ${buyer.name}` : ' into a thin market'}. `
+    + (shortfall > 0 ? `${money(shortfall)} of the loan is still outstanding and follows `
+                       + `${you ? 'you' : 'the borrower'}. ` : '')
+    + `A building bought at the bottom of a cycle is the cheapest floor area anybody will see for years.`,
+    lot);
+}
+
+/** Moving up the trade's own ranking is worth saying out loud. */
+function checkRank(state) {
+  for (const id in state.actors) {
+    const a = state.actors[id];
+    const rank = rankFor(a.standing ?? 0);
+    if (a._rank === rank.title) continue;
+    const first = a._rank === undefined;
+    a._rank = rank.title;
+    if (first || rank.at === 0) continue;
+    if (a.isPlayer) {
+      logEvent(state, id, `— the trade now calls you a ${rank.title}`);
+      pushNews(state, 'unlock', `THE TRADE CALLS YOU A ${rank.title.toUpperCase()}`,
+        `${rank.at} pieces of delivered work and the city has stopped treating you as a `
+        + `newcomer. ${rank.perk}`);
+    } else {
+      logEvent(state, id, `— is now rated a ${rank.title}`);
+    }
+  }
+}
+
 function checkUnlocks(state) {
   for (const id in state.actors) {
     const a = state.actors[id];
@@ -378,20 +529,29 @@ export function takeOverFirm(state, targetId, actorId = 'player') {
 
 // ------------------------------------------------------------- making land
 
-export const RECLAIM_BASE = 260_000_000;
+export const RECLAIM_BASE = 185_000_000;
 
-/** Less shoreline to build off means more fill, more cofferdam, more money. */
-export function reclaimCost(state, col, row) {
+/**
+ * Less shoreline to build off means more fill, more cofferdam, more money.
+ * Standing takes a slice off the top: a house the harbour commission trusts
+ * gets its licences faster and its barges cheaper.
+ */
+export function reclaimCost(state, col, row, actorId = 'player') {
   const contact = shoreContact(state.city, col, row);
-  return RECLAIM_BASE * (1 + (4 - contact) * 0.42) * state.cycle;
+  const discount = 1 - (termsFor(state, actorId).fillDiscount ?? 0);
+  return RECLAIM_BASE * (1 + (4 - contact) * 0.42) * state.cycle * discount;
 }
 
 export function canReclaimHere(state, actorId, col, row) {
   const a = state.actors[actorId];
   if (!a) return 'Unknown developer.';
-  if (a.regions.size < 2) {
-    return `Reclamation starts at ${money(REGIONS.brooklyn.unlockAt)} net worth — `
-         + `you're at ${money(netWorth(state, actorId))}.`;
+  // Making new ground is licensed on reputation, not on the size of your
+  // balance sheet: the harbour commission wants to see delivered work.
+  if (!termsFor(state, actorId).fill) {
+    const need = nextRank(a.standing ?? 0);
+    return `The harbour commission licences fill to a Developer and above. `
+         + `You are a ${termsFor(state, actorId).title} on ${a.standing ?? 0} standing`
+         + `${need ? ` — ${need.at - (a.standing ?? 0)} more earns ${need.title}` : ''}.`;
   }
   if (!canReclaim(state.city, col, row)) return 'Nothing to build off here — pick water beside the shore.';
   if (state.fills.some((f) => f.col === col && f.row === row)) return 'Already being filled.';
@@ -403,7 +563,7 @@ export function startReclaim(state, col, row, actorId) {
   const why = canReclaimHere(state, actorId, col, row);
   if (why) return { ok: false, why };
   const a = state.actors[actorId];
-  const cost = reclaimCost(state, col, row);
+  const cost = reclaimCost(state, col, row, actorId);
   if (a.cash < cost) return { ok: false, why: `Filling this costs ${money(cost)}.` };
   a.cash -= cost;
   const fill = { col, row, owner: actorId, cost, startDay: state.day, endDay: state.day + 24 * 30 };
@@ -416,6 +576,31 @@ export function startReclaim(state, col, row, actorId) {
 }
 
 // ---------------------------------------------------------------- actions
+
+/**
+ * A loan is secured on the thing it paid for. Selling that thing repays it
+ * out of the proceeds, and if the proceeds fall short the owner still owes
+ * the difference — which is the whole of what a bank is for.
+ *
+ * Before this, debt was a single pooled number that only ever went up: you
+ * could sell every building you owned, keep the entire loan book, and go on
+ * paying interest on assets belonging to somebody else.
+ */
+function settleLoan(state, lot, actorId, proceeds) {
+  const a = state.actors[actorId];
+  const owed = lot.loan ?? 0;
+  const repaid = Math.min(owed, Math.max(0, proceeds));
+  const shortfall = owed - repaid;
+  a.debt = Math.max(0, a.debt - owed);
+  lot.loan = 0;
+  return { net: proceeds - repaid - shortfall, repaid, shortfall };
+}
+
+/** What a lot is worth to its owner once the bank has been paid. */
+export function lotEquity(state, lot) {
+  const gross = landValue(state, lot) + (lot.building ? buildingValue(state, lot) : 0);
+  return gross - (lot.loan ?? 0);
+}
 
 export function buyLot(state, lot, actorId) {
   const a = state.actors[actorId];
@@ -477,7 +662,9 @@ export function startProject(state, lot, actorId, floors, use, ltc, design = DEF
     lot, owner: actorId, floors, use, ltc,
     style: design.style, form: design.form, variant: design.variant,
     designRent: designMul(design).rent,
-    cost: q.total, loan: q.loan, spent: q.equity,
+    // Redeveloping your own site rolls whatever is still owed on it into the
+    // new loan, so nothing falls out of the ledger while the site is a hole.
+    cost: q.total, loan: q.loan + (lot.loan ?? 0), spent: q.equity,
     side: q.side, gsf: q.gsf,
     startDay: state.day,
     endDay: state.day + q.months * 30,
@@ -486,6 +673,7 @@ export function startProject(state, lot, actorId, floors, use, ltc, design = DEF
     demolished: !!lot.building,
   };
   lot.project = project;
+  lot.loan = 0;                            // it is the project's while it is a site
   lot.building = null;                     // demolition is instant; this is a game
   state.projects.push(project);
   logEvent(state, actorId, `broke ground on ${floors} floors at #${lot.id} (${money(q.total)})`);
@@ -541,8 +729,9 @@ export function makeOffer(state, lot, actorId, amount) {
   if (amount >= reserve) {
     a.cash -= amount;
     if (owner) {
-      owner.cash += amount;
-      owner.debt = Math.max(0, owner.debt - amount * 0.45);
+      // The seller's bank is paid before the seller is.
+      const { net } = settleLoan(state, lot, lot.owner, amount);
+      owner.cash += net;
     }
     const from = lot.owner;
     lot.owner = actorId;
@@ -570,10 +759,15 @@ export function sellLot(state, lot, actorId) {
   const a = state.actors[actorId];
   if (lot.owner !== actorId || lot.project) return { ok: false, why: 'Cannot sell right now.' };
   const price = landValue(state, lot) + (lot.building ? buildingValue(state, lot) : 0);
-  a.cash += price * 0.97;                  // brokerage
+  const gross = price * 0.97;              // brokerage
+  const { net, repaid, shortfall } = settleLoan(state, lot, actorId, gross);
+  a.cash += net;
   lot.owner = 'npc';
-  logEvent(state, actorId, `sold #${lot.id} for ${money(price * 0.97)}`);
-  return { ok: true, price };
+  logEvent(state, actorId, repaid
+    ? `sold #${lot.id} for ${money(gross)} — ${money(repaid)} to the bank`
+      + (shortfall ? `, still ${money(shortfall)} short` : '')
+    : `sold #${lot.id} for ${money(gross)}`);
+  return { ok: true, price, net, repaid, shortfall };
 }
 
 /** Cost to pull a project's completion forward. Getting steep fast is the point. */
@@ -624,7 +818,7 @@ export function worthBreakdown(state, actorId = 'player') {
     }
   }
   for (const p of state.projects) if (p.owner === actorId) wip += p.spent;
-  const debtService = a.debt * INTEREST;
+  const debtService = a.debt * interestFor(state, actorId);
   return {
     cash: a.cash, land, buildings, wip, debt: a.debt,
     total: a.cash + land + buildings + wip - a.debt,
@@ -647,7 +841,7 @@ export function pushNews(state, kind, headline, dek, lot = null) {
     snapshot: b ? { floors: b.floors, form: b.form, style: b.style,
                     variant: b.variant, use: b.use, side: b.side } : null,
   });
-  if (state.news.length > 40) state.news.pop();
+  if (state.news.length > 60) state.news.pop();
 }
 
 /** Liquidate. Sites under construction can't be walked away from. */
@@ -698,6 +892,7 @@ function dayTick(state) {
         style: p.style, form: p.form, variant: p.variant, designRent: p.designRent,
       };
       p.lot.project = null;
+      p.lot.loan = p.loan;                 // the loan is secured on what it built
       state.actors[p.owner].gsfBuilt += p.gsf;
       state.projects.splice(i, 1);
       logEvent(state, p.owner, `topped out ${p.floors} floors at #${p.lot.id} — ${sf(p.gsf)}`);
@@ -764,18 +959,70 @@ function monthTick(state) {
       // A civic contract can buy a building years free of property tax.
       if (!(lot.abatedUntil > state.day)) tax += landValue(state, lot) * 0.012 / 12;
     }
-    a.cash += noi - tax - (a.debt * INTEREST) / 12;
+    a.cash += noi - tax - (a.debt * interestFor(state, id)) / 12;
     a.lastNOI = noi;
   }
 
   checkEra(state);
   checkUnlocks(state);
+  checkRank(state);
+  checkMargin(state);
   for (const r of RIVALS) {
     const a = state.actors[r.id];
     if (!a.retired) rivalTurn(state, a);
   }
   tickContracts(state, CONTRACT_API);
+  annualReview(state);
   marketStory(state);
+}
+
+/**
+ * Once a year the paper runs the trade's numbers side by side. This is the
+ * only place you see your rent roll against theirs rather than a single
+ * net-worth figure, and it is what gives a long game a beat.
+ *
+ * Annual rather than quarterly on purpose: at a month a second a quarterly
+ * lands every three seconds, which is not a beat, it is a metronome.
+ */
+function annualReview(state) {
+  const year = dateOf(state).getUTCFullYear();
+  if (state.lastReview === year) return;
+  const first = state.lastReview === undefined;
+  state.lastReview = year;
+  if (first) return;                       // nothing to compare against yet
+
+  const rows = Object.values(state.actors)
+    .filter((a) => !a.retired)
+    .map((a) => {
+      let noi = 0, lots = 0, built = 0;
+      for (const lot of state.city.lots) {
+        if (lot.owner !== a.id) continue;
+        lots++;
+        if (lot.building) { built++; noi += buildingNOI(state, lot); }
+      }
+      const under = state.projects.filter((p) => p.owner === a.id).length;
+      return { id: a.id, name: a.name, isPlayer: !!a.isPlayer, noi, lots, built, under,
+               worth: netWorth(state, a.id), debt: a.debt, standing: a.standing ?? 0 };
+    })
+    .sort((x, y) => y.noi - x.noi);
+
+  const me = rows.find((r) => r.isPlayer);
+  const top = rows[0];
+  const rank = rows.indexOf(me) + 1;
+
+  const line = (r) => `${r.name} — ${money(r.noi)} a year from ${r.built} building`
+    + `${r.built === 1 ? '' : 's'}${r.under ? `, ${r.under} under way` : ''}`
+    + `${r.debt > 0 ? `, ${money(r.debt)} owed` : ', unlevered'}`;
+
+  pushNews(state, 'review',
+    `${year - 1} IN REVIEW: ${top.name.toUpperCase()} LEADS ON RENTS`,
+    `The year's rent rolls, side by side. ${rows.map(line).join('. ')}. `
+    + (me
+      ? (rank === 1
+        ? `You collect more rent than anyone in this city.`
+        : `You are ${rank}${['st', 'nd', 'rd', 'th'][Math.min(rank - 1, 3)]} on income, `
+          + `${money(top.noi - me.noi)} a year behind ${top.name}.`)
+      : ''));
 }
 
 /** The paper notices when the market turns. */
@@ -912,8 +1159,8 @@ function rivalTurn(state, a) {
       owned.sort((x, y) => buildingValue(state, x) - buildingValue(state, y));
       const lot = owned[0];
       const price = (landValue(state, lot) + buildingValue(state, lot)) * 0.82;
-      a.cash += price;
-      a.debt = Math.max(0, a.debt - price * 0.6);
+      const { net } = settleLoan(state, lot, a.id, price);
+      a.cash += net;
       lot.owner = 'npc';
       logEvent(state, a.id, `sold #${lot.id} under pressure for ${money(price)}`);
       pushNews(state, 'distress', `${a.name.toUpperCase()} SELLS UNDER PRESSURE`,
