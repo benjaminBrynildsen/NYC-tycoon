@@ -29,7 +29,124 @@ export const RIVALS = [
     blurb: 'Cheap lots, high volume, thin margins. Grinds you down.' },
 ];
 
-export function createState(city, seed = 11, startYear = 1998) {
+// --------------------------------------------------------------- the band
+//
+// A tycoon game with three competent rivals and no handicap has exactly one
+// difficulty, and it is the difficulty of whoever tuned it. Somebody on their
+// first building is playing the same race as somebody on their fifth, against
+// firms that compound whether or not you understood the air-rights market.
+//
+// So the city leans on you in proportion to how you are actually doing. Heat
+// is one number. Below 1 the rivals are slower to commit, fussier about what
+// pencils, and the bank is patient with a small book. Above 1 they move on
+// less, spend more of their cash, and your lender stops being sentimental.
+//
+// Two things drive it, and both are things you can see: the rank you have
+// climbed to, and where your balance sheet stands against the best of theirs.
+// Nothing is hidden and nothing is random — a beginner is left alone because
+// they are behind, not because a difficulty slider said so.
+
+export const LEVELS = {
+  quiet: {
+    id: 'quiet', name: 'Learning the trade', base: 0.52, swing: 0.72, cap: 1.08,
+    note: 'The three of them work their own patch and leave you alone until you are '
+        + 'worth noticing. The bank is patient. Recommended for a first city.',
+  },
+  even: {
+    id: 'even', name: 'A working developer', base: 0.70, swing: 0.95, cap: 1.55,
+    note: 'They match you. Fall behind and they ease off; get ahead and every site '
+        + 'you want has somebody else bidding on it.',
+  },
+  hard: {
+    id: 'hard', name: 'They know your name', base: 0.98, swing: 0.88, cap: 1.90,
+    note: 'No mercy at the bottom and no ceiling at the top. The city is trying to '
+        + 'take the block off you from the first year.',
+  },
+  flat: {
+    id: 'flat', name: 'No handicap', base: 1, swing: 0, cap: 1,
+    note: 'The old race. Everyone plays the same game from the first day to the last, '
+        + 'whether or not you can keep up.',
+  },
+};
+
+export const DEFAULT_LEVEL = 'even';
+
+/** How long the city takes to start pricing against you at all. */
+export const GRACE_YEARS = 5;
+
+const clamp01 = (n) => Math.max(0, Math.min(1, n));
+
+/**
+ * How hard the city is leaning on you, and why. Read quarterly and cached on
+ * the state, because it walks every lot once per developer.
+ */
+export function heatFor(state) {
+  const level = LEVELS[state.level] ?? LEVELS[DEFAULT_LEVEL];
+  if (!level.swing) return { heat: level.base, level, rankShare: 0, lead: 0.5 };
+
+  const you = netWorth(state, 'player');
+  let best = 0;
+  for (const id in state.actors) {
+    if (id === 'player' || state.actors[id].retired) continue;
+    best = Math.max(best, netWorth(state, id));
+  }
+  // Doubling in on them, or halving against them, is what moves the needle —
+  // so the ratio is read in octaves rather than straight. Level pegs at 0.5.
+  const ratio = you / Math.max(best, 1);
+  const lead = clamp01(0.5 + Math.log2(Math.max(ratio, 1e-6)) / 4);
+  const rankShare = clamp01((state.actors.player.standing ?? 0) / 21);
+  // Nobody is worth pricing against in their first few years, and on day one
+  // the comparison is nonsense anyway: you hold a building and they hold cash
+  // they have not spent yet. So the band opens at its floor and comes on over
+  // five years, which is also the stretch a beginner most needs left alone.
+  const settling = clamp01(state.day / (GRACE_YEARS * 360));
+  const push = (0.4 * rankShare + 0.6 * lead) * settling;
+  const heat = Math.min(level.cap, level.base + level.swing * push);
+  return { heat, level, rankShare, lead, ratio, settling };
+}
+
+/** What to call the pressure, for the panel and for the paper. */
+export function heatLabel(heat) {
+  if (heat < 0.78) return 'They have not noticed you';
+  if (heat < 1.02) return 'They are working their own patch';
+  if (heat < 1.30) return 'They have noticed you';
+  if (heat < 1.60) return 'They are building against you';
+  return 'The whole city wants your block';
+}
+
+/**
+ * What an owner asks when there is somebody else in the room. Nobody holds out
+ * against a developer with one building; everybody holds out against the house
+ * that is buying the whole district. Centred on 1 at an even race, so it costs
+ * a beginner a few per cent less to get started and a dominant player more.
+ */
+export function contested(state) {
+  return 1 + ((state.heat ?? 1) - 1) * 0.09;
+}
+
+/** Multipliers the rest of the sim reads, so nothing else knows about heat. */
+export function pressure(state) {
+  const heat = state.heat ?? 1;
+  return {
+    heat,
+    // Mercy comes off the bar, pressure does not go back on it. A house that
+    // has noticed you does not get *worse* at picking schemes — dropping their
+    // return bar far below par made them take marginal deals, tie up their
+    // capital in them and compound slower, so leaning harder on the player
+    // quietly made the rivals weaker. Below par they are fussier; above par
+    // the bar barely moves and the pressure comes from speed and cash instead.
+    threshold: Math.max(0.92, 1 / heat),
+    // Higher heat, deeper pockets: they put more of their cash on the table.
+    commit: Math.min(1.25, heat),
+    // Higher heat, less waiting between schemes.
+    patience: Math.max(0.35, 2 - heat),
+    // Below 1 the bank is patient with a small book; above it, less so.
+    callLtv: CALL_LTV + (1 - heat) * 0.07,
+    callMonths: Math.max(3, Math.round(CALL_MONTHS + (1 - heat) * 14)),
+  };
+}
+
+export function createState(city, seed = 11, startYear = 1998, level = DEFAULT_LEVEL) {
   const rnd = mulberry32(seed + 99);
 
   const actors = {
@@ -61,6 +178,8 @@ export function createState(city, seed = 11, startYear = 1998) {
     projects: [],
     fills: [],
     landmarks: {},        // signature designs, one of each, ever
+    level: LEVELS[level] ? level : DEFAULT_LEVEL,
+    heat: LEVELS[level] ? LEVELS[level].base : LEVELS[DEFAULT_LEVEL].base,
     contracts: [],
     contractsPostedAt: -999,
     log: [],
@@ -170,10 +289,10 @@ export function blockSpareSf(lot, actorId) {
  */
 export function askPrice(state, lot) {
   const land = landValue(state, lot);
-  if (!lot.building) return land * 1.06;
+  if (!lot.building) return land * 1.06 * contested(state);
   const intrinsic = land + buildingValue(state, lot);
   const mood = state.cycle > 1.15 ? 1.14 : state.cycle < 0.85 ? 0.92 : 1.04;
-  return intrinsic * mood;
+  return intrinsic * mood * contested(state);
 }
 
 /**
@@ -486,6 +605,7 @@ function checkMargin(state) {
     // The clock only runs while there is something the bank could actually
     // take. Warning a developer whose whole position is still a hole in the
     // ground gives them six months they cannot use.
+    const p = pressure(state);
     const seizable = state.city.lots.filter(
       (l) => l.owner === id && !l.project && l.loan > 0);
     const broke = a.cash < 0 && a.debt > 0 && seizable.length > 0;
@@ -496,24 +616,27 @@ function checkMargin(state) {
       if (a.isPlayer) {
         pushNews(state, 'margin', 'YOUR BANKERS WANT A WORD',
           `You are ${money(-a.cash)} overdrawn against ${money(a.debt)} of debt, and the rents are `
-          + `not covering it. Sell something within ${CALL_MONTHS} months or the bank will choose `
+          + `not covering it. Sell something within ${p.callMonths} months or the bank will choose `
           + `for you — and it will not choose well.`);
       }
     }
     // Past the grace period the bank takes the weakest asset, every month,
     // until the bleeding stops.
-    if (state.day - a.insolventSince < CALL_MONTHS * 30) continue;
+    if (state.day - a.insolventSince < p.callMonths * 30) continue;
     seizable.sort((x, y) => ltvOf(state, y) - ltvOf(state, x));
     foreclose(state, seizable[0], a);
   }
 
+  const band = pressure(state);
   for (const lot of state.city.lots) {
     const owner = lot.owner && state.actors[lot.owner];
     if (!owner || lot.project) { lot.calledOn = null; continue; }
     if (!(lot.loan > 0)) { lot.calledOn = null; continue; }
 
     const ltv = ltvOf(state, lot);
-    if (ltv <= CALL_LTV) {
+    // A lender is patient with a small book and impatient with a big one, so
+    // the covenant itself moves with the band.
+    if (ltv <= band.callLtv) {
       if (lot.calledOn && owner.isPlayer) {
         pushNews(state, 'margin', `${lot.address.toUpperCase()} IS OUT OF DANGER`,
           `Values have come back far enough that the loan on ${lot.address} sits inside its `
@@ -530,13 +653,13 @@ function checkMargin(state) {
         pushNews(state, 'margin', `THE BANK CALLS THE LOAN ON ${lot.address.toUpperCase()}`,
           `${money(lot.loan)} is lent against a building the market now says is worth `
           + `${money(landValue(state, lot) + (lot.building ? buildingValue(state, lot) : 0))}. `
-          + `You have ${CALL_MONTHS} months to sell it, pay it down, or see the value come back. `
+          + `You have ${band.callMonths} months to sell it, pay it down, or see the value come back. `
           + `After that the bank sells it for you.`, lot);
       }
       continue;
     }
 
-    if (state.day - lot.calledOn < CALL_MONTHS * 30) continue;
+    if (state.day - lot.calledOn < band.callMonths * 30) continue;
     foreclose(state, lot, owner);
   }
 }
@@ -1190,6 +1313,7 @@ function monthTick(state) {
   checkEra(state);
   checkUnlocks(state);
   checkRank(state);
+  checkHeat(state);
   checkMargin(state);
   for (const r of RIVALS) {
     const a = state.actors[r.id];
@@ -1199,6 +1323,41 @@ function monthTick(state) {
   annualReview(state);
   marketStory(state);
   checkFinish(state);
+}
+
+/**
+ * Recompute how hard the city is leaning, and say so when it changes band.
+ * A handicap you cannot see reads as the game cheating the moment you notice
+ * it, so the paper reports the turn the same as it reports anything else.
+ */
+function checkHeat(state) {
+  const was = heatLabel(state.heat ?? 1);
+  // Working out where you stand walks every lot four times, and the answer is
+  // eased over two years anyway — so it is read quarterly and leaned towards
+  // monthly, which is indistinguishable and three times cheaper.
+  if (state.heatTarget === undefined || state.day - (state.heatAt ?? -999) >= 90) {
+    state.heatTarget = heatFor(state).heat;
+    state.heatAt = state.day;
+  }
+  const heat = state.heatTarget;
+  // Eased towards rather than snapped to: one good year should not flip the
+  // whole city's attention, and one bad one should not switch it off.
+  state.heat = (state.heat ?? heat) * 0.88 + heat * 0.12;
+  const now = heatLabel(state.heat);
+  if (now === was || state.day < 360) return;
+  // The eased value can sit on a boundary for a while, and a target that
+  // wanders across one would put the same story in the paper every month.
+  if (state.day - (state.heatSaidAt ?? -9999) < 3 * 360) return;
+  state.heatSaidAt = state.day;
+  const up = state.heat > (state.heatWas ?? 1);
+  state.heatWas = state.heat;
+  pushNews(state, 'heat', up ? 'THE TRADE TURNS ITS ATTENTION TO YOU'
+                             : 'THE TRADE LOOKS ELSEWHERE',
+    up ? `${now}. Your name is on enough buildings that the other houses have started `
+       + `pricing against you — expect them to bid on the sites you want and to move `
+       + `faster on the ones you hesitate over.`
+       : `${now}. You are small enough at the moment that the other houses are working `
+       + `their own patch and the bank is in no hurry. It will not last.`);
 }
 
 /**
@@ -1411,6 +1570,9 @@ export function blockCharacter(state, block) {
 
 function rivalTurn(state, a) {
   if (a.cooldown > 0) { a.cooldown--; return; }
+  // How hard this house is leaning on you this month. Read once — it walks
+  // every lot in the city to work out where you stand.
+  const band = pressure(state);
 
   // Distress: a leveraged developer in a downturn has to sell something.
   if (a.cash < 0) {
@@ -1461,7 +1623,11 @@ function rivalTurn(state, a) {
       // six-tenths nobody could ever fund a tower in the core — the equity on
       // one runs to nearly a hundred million — so they ground away on cheap
       // edge land for seventy years instead.
-      if (q.equity > a.cash * COMMIT[a.strategy]) continue;
+      // Never past 95% of the cash they hold, whatever the band says. Letting
+      // this run over 1 put the rivals into negative cash at high pressure,
+      // which forced distress sales — so leaning harder on the player made
+      // them build *fewer* buildings, which is the opposite of the point.
+      if (q.equity > a.cash * Math.min(0.95, COMMIT[a.strategy] * band.commit)) continue;
       // A house that has grown does not keep putting up walk-ups. Without a
       // floor on the size of a scheme the rivals compounded quietly on cheap
       // edge land for seventy years and never once entered the core.
@@ -1483,7 +1649,7 @@ function rivalTurn(state, a) {
   // extending ground they already made, because four joined cells is an
   // island and an island is rezoned C6 — the rivals are chasing that for the
   // same reason you are, and they will race you to the fourth cell.
-  if (state.rnd() < 0.15) {
+  if (state.rnd() < 0.15 * band.heat) {
     const city = state.city;
     let spot = null, bestV = -Infinity;
     for (let row = 0; row < CONFIG.ROWS; row++) {
@@ -1502,13 +1668,19 @@ function rivalTurn(state, a) {
     // gate wanted $900M in cash, which no rival in seventy years ever held —
     // so no rival ever filled so much as a single cell.
     if (spot && (spot.own > 0 ? a.cash > spot.cost * 1.8 : a.cash > spot.cost * 3)
-        && startReclaim(state, spot.col, spot.row, a.id).ok) { a.cooldown = 3; return; }
+        && startReclaim(state, spot.col, spot.row, a.id).ok) {
+      a.cooldown = Math.max(1, Math.round(3 * band.patience));
+      return;
+    }
   }
 
   // These are read against a score built from yield on cost, and construction
   // costs half again as much as it used to — which halved every yield in the
   // city and, left alone, quietly stopped the rivals building at all.
-  const threshold = { institution: 18, cowboy: 13, grinder: 20 }[a.strategy];
+  // The bar a scheme has to clear. The band moves it: a house that has noticed
+  // you will take a deal it would otherwise have passed on, and one that has
+  // not is fussy.
+  const threshold = { institution: 18, cowboy: 13, grinder: 20 }[a.strategy] * band.threshold;
   if (best && bestScore > threshold) {
     if (best.lot.owner === 'npc' || best.lot.owner === null) {
       const price = askPrice(state, best.lot);
@@ -1529,7 +1701,7 @@ function rivalTurn(state, a) {
     if (!r.ok && design.landmark) {
       startProject(state, best.lot, a.id, best.floors, use, a.ltc, { ...design, landmark: null });
     }
-    a.cooldown = a.patience;
+    a.cooldown = Math.round(a.patience * band.patience);
     state._dirtyGeometry = true;
   }
 }
@@ -1632,7 +1804,7 @@ function rivalLandmark(a, floors, state) {
   // The grinder builds walk-ups in the boroughs and has no use for an
   // architect. The other two are in this for the name on the building.
   if (a.strategy === 'grinder') return null;
-  if (state.rnd() > 0.3) return null;
+  if (state.rnd() > 0.3 * (state.heat ?? 1)) return null;
   const open = LANDMARKS.filter((L) => floors >= L.minFloors && landmarkStatus(state, L, floors).ok);
   if (!open.length) return null;
   // The tallest thing they can carry: the fee is worth paying on the biggest

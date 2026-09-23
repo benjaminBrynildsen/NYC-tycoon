@@ -6,7 +6,7 @@ import { generateCity, CONFIG, cellOf, canReclaim, minFloors,
 import { createState, advance, netWorth, leaderboard, money, sf, logEvent, formatDate,
          currentEra, currentYear,
          reclaimCost, startReclaim, canReclaimHere, sellAll,
-         takeableFirms, takeOverFirm } from './economy.js';
+         takeableFirms, takeOverFirm, LEVELS, DEFAULT_LEVEL } from './economy.js';
 import { CityScene, QUALITY } from './scene.js';
 import { Controls, MODE, requestLock, isTyping } from './controls.js';
 import { UI } from './ui.js';
@@ -44,10 +44,27 @@ function writeStart(seed, year) {
   try { location.hash = `s${seed}y${year}`; } catch { /* fine */ }
 }
 
+/**
+ * How hard the city pushes back is kept apart from the seed and the year,
+ * because unlike those it can be changed without rebuilding the city — the
+ * band is re-read from your position as the game runs.
+ */
+function readLevel() {
+  try {
+    const v = sessionStorage.getItem('airrights.level');
+    if (v && LEVELS[v]) return v;
+  } catch { /* private window */ }
+  return DEFAULT_LEVEL;
+}
+function writeLevel(level) {
+  try { sessionStorage.setItem('airrights.level', level); } catch { /* fine */ }
+}
+
 const { seed: SEED, year: START_YEAR } = readStart();
+const START_LEVEL = readLevel();
 const canvas = document.getElementById('view');
 const city = generateCity(SEED, START_YEAR);
-const state = createState(city, SEED, START_YEAR);
+const state = createState(city, SEED, START_YEAR, START_LEVEL);
 // A phone gets fewer people, fewer cars and no shadows; the sim is identical.
 const TOUCH = isTouch();
 const scene = new CityScene(state, canvas, TOUCH ? QUALITY.low : QUALITY.high);
@@ -388,6 +405,31 @@ document.getElementById('begin').onclick = () => {
   }
 }
 
+// --- how hard the other three push back
+{
+  const paint = () => {
+    const lvl = LEVELS[state.level];
+    document.getElementById('level-now').textContent = lvl.name;
+    document.getElementById('level-note').textContent = lvl.note;
+    for (const b of document.querySelectorAll('#levelrow button')) {
+      b.classList.toggle('on', b.dataset.level === state.level);
+    }
+  };
+  for (const b of document.querySelectorAll('#levelrow button')) {
+    b.onclick = () => {
+      // Nothing about the city depends on this, so it takes effect where it
+      // stands — no reload, no new seed, no losing the era you picked.
+      state.level = b.dataset.level;
+      state.heat = LEVELS[state.level].base;
+      state.heatTarget = undefined;             // re-read against the new level
+      state.heatAt = undefined;
+      writeLevel(state.level);
+      paint();
+    };
+  }
+  paint();
+}
+
 // --- joining a game already under way
 document.getElementById('begin-takeover').onclick = () => {
   document.getElementById('yearpick').classList.remove('hidden');
@@ -622,10 +664,15 @@ function showFinishIfOver() {
           a.tallest ? ` · tallest ${a.tallest} floors` : ''}</span></span>
       <span class="amt">${money(a.worth)}</span>
     </li>`).join('');
+  const lvl = LEVELS[state.level] ?? {};
   document.getElementById('fin-notes').innerHTML =
     `You delivered <b>${f.contracts}</b> contract${f.contracts === 1 ? '' : 's'}, `
     + `gave the city <b>${f.parks}</b> block${f.parks === 1 ? '' : 's'} of park, `
-    + `and finished as a <b>${me.title}</b> on ${me.standing} standing.`;
+    + `and finished as a <b>${me.title}</b> on ${me.standing} standing.`
+    // A number means nothing without the terms it was made on.
+    + `<br>Played on <b>${lvl.name ?? 'unknown'}</b> terms${lvl.swing
+        ? `, and they were leaning on you at <b>${(state.heat ?? 1).toFixed(2)}</b> at the bell.`
+        : '.'}`;
   document.getElementById('finish').classList.remove('hidden');
 }
 document.getElementById('fin-again').onclick = () => {

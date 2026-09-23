@@ -577,7 +577,7 @@ body.touch #crosshair, body.touch #modehint { display: none; }
   .lift-readout span { font-size: 46px; }
 }
 
-#erapick { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+#erapick, #levelpick { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
 .eralabel { font-size: 12px; color: var(--dim); }
 .eralabel b { color: var(--accent); font-weight: 700; }
 .erarow { display: flex; gap: 6px; margin: 9px 0 4px; }
@@ -622,6 +622,26 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
 .rankrow span { font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
 #pf-rank .perk { margin: 4px 0 8px; font-size: 10.5px; color: var(--dim); line-height: 1.45; }
 #pf-rank > span { font-size: 10.5px; color: var(--dim); line-height: 1.45; display: block; }
+
+/* How hard the city is leaning. The tick is where an even race sits, so the
+   bar reads as "behind it" or "past it" rather than as a raw number. */
+.heatrow { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.heatrow > span { font-size: 11.5px; font-weight: 600; display: block; }
+.heatbar {
+  position: relative; height: 5px; border-radius: 3px; margin: 8px 0 6px;
+  background: rgba(255,255,255,.12);
+}
+.heatbar i {
+  display: block; height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, #4ade80, #e0b341, #f2766a);
+  background-size: 190% 100%;          /* the gradient spans the whole scale */
+}
+/* Where an even race sits, so the bar reads as "short of it" or "past it". */
+.heatbar em {
+  position: absolute; top: -3px; width: 1px; height: 11px;
+  background: rgba(255,255,255,.6);
+}
+.heatnote { font-size: 10px; color: var(--dim); line-height: 1.45; display: block; font-weight: 400; }
 
 /* ---------------------------------------------------------- the final bell */
 #finish {

@@ -14,7 +14,7 @@ import {
   premiums, blockCharacter, rushQuote, rushProject, nameBuilding, worthBreakdown,
   makeOffer, reservePrice, regionGate, canWorkIn, demolitionBlock, LANDMARK_FLOORS,
   blockSpareSf, sellAll, currentYear, currentEra, maxLtcFor,
-  parkOffer, sellBlockToCity, yearsLeft,
+  parkOffer, sellBlockToCity, yearsLeft, LEVELS, heatLabel,
 } from './economy.js';
 
 const $ = (id) => document.getElementById(id);
@@ -346,18 +346,30 @@ export class UI {
     const st = this.state.actors.player.standing ?? 0;
     const rank = rankFor(st);
     const next = nextRank(st);
+    // How hard the city is leaning, on the same panel as the rank that half of
+    // it is keyed to. A handicap you cannot see reads as the game cheating.
+    const heat = this.state.heat ?? 1;
+    const lvl = LEVELS[this.state.level] ?? {};
+    const band = lvl.swing
+      ? `<div class="heatrow"><span>${esc(heatLabel(heat))}</span>`
+        + `<div class="heatbar"><i style="width:${pct(Math.min(1, heat / 1.9))}"></i>`
+        + `<em style="left:${pct(1 / 1.9)}"></em></div>`
+        + `<span class="heatnote">${esc(lvl.name)} — they lean on you in proportion to `
+        + `your rank and your balance sheet against theirs.</span></div>`
+      : '';
     return `<div class="rankrow"><b>${esc(rank.title)}</b><span>${st} standing</span></div>`
       + `<p class="perk">${esc(rank.perk)}</p>`
       + (next
         ? `<div class="gatebar"><i style="width:${pct(Math.min(1, st / next.at))}"></i></div>`
           + `<span>${next.at - st} more and you are a ${esc(next.title)} — ${esc(next.perk)}</span>`
-        : '<span>Nothing left to prove to the trade.</span>');
+        : '<span>Nothing left to prove to the trade.</span>')
+      + band;
   }
 
   refreshBoard() {
     const sp = $('sp-rank');
     if (sp) {
-      const sig = `${this.state.actors.player.standing ?? 0}`;
+      const sig = `${this.state.actors.player.standing ?? 0}|${Math.round((this.state.heat ?? 1) * 20)}`;
       if (sig !== this._rankSig) { this._rankSig = sig; sp.innerHTML = this._rankHtml(); }
     }
 

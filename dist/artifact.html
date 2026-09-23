@@ -579,7 +579,7 @@ body.touch #crosshair, body.touch #modehint { display: none; }
   .lift-readout span { font-size: 46px; }
 }
 
-#erapick { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+#erapick, #levelpick { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
 .eralabel { font-size: 12px; color: var(--dim); }
 .eralabel b { color: var(--accent); font-weight: 700; }
 .erarow { display: flex; gap: 6px; margin: 9px 0 4px; }
@@ -624,6 +624,26 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
 .rankrow span { font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
 #pf-rank .perk { margin: 4px 0 8px; font-size: 10.5px; color: var(--dim); line-height: 1.45; }
 #pf-rank > span { font-size: 10.5px; color: var(--dim); line-height: 1.45; display: block; }
+
+/* How hard the city is leaning. The tick is where an even race sits, so the
+   bar reads as "behind it" or "past it" rather than as a raw number. */
+.heatrow { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.heatrow > span { font-size: 11.5px; font-weight: 600; display: block; }
+.heatbar {
+  position: relative; height: 5px; border-radius: 3px; margin: 8px 0 6px;
+  background: rgba(255,255,255,.12);
+}
+.heatbar i {
+  display: block; height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, #4ade80, #e0b341, #f2766a);
+  background-size: 190% 100%;          /* the gradient spans the whole scale */
+}
+/* Where an even race sits, so the bar reads as "short of it" or "past it". */
+.heatbar em {
+  position: absolute; top: -3px; width: 1px; height: 11px;
+  background: rgba(255,255,255,.6);
+}
+.heatnote { font-size: 10px; color: var(--dim); line-height: 1.45; display: block; font-weight: 400; }
 
 /* ---------------------------------------------------------- the final bell */
 #finish {
@@ -867,6 +887,17 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
         <button data-year="1998">1998</button>
       </div>
       <p class="hint" id="era-note"></p>
+    </div>
+
+    <div id="levelpick">
+      <div class="eralabel">How hard they push back — <b id="level-now">—</b></div>
+      <div class="erarow" id="levelrow">
+        <button data-level="quiet">Quiet</button>
+        <button data-level="even">Even</button>
+        <button data-level="hard">Hard</button>
+        <button data-level="flat">No handicap</button>
+      </div>
+      <p class="hint" id="level-note"></p>
     </div>
 
     <div class="startrow">
@@ -2202,7 +2233,91 @@ var RIVALS = [
     blurb: "Cheap lots, high volume, thin margins. Grinds you down."
   }
 ];
-function createState(city2, seed = 11, startYear = 1998) {
+var LEVELS = {
+  quiet: {
+    id: "quiet",
+    name: "Learning the trade",
+    base: 0.52,
+    swing: 0.72,
+    cap: 1.08,
+    note: "The three of them work their own patch and leave you alone until you are worth noticing. The bank is patient. Recommended for a first city."
+  },
+  even: {
+    id: "even",
+    name: "A working developer",
+    base: 0.7,
+    swing: 0.95,
+    cap: 1.55,
+    note: "They match you. Fall behind and they ease off; get ahead and every site you want has somebody else bidding on it."
+  },
+  hard: {
+    id: "hard",
+    name: "They know your name",
+    base: 0.98,
+    swing: 0.88,
+    cap: 1.9,
+    note: "No mercy at the bottom and no ceiling at the top. The city is trying to take the block off you from the first year."
+  },
+  flat: {
+    id: "flat",
+    name: "No handicap",
+    base: 1,
+    swing: 0,
+    cap: 1,
+    note: "The old race. Everyone plays the same game from the first day to the last, whether or not you can keep up."
+  }
+};
+var DEFAULT_LEVEL = "even";
+var GRACE_YEARS = 5;
+var clamp01 = (n) => Math.max(0, Math.min(1, n));
+function heatFor(state2) {
+  const level = LEVELS[state2.level] ?? LEVELS[DEFAULT_LEVEL];
+  if (!level.swing) return { heat: level.base, level, rankShare: 0, lead: 0.5 };
+  const you = netWorth(state2, "player");
+  let best = 0;
+  for (const id in state2.actors) {
+    if (id === "player" || state2.actors[id].retired) continue;
+    best = Math.max(best, netWorth(state2, id));
+  }
+  const ratio = you / Math.max(best, 1);
+  const lead = clamp01(0.5 + Math.log2(Math.max(ratio, 1e-6)) / 4);
+  const rankShare = clamp01((state2.actors.player.standing ?? 0) / 21);
+  const settling = clamp01(state2.day / (GRACE_YEARS * 360));
+  const push = (0.4 * rankShare + 0.6 * lead) * settling;
+  const heat = Math.min(level.cap, level.base + level.swing * push);
+  return { heat, level, rankShare, lead, ratio, settling };
+}
+function heatLabel(heat) {
+  if (heat < 0.78) return "They have not noticed you";
+  if (heat < 1.02) return "They are working their own patch";
+  if (heat < 1.3) return "They have noticed you";
+  if (heat < 1.6) return "They are building against you";
+  return "The whole city wants your block";
+}
+function contested(state2) {
+  return 1 + ((state2.heat ?? 1) - 1) * 0.09;
+}
+function pressure(state2) {
+  const heat = state2.heat ?? 1;
+  return {
+    heat,
+    // Mercy comes off the bar, pressure does not go back on it. A house that
+    // has noticed you does not get *worse* at picking schemes — dropping their
+    // return bar far below par made them take marginal deals, tie up their
+    // capital in them and compound slower, so leaning harder on the player
+    // quietly made the rivals weaker. Below par they are fussier; above par
+    // the bar barely moves and the pressure comes from speed and cash instead.
+    threshold: Math.max(0.92, 1 / heat),
+    // Higher heat, deeper pockets: they put more of their cash on the table.
+    commit: Math.min(1.25, heat),
+    // Higher heat, less waiting between schemes.
+    patience: Math.max(0.35, 2 - heat),
+    // Below 1 the bank is patient with a small book; above it, less so.
+    callLtv: CALL_LTV + (1 - heat) * 0.07,
+    callMonths: Math.max(3, Math.round(CALL_MONTHS + (1 - heat) * 14))
+  };
+}
+function createState(city2, seed = 11, startYear = 1998, level = DEFAULT_LEVEL) {
   const rnd = mulberry32(seed + 99);
   const actors = {
     player: {
@@ -2244,6 +2359,8 @@ function createState(city2, seed = 11, startYear = 1998) {
     fills: [],
     landmarks: {},
     // signature designs, one of each, ever
+    level: LEVELS[level] ? level : DEFAULT_LEVEL,
+    heat: LEVELS[level] ? LEVELS[level].base : LEVELS[DEFAULT_LEVEL].base,
     contracts: [],
     contractsPostedAt: -999,
     log: [],
@@ -2323,10 +2440,10 @@ function blockSpareSf(lot, actorId) {
 }
 function askPrice(state2, lot) {
   const land = landValue(state2, lot);
-  if (!lot.building) return land * 1.06;
+  if (!lot.building) return land * 1.06 * contested(state2);
   const intrinsic = land + buildingValue(state2, lot);
   const mood = state2.cycle > 1.15 ? 1.14 : state2.cycle < 0.85 ? 0.92 : 1.04;
-  return intrinsic * mood;
+  return intrinsic * mood * contested(state2);
 }
 function heightCostMul(floors) {
   return 1 + 7e-3 * floors + 4e-5 * floors * floors;
@@ -2552,6 +2669,7 @@ function checkMargin(state2) {
   for (const id in state2.actors) {
     const a = state2.actors[id];
     if (a.retired) continue;
+    const p = pressure(state2);
     const seizable = state2.city.lots.filter(
       (l) => l.owner === id && !l.project && l.loan > 0
     );
@@ -2568,14 +2686,15 @@ function checkMargin(state2) {
           state2,
           "margin",
           "YOUR BANKERS WANT A WORD",
-          `You are ${money2(-a.cash)} overdrawn against ${money2(a.debt)} of debt, and the rents are not covering it. Sell something within ${CALL_MONTHS} months or the bank will choose for you \u2014 and it will not choose well.`
+          `You are ${money2(-a.cash)} overdrawn against ${money2(a.debt)} of debt, and the rents are not covering it. Sell something within ${p.callMonths} months or the bank will choose for you \u2014 and it will not choose well.`
         );
       }
     }
-    if (state2.day - a.insolventSince < CALL_MONTHS * 30) continue;
+    if (state2.day - a.insolventSince < p.callMonths * 30) continue;
     seizable.sort((x, y) => ltvOf(state2, y) - ltvOf(state2, x));
     foreclose(state2, seizable[0], a);
   }
+  const band = pressure(state2);
   for (const lot of state2.city.lots) {
     const owner = lot.owner && state2.actors[lot.owner];
     if (!owner || lot.project) {
@@ -2587,7 +2706,7 @@ function checkMargin(state2) {
       continue;
     }
     const ltv = ltvOf(state2, lot);
-    if (ltv <= CALL_LTV) {
+    if (ltv <= band.callLtv) {
       if (lot.calledOn && owner.isPlayer) {
         pushNews(
           state2,
@@ -2608,13 +2727,13 @@ function checkMargin(state2) {
           state2,
           "margin",
           `THE BANK CALLS THE LOAN ON ${lot.address.toUpperCase()}`,
-          `${money2(lot.loan)} is lent against a building the market now says is worth ${money2(landValue(state2, lot) + (lot.building ? buildingValue(state2, lot) : 0))}. You have ${CALL_MONTHS} months to sell it, pay it down, or see the value come back. After that the bank sells it for you.`,
+          `${money2(lot.loan)} is lent against a building the market now says is worth ${money2(landValue(state2, lot) + (lot.building ? buildingValue(state2, lot) : 0))}. You have ${band.callMonths} months to sell it, pay it down, or see the value come back. After that the bank sells it for you.`,
           lot
         );
       }
       continue;
     }
-    if (state2.day - lot.calledOn < CALL_MONTHS * 30) continue;
+    if (state2.day - lot.calledOn < band.callMonths * 30) continue;
     foreclose(state2, lot, owner);
   }
 }
@@ -3203,6 +3322,7 @@ function monthTick(state2) {
   checkEra(state2);
   checkUnlocks(state2);
   checkRank(state2);
+  checkHeat(state2);
   checkMargin(state2);
   for (const r of RIVALS) {
     const a = state2.actors[r.id];
@@ -3212,6 +3332,27 @@ function monthTick(state2) {
   annualReview(state2);
   marketStory(state2);
   checkFinish(state2);
+}
+function checkHeat(state2) {
+  const was = heatLabel(state2.heat ?? 1);
+  if (state2.heatTarget === void 0 || state2.day - (state2.heatAt ?? -999) >= 90) {
+    state2.heatTarget = heatFor(state2).heat;
+    state2.heatAt = state2.day;
+  }
+  const heat = state2.heatTarget;
+  state2.heat = (state2.heat ?? heat) * 0.88 + heat * 0.12;
+  const now = heatLabel(state2.heat);
+  if (now === was || state2.day < 360) return;
+  if (state2.day - (state2.heatSaidAt ?? -9999) < 3 * 360) return;
+  state2.heatSaidAt = state2.day;
+  const up = state2.heat > (state2.heatWas ?? 1);
+  state2.heatWas = state2.heat;
+  pushNews(
+    state2,
+    "heat",
+    up ? "THE TRADE TURNS ITS ATTENTION TO YOU" : "THE TRADE LOOKS ELSEWHERE",
+    up ? `${now}. Your name is on enough buildings that the other houses have started pricing against you \u2014 expect them to bid on the sites you want and to move faster on the ones you hesitate over.` : `${now}. You are small enough at the moment that the other houses are working their own patch and the bank is in no hurry. It will not last.`
+  );
 }
 function annualReview(state2) {
   const year = dateOf(state2).getUTCFullYear();
@@ -3411,6 +3552,7 @@ function rivalTurn(state2, a) {
     a.cooldown--;
     return;
   }
+  const band = pressure(state2);
   if (a.cash < 0) {
     const owned = state2.city.lots.filter((l) => l.owner === a.id && !l.project);
     if (owned.length) {
@@ -3449,7 +3591,7 @@ function rivalTurn(state2, a) {
     if (lot.owner === "npc" && askPrice(state2, lot) > a.cash) continue;
     for (const floors of heightOptions(lot, a, state2)) {
       const q = quote(state2, lot, floors, use, a.ltc, rivalDesign(a, lot, floors, state2), a.id);
-      if (q.equity > a.cash * COMMIT[a.strategy]) continue;
+      if (q.equity > a.cash * Math.min(0.95, COMMIT[a.strategy] * band.commit)) continue;
       if (q.total < smallestWorthDoing(state2, a)) continue;
       const roe = (q.value - q.total) / Math.max(q.equity, 1);
       const score = roe * 100 * wants(lot) * contractBias(state2, a.id, lot) - (a.strategy === "institution" ? q.equity / 9e7 : 0);
@@ -3459,7 +3601,7 @@ function rivalTurn(state2, a) {
       }
     }
   }
-  if (state2.rnd() < 0.15) {
+  if (state2.rnd() < 0.15 * band.heat) {
     const city2 = state2.city;
     let spot = null, bestV = -Infinity;
     for (let row = 0; row < CONFIG.ROWS; row++) {
@@ -3476,11 +3618,11 @@ function rivalTurn(state2, a) {
       }
     }
     if (spot && (spot.own > 0 ? a.cash > spot.cost * 1.8 : a.cash > spot.cost * 3) && startReclaim(state2, spot.col, spot.row, a.id).ok) {
-      a.cooldown = 3;
+      a.cooldown = Math.max(1, Math.round(3 * band.patience));
       return;
     }
   }
-  const threshold = { institution: 18, cowboy: 13, grinder: 20 }[a.strategy];
+  const threshold = { institution: 18, cowboy: 13, grinder: 20 }[a.strategy] * band.threshold;
   if (best && bestScore > threshold) {
     if (best.lot.owner === "npc" || best.lot.owner === null) {
       const price = askPrice(state2, best.lot);
@@ -3501,7 +3643,7 @@ function rivalTurn(state2, a) {
     if (!r.ok && design.landmark) {
       startProject(state2, best.lot, a.id, best.floors, use, a.ltc, { ...design, landmark: null });
     }
-    a.cooldown = a.patience;
+    a.cooldown = Math.round(a.patience * band.patience);
     state2._dirtyGeometry = true;
   }
 }
@@ -3571,7 +3713,7 @@ function rivalDesign(a, lot, floors, state2) {
 }
 function rivalLandmark(a, floors, state2) {
   if (a.strategy === "grinder") return null;
-  if (state2.rnd() > 0.3) return null;
+  if (state2.rnd() > 0.3 * (state2.heat ?? 1)) return null;
   const open = LANDMARKS.filter((L) => floors >= L.minFloors && landmarkStatus(state2, L, floors).ok);
   if (!open.length) return null;
   open.sort((x, y) => y.minFloors - x.minFloors);
@@ -6858,12 +7000,15 @@ var UI = class {
     const st = this.state.actors.player.standing ?? 0;
     const rank = rankFor(st);
     const next = nextRank(st);
-    return `<div class="rankrow"><b>${esc(rank.title)}</b><span>${st} standing</span></div><p class="perk">${esc(rank.perk)}</p>` + (next ? `<div class="gatebar"><i style="width:${pct(Math.min(1, st / next.at))}"></i></div><span>${next.at - st} more and you are a ${esc(next.title)} \u2014 ${esc(next.perk)}</span>` : "<span>Nothing left to prove to the trade.</span>");
+    const heat = this.state.heat ?? 1;
+    const lvl = LEVELS[this.state.level] ?? {};
+    const band = lvl.swing ? `<div class="heatrow"><span>${esc(heatLabel(heat))}</span><div class="heatbar"><i style="width:${pct(Math.min(1, heat / 1.9))}"></i><em style="left:${pct(1 / 1.9)}"></em></div><span class="heatnote">${esc(lvl.name)} \u2014 they lean on you in proportion to your rank and your balance sheet against theirs.</span></div>` : "";
+    return `<div class="rankrow"><b>${esc(rank.title)}</b><span>${st} standing</span></div><p class="perk">${esc(rank.perk)}</p>` + (next ? `<div class="gatebar"><i style="width:${pct(Math.min(1, st / next.at))}"></i></div><span>${next.at - st} more and you are a ${esc(next.title)} \u2014 ${esc(next.perk)}</span>` : "<span>Nothing left to prove to the trade.</span>") + band;
   }
   refreshBoard() {
     const sp = $("sp-rank");
     if (sp) {
-      const sig = `${this.state.actors.player.standing ?? 0}`;
+      const sig = `${this.state.actors.player.standing ?? 0}|${Math.round((this.state.heat ?? 1) * 20)}`;
       if (sig !== this._rankSig) {
         this._rankSig = sig;
         sp.innerHTML = this._rankHtml();
@@ -7491,10 +7636,25 @@ function writeStart(seed, year) {
   } catch {
   }
 }
+function readLevel() {
+  try {
+    const v = sessionStorage.getItem("airrights.level");
+    if (v && LEVELS[v]) return v;
+  } catch {
+  }
+  return DEFAULT_LEVEL;
+}
+function writeLevel(level) {
+  try {
+    sessionStorage.setItem("airrights.level", level);
+  } catch {
+  }
+}
 var { seed: SEED, year: START_YEAR } = readStart();
+var START_LEVEL = readLevel();
 var canvas = document.getElementById("view");
 var city = generateCity(SEED, START_YEAR);
-var state = createState(city, SEED, START_YEAR);
+var state = createState(city, SEED, START_YEAR, START_LEVEL);
 var TOUCH = isTouch();
 var scene = new CityScene(state, canvas, TOUCH ? QUALITY.low : QUALITY.high);
 var controls = new Controls(scene, canvas);
@@ -7753,7 +7913,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "627e8a5 \xB7 2026-09-23 17:01" : "dev";
+var BUILD = true ? "25ce688 \xB7 2026-09-23 17:24" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
@@ -7801,6 +7961,27 @@ document.getElementById("begin").onclick = () => {
       location.reload();
     };
   }
+}
+{
+  const paint = () => {
+    const lvl = LEVELS[state.level];
+    document.getElementById("level-now").textContent = lvl.name;
+    document.getElementById("level-note").textContent = lvl.note;
+    for (const b of document.querySelectorAll("#levelrow button")) {
+      b.classList.toggle("on", b.dataset.level === state.level);
+    }
+  };
+  for (const b of document.querySelectorAll("#levelrow button")) {
+    b.onclick = () => {
+      state.level = b.dataset.level;
+      state.heat = LEVELS[state.level].base;
+      state.heatTarget = void 0;
+      state.heatAt = void 0;
+      writeLevel(state.level);
+      paint();
+    };
+  }
+  paint();
 }
 document.getElementById("begin-takeover").onclick = () => {
   document.getElementById("yearpick").classList.remove("hidden");
@@ -7975,7 +8156,8 @@ function showFinishIfOver() {
         <span>${a.title} \xB7 ${sf(a.gsf)} built \xB7 ${a.lots} lots${a.tallest ? ` \xB7 tallest ${a.tallest} floors` : ""}</span></span>
       <span class="amt">${money2(a.worth)}</span>
     </li>`).join("");
-  document.getElementById("fin-notes").innerHTML = `You delivered <b>${f.contracts}</b> contract${f.contracts === 1 ? "" : "s"}, gave the city <b>${f.parks}</b> block${f.parks === 1 ? "" : "s"} of park, and finished as a <b>${me.title}</b> on ${me.standing} standing.`;
+  const lvl = LEVELS[state.level] ?? {};
+  document.getElementById("fin-notes").innerHTML = `You delivered <b>${f.contracts}</b> contract${f.contracts === 1 ? "" : "s"}, gave the city <b>${f.parks}</b> block${f.parks === 1 ? "" : "s"} of park, and finished as a <b>${me.title}</b> on ${me.standing} standing.<br>Played on <b>${lvl.name ?? "unknown"}</b> terms${lvl.swing ? `, and they were leaning on you at <b>${(state.heat ?? 1).toFixed(2)}</b> at the bell.` : "."}`;
   document.getElementById("finish").classList.remove("hidden");
 }
 document.getElementById("fin-again").onclick = () => {
