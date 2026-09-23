@@ -131,10 +131,23 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 #toast.warn { border-left-color: var(--bad); }
 
 /* ------------------------------------------------------------ start screen */
+/*
+ * The three full-screen overlays all scroll the same way, and it has to be
+ * this way rather than `display: grid; place-items: center`. A centred grid
+ * item that is taller than its container overflows in both directions, and
+ * the half that goes off the top cannot be scrolled back to — so on a phone
+ * the start screen could not reach its own Break ground button. Flex with
+ * `margin: auto` on the child centres the same way and stays reachable.
+ */
+#start, #firms, #finish {
+  position: fixed; inset: 0; display: flex; justify-content: center;
+  overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+}
+#start > .card, #firms > .card, #finish > .card { margin: auto; }
+
 #start {
-  position: fixed; inset: 0; display: grid; place-items: center;
   background: radial-gradient(120% 100% at 50% 0%, #1a2436 0%, #080a0e 70%);
-  z-index: 50;
+  z-index: 50; padding: 20px 16px;
 }
 #start .card { max-width: 620px; padding: 34px 38px; text-align: left; }
 #start h1 {
@@ -417,10 +430,9 @@ input[type=range].maxed { accent-color: #4ade80; }
 .yearrow button:hover { filter: brightness(1.1); }
 
 #firms {
-  position: fixed; inset: 0; z-index: 60; overflow-y: auto;
-  display: grid; place-items: center;
+  z-index: 60;
   background: radial-gradient(120% 100% at 50% 0%, #1a2436 0%, #080a0e 70%);
-  padding-block: 30px; padding-left: 16px; padding-right: 16px;
+  padding: 30px 16px;
 }
 #firms .card { max-width: 940px; width: 100%; padding: 30px 34px; }
 #firms h2 { margin: 0 0 6px; font-size: 26px; font-weight: 700; }
@@ -541,6 +553,17 @@ body.touch #crosshair, body.touch #modehint { display: none; }
   #toast { top: 96px; }
   #prompt { bottom: 96px; font-size: 11px; }
   #toast { max-width: calc(100vw - 32px); font-size: 12px; }
+  /* Whatever else you read, the way in stays under your thumb. It has to be
+     opaque: a gradient alone left the copy behind it legible straight through
+     the buttons, which read as a rendering fault rather than a bar. */
+  .startrow {
+    position: sticky; bottom: 0; z-index: 2;
+    margin: 18px -20px 0; padding: 12px 20px calc(10px + env(safe-area-inset-bottom, 0px));
+    background: #0c1016;
+    box-shadow: 0 -16px 20px 2px #0c1016, 0 -1px 0 var(--line);
+  }
+  .startrow button.big { margin-top: 0; padding: 11px 20px; }
+  .startrow #begin-takeover { background: #1a212b; }
   #start .cols { flex-direction: column; gap: 14px; }
   #start h1 { font-size: 34px; }
   #start .card { padding: 24px 20px; }
@@ -592,8 +615,7 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
 
 /* ---------------------------------------------------------- the final bell */
 #finish {
-  position: fixed; inset: 0; z-index: 70; overflow-y: auto;
-  display: grid; place-items: center; padding: 30px 16px;
+  z-index: 70; padding: 30px 16px;
   background: radial-gradient(120% 100% at 50% 0%, #1a2436 0%, #080a0e 70%);
 }
 #finish .card { max-width: 720px; width: 100%; padding: 34px 38px; }
@@ -7077,7 +7099,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "a1ca5dd \xB7 2026-09-23 14:57" : "dev";
+var BUILD = true ? "364dfc7 \xB7 2026-09-23 15:04" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
