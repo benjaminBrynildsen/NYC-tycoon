@@ -5,7 +5,7 @@ import { generateCity, CONFIG, cellOf, canReclaim, minFloors,
          islandSizeIfFilled, ISLAND_CELLS } from './world.js';
 import { createState, advance, netWorth, leaderboard, money, sf, logEvent, formatDate,
          currentEra, currentYear,
-         reclaimCost, startReclaim, canReclaimHere, sellAll,
+         reclaimCost, startReclaim, canReclaimHere, sellAll, pendingFills,
          takeableFirms, takeOverFirm, LEVELS, DEFAULT_LEVEL } from './economy.js';
 import { CityScene, QUALITY } from './scene.js';
 import { Controls, MODE, requestLock, isTyping } from './controls.js';
@@ -156,7 +156,7 @@ function pickAt(clientX, clientY) {
   const hit = new THREE.Vector3();
   if (!ray.ray.intersectPlane(groundPlane, hit)) return;
   const { col, row } = cellOf(hit.x, hit.z);
-  if (canReclaim(city, col, row)) showWater(col, row);
+  if (canReclaim(city, col, row, pendingFills(state))) showWater(col, row);
   else hideWater();
 }
 
@@ -173,13 +173,15 @@ function showWater(col, row) {
   const pending = state.fills.find((f) => f.col === col && f.row === row);
   // Whether this is the cell that turns a spit of made ground into an island
   // is the only thing worth knowing before you pay for it.
-  const size = islandSizeIfFilled(city, col, row);
+  const size = islandSizeIfFilled(city, col, row, pendingFills(state));
   const island = size >= ISLAND_CELLS
-    ? 'This cell joins up an island — the whole landmass is rezoned waterfront, FAR 12.'
+    ? 'This cell joins up an island — the whole landmass is rezoned waterfront, FAR 14.'
     : `${size} of ${ISLAND_CELLS} cells towards an island.`;
   document.getElementById('water-meta').textContent = pending
     ? `Fill in progress — ${((pending.endDay - state.day) / 30).toFixed(1)} months to go.`
-    : `Open water beside the shore. Four lots in two years, and they are yours. ${island}`;
+    : `Open water beside the shore, or beside ground you have already booked. ${island}`;
+  document.getElementById('water-gives').textContent =
+    `4 lots · FAR ${size >= ISLAND_CELLS ? 14 : 10} · spoil until you build on it`;
   document.getElementById('water-cost').textContent = money(cost);
   const btn = document.getElementById('do-reclaim');
   btn.disabled = !!why || !!pending;
@@ -188,7 +190,8 @@ function showWater(col, row) {
   btn.onclick = () => {
     const r = startReclaim(state, col, row, 'player');
     if (!r.ok) return ui.toast(r.why, true);
-    ui.toast(`Barges booked. ${money(r.cost)} for four lots of new ground in two years.`);
+    ui.toast(`Barges booked — ${money(r.cost)}. The cofferdam goes in now; book the next cell off it `
+      + 'straight away. Made ground is only worth what you put on it.');
     ui.refreshTop();
     showWater(col, row);
   };
@@ -574,6 +577,8 @@ function frame(now) {
     scene.rebuildTerrain();
     scene.refreshCorridorLabels();
   }
+  // Cheap: it hashes the fills and returns unless the barges have moved.
+  scene.syncWorks(state);
   if (state._dirtyGeometry) {
     state._dirtyGeometry = false;
     scene.syncBuildings();
@@ -725,4 +730,4 @@ if (TOUCH) {
 // Handy when poking at the running game from the console.
 window.__game = { state, city, scene, controls, ui, showWater, startReclaim, reclaimCost,
                   advance, ray, pickAt, mastInReach, use: useElevatorOrCar,
-                  CONFIG, canReclaim, islandSizeIfFilled };
+                  CONFIG, canReclaim, islandSizeIfFilled, canReclaimHere, pendingFills };

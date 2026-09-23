@@ -370,6 +370,106 @@ export function volumes(lot, b, rnd) {
   return out;
 }
 
+// ---------------------------------------------------------------- billboards
+
+// Invented, because a real one on the side of a building is somebody else's
+// trademark. They read as the period without borrowing from it.
+const ADS = [
+  ['COMET', 'COLA', '#d23b2f', '#ffe8a3'],
+  ['HALVORSEN', 'ESTATES', '#1b4f8a', '#e9f2ff'],
+  ['KESTREL', 'AIRWAYS', '#0f6b52', '#eafff4'],
+  ['VANCE', 'BROS.', '#7a2b6b', '#ffe6fb'],
+  ['THE', 'LEDGER', '#2b2b2b', '#f6d24a'],
+  ['ATLAS', 'RADIO', '#8a4a10', '#ffdca8'],
+  ['NEON', 'NIGHTLY', '#12235c', '#69e6ff'],
+  ['UPTOWN', 'DENIM', '#a3122f', '#ffd9de'],
+];
+
+/**
+ * A lit sign. Painted bright on black so the emissive map is the whole panel
+ * after dark, which is what a signage district actually looks like.
+ */
+function billboardCanvas(variant, emissive) {
+  const key = `bb_${variant}_${emissive ? 'e' : 'd'}`;
+  if (canvasCache.has(key)) return canvasCache.get(key);
+  const [top, bottom, bg, ink] = ADS[variant % ADS.length];
+  const W = 256, H = 128;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = emissive ? '#05060a' : bg;
+  g.fillRect(0, 0, W, H);
+  // A border of bulbs, the way a sign of this age is built.
+  g.fillStyle = emissive ? '#ffe9b0' : 'rgba(255,255,255,0.5)';
+  for (let x = 6; x < W - 4; x += 14) { g.fillRect(x, 5, 6, 5); g.fillRect(x, H - 10, 6, 5); }
+  for (let y = 16; y < H - 12; y += 14) { g.fillRect(5, y, 5, 6); g.fillRect(W - 10, y, 5, 6); }
+  g.fillStyle = emissive ? ink : ink;
+  g.textAlign = 'center';
+  g.font = 'bold 44px system-ui, sans-serif';
+  g.fillText(top, W / 2, 58);
+  g.font = 'bold 34px system-ui, sans-serif';
+  g.fillText(bottom, W / 2, 98);
+  canvasCache.set(key, c);
+  return c;
+}
+
+function billboardMaterial(cache, variant) {
+  const key = `sign_${variant}`;
+  if (cache.has(key)) return cache.get(key);
+  const face = new THREE.CanvasTexture(billboardCanvas(variant, false));
+  face.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.MeshStandardMaterial({
+    map: face,
+    emissiveMap: new THREE.CanvasTexture(billboardCanvas(variant, true)),
+    emissive: 0xffffff, emissiveIntensity: 0,
+    roughness: 0.55, metalness: 0.1,
+  });
+  m.userData.signGlow = true;
+  cache.set(key, m);
+  return m;
+}
+
+/**
+ * Signage on the flank of a building. Only where the zoning says so and only
+ * from 1980 — the sim sets `lot._signs`, this just hangs the boards.
+ */
+function billboards(lot, b, vols, cache, rnd) {
+  const out = [];
+  const frame = solid(cache, 'signframe', 0x1d1f22, 0.9, 0.4);
+  // High enough to be seen over the street wall, low enough to read from it.
+  const picks = vols.length > 1 ? [vols[0], vols[1]] : [vols[0]];
+  picks.forEach((v, i) => {
+    if (v.floors < 3) return;
+    const variant = (lot.seed + i * 3) % ADS.length;
+    const wide = Math.min(v.w, v.d) * 0.82;
+    const tall = Math.min(wide * 0.5, v.floors * FH * 0.42);
+    const y = (v.y0 + v.floors) * FH - tall * 0.75;
+    // Which flank it hangs on, and which way that flank faces.
+    const alongX = ((lot.seed + i) % 2) === 1;
+    const dir = ((lot.seed >> (i + 1)) % 2) ? 1 : -1;
+    const x = lot.x + (v.dx ?? 0);
+    // The frame is wider and taller than the board but *thinner* than it, and
+    // sits behind it. Built the other way round it swallowed the board whole
+    // and every sign in the city rendered as a black rectangle.
+    const D = 0.5;
+    const panel = new THREE.Mesh(
+      new THREE.BoxGeometry(alongX ? wide : D, tall, alongX ? D : wide),
+      billboardMaterial(cache, variant));
+    const back = new THREE.Mesh(
+      new THREE.BoxGeometry(alongX ? wide + 1.6 : D * 0.7, tall + 1.6, alongX ? D * 0.7 : wide + 1.6),
+      frame);
+    const off = (alongX ? v.d / 2 : v.w / 2) + D / 2 + 0.25;
+    const px = alongX ? x : x + off * dir;
+    const pz = alongX ? lot.z + off * dir : lot.z;
+    panel.position.set(px, y, pz);
+    back.position.set(px - (alongX ? 0 : dir * 0.32), y, pz - (alongX ? dir * 0.32 : 0));
+    panel.castShadow = back.castShadow = true;
+    panel.userData.lotId = back.userData.lotId = lot.id;
+    out.push(back, panel);
+  });
+  return out;
+}
+
 // ------------------------------------------------------------------- crowns
 
 /**
@@ -510,6 +610,9 @@ export function makeBuilding(lot, b, cache) {
       }
     }
   }
+
+  // Signage, where the zoning allows it and the age has arrived.
+  if (lot._signs) for (const m of billboards(lot, b, vols, cache, rnd)) group.add(m);
 
   // Fire escapes on older walk-ups and lofts.
   if ((type === 'loft' || type === 'brownstone') && b.floors >= 4) {

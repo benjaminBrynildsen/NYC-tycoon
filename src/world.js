@@ -1,9 +1,21 @@
 // World generation: the island, its neighbourhoods, blocks and lots.
 // Pure data. No rendering, no three.js. The renderer and the sim both read this.
 
+/**
+ * Open water on every side of the built city.
+ *
+ * The grid used to be 13 x 20 and the island filled almost all of it: the
+ * whole western shore ran straight off the edge of the world, so there were
+ * coasts you simply could not build out from, and nowhere to put a causeway
+ * even where you could. Making ground is only interesting if there is
+ * somewhere to make it. Empty cells cost nothing — the ground mesh is built
+ * from the land map, not the grid — so the harbour is as big as the ambition.
+ */
+export const SHORE = 8;
+
 export const CONFIG = {
-  COLS: 13,
-  ROWS: 20,
+  COLS: 13 + SHORE * 2,
+  ROWS: 20 + SHORE * 2,
   BLOCK: 60,          // metres
   STREET: 18,         // metres
   LOT: 28,            // metres (2x2 lots per block)
@@ -47,15 +59,21 @@ const QUEENS = { rows: [9, 12], cols: [8, 10] };
 const inBox = (b, col, row) =>
   row >= b.rows[0] && row <= b.rows[1] && col >= b.cols[0] && col <= b.cols[1];
 
+// The silhouettes above are drawn in island coordinates; the grid they sit in
+// has SHORE cells of harbour on every side. Everything that reads the shape
+// converts on the way in, so nothing else has to know.
+const isl = (col, row) => [col - SHORE, row - SHORE];
+
 /** Which landmass a cell belongs to, or null for river. */
 export function regionAt(col, row) {
-  if (inBox(BROOKLYN, col, row)) return 'brooklyn';
-  if (inBox(QUEENS, col, row)) return 'queens';
-  const span = MANHATTAN_ROWS[row];
-  if (span && col >= span[0] && col <= span[1]) return 'manhattan';
+  const [c, r] = isl(col, row);
+  if (inBox(BROOKLYN, c, r)) return 'brooklyn';
+  if (inBox(QUEENS, c, r)) return 'queens';
+  const span = MANHATTAN_ROWS[r];
+  if (span && c >= span[0] && c <= span[1]) return 'manhattan';
   return null;
 }
-export const isParkCell = (col, row) => inBox(CENTRAL_PARK, col, row);
+export const isParkCell = (col, row) => inBox(CENTRAL_PARK, ...isl(col, row));
 
 export const REGIONS = {
   manhattan: { name: 'Manhattan', unlockAt: 0 },
@@ -69,17 +87,20 @@ export const HOODS = {
   tribeca:   { name: 'Tribeca',            tier: 'mid' },
   village:   { name: 'The Village',        tier: 'edge' },
   chelsea:   { name: 'Chelsea',            tier: 'mid' },
-  midtown:   { name: 'Midtown',            tier: 'core' },
+  // The signage subdistrict: the one place the code does not merely permit
+  // lit signs on a flank wall but expects them.
+  midtown:   { name: 'Midtown',            tier: 'core', signage: true },
   upperWest: { name: 'Upper West Side',    tier: 'mid' },
   upperEast: { name: 'Upper East Side',    tier: 'mid' },
   harlem:    { name: 'Harlem',             tier: 'res' },
-  landfill:  { name: 'Reclaimed Land',     tier: 'mid' },
+  landfill:  { name: 'Reclaimed Land',     tier: 'made' },
   island:    { name: 'The New Island',     tier: 'island' },
   heights:   { name: 'Brooklyn Heights',   tier: 'edge' },
   lic:       { name: 'Long Island City',   tier: 'res' },
 };
 
-function hoodAt(col, row, region) {
+function hoodAt(worldCol, worldRow, region) {
+  const [col, row] = isl(worldCol, worldRow);
   if (region === 'brooklyn') return 'heights';
   if (region === 'queens') return 'lic';
   if (row <= 1) return 'financial';
@@ -97,10 +118,14 @@ export const DISTRICTS = {
   mid:  { far: 10, landBase: 140, rentMul: 1.05, name: 'C5' },
   edge: { far: 6,  landBase: 80,  rentMul: 0.95, name: 'C4' },
   res:  { far: 3,  landBase: 45,  rentMul: 0.85, name: 'R6' },
-  // Made ground that has grown into an island. Not the Financial District,
-  // but zoned harder than the spoil heap it started as, and with water on
-  // every side — which is the whole of what you paid for.
-  island: { far: 12, landBase: 175, rentMul: 1.10, name: 'C5-W' },
+  // Raw fill. Spoil and rock with a street grid painted on it: worth about
+  // what the barges cost and not a dollar more. Everything that makes made
+  // ground valuable has to be built on it — see madeGround() in the economy.
+  made:   { far: 10, landBase: 15,  rentMul: 0.92, name: 'M1' },
+  // Made ground that has grown into an island. Zoned harder than the spoil
+  // heap it started as, with water on every side — but still cheap dirt until
+  // somebody puts something on it.
+  island: { far: 14, landBase: 15,  rentMul: 1.06, name: 'C5-W' },
 };
 
 /**
@@ -140,6 +165,9 @@ export function eraAt(year) {
   return era;
 }
 
+/** The year the sign code changed and the flank walls lit up. */
+export const SIGNAGE_YEAR = 1980;
+
 /** Storeys above which a building carries a mooring mast. */
 export const MAST_FLOORS = 50;
 
@@ -169,16 +197,23 @@ function ordinal(n) {
   const s = ['th', 'st', 'nd', 'rd'][(n % 100 > 10 && n % 100 < 14) ? 0 : Math.min(n % 10, 4) % 4] || 'th';
   return `${n}${s}`;
 }
-function avenueName(col, region) {
+function avenueName(worldCol, region) {
+  const col = worldCol - SHORE;
   const list = AVENUES[region];
   const base = region === 'manhattan' ? 0 : region === 'brooklyn' ? BROOKLYN.cols[0] : QUEENS.cols[0];
+  // Made ground west of the original shore keeps counting outwards rather than
+  // clamping to West St, so a causeway has addresses of its own.
+  if (col < base) return `${ordinal(base - col)} Harbour Ave`;
   return list[Math.min(col - base, list.length - 1)] ?? list[list.length - 1];
 }
-function crossName(row, region) {
-  if (region === 'manhattan') return `${ordinal(1 + row * 5)} St`;
+function crossName(worldRow, region) {
+  const row = worldRow - SHORE;
+  if (region === 'manhattan') {
+    return row < 0 ? `${ordinal(-row)} Battery St` : `${ordinal(1 + row * 5)} St`;
+  }
   const list = CROSS[region];
   const base = region === 'brooklyn' ? BROOKLYN.rows[0] : QUEENS.rows[0];
-  return list[Math.min(row - base, list.length - 1)] ?? list[list.length - 1];
+  return list[Math.min(Math.max(0, row - base), list.length - 1)] ?? list[list.length - 1];
 }
 
 // ---------------------------------------------------------------------- maths
@@ -443,9 +478,12 @@ export function generateCity(seed = 7, startYear = 1998) {
 export const ISLAND_CELLS = 4;
 
 /** Every cell of made ground joined to this one, orthogonally. */
-function madeGroup(blocks, col, row, phantom = false) {
+function madeGroup(blocks, col, row, phantom = false, pending = null) {
   const made = new Map();
   for (const b of blocks) if (b.reclaimed) made.set(`${b.col},${b.row}`, b);
+  // Ground that is paid for but still under the barges is part of the island
+  // as far as the panel is concerned — that is what you are deciding about.
+  if (pending) for (const key of pending) if (!made.has(key)) made.set(key, null);
   // A cell that is only being considered counts towards the size but has no
   // block behind it yet, so it is never returned as part of the group.
   const pretend = phantom && !made.has(`${col},${row}`);
@@ -473,8 +511,8 @@ function madeGroup(blocks, col, row, phantom = false) {
  * How big the landmass would be if this water cell were filled — what the
  * water panel needs to tell you whether this is the cell that makes an island.
  */
-export function islandSizeIfFilled(city, col, row) {
-  return madeGroup(city.blocks, col, row, true).size;
+export function islandSizeIfFilled(city, col, row, pending = null) {
+  return madeGroup(city.blocks, col, row, true, pending).size;
 }
 
 function promoteIsland(city, blocks, col, row) {
@@ -497,7 +535,11 @@ function promoteIsland(city, blocks, col, row) {
       lots.push(lot);
     }
   }
-  return { cells: group.length, lots, rezoned, fresh: rezoned > 0, owners: [...owners] };
+  // "Fresh" means this landmass has just become an island, not that a cell was
+  // added to one that already was. Only the crossing is news; after that every
+  // further cell would have run the same headline again.
+  return { cells: group.length, lots, rezoned,
+           fresh: rezoned === group.length, owners: [...owners] };
 }
 
 /** Grid cell containing a world position. */
@@ -521,16 +563,29 @@ export function cellOf(x, z) {
 }
 
 /** A water cell can be filled if it touches land you can already reach. */
-export function canReclaim(city, col, row) {
+/**
+ * Ground you can build off, counting ground that is only booked.
+ *
+ * A fill takes two years, and waiting two years to find out whether you are
+ * allowed to book the next cell is not a plan, it is a queue. Anything already
+ * paid for counts as shore, so a causeway can be laid out in one sitting and
+ * watched arrive.
+ */
+function standingOn(city, col, row, pending) {
+  return city.isLand(col, row) || !!pending?.has(`${col},${row}`);
+}
+
+const SIDES = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+export function canReclaim(city, col, row, pending = null) {
   if (col < 0 || row < 0 || col >= CONFIG.COLS || row >= CONFIG.ROWS) return false;
-  if (city.isLand(col, row)) return false;
-  return [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dc, dr]) => city.isLand(col + dc, row + dr));
+  if (standingOn(city, col, row, pending)) return false;
+  return SIDES.some(([dc, dr]) => standingOn(city, col + dc, row + dr, pending));
 }
 
 /** How much shoreline the cell touches. More contact, cheaper fill. */
-export function shoreContact(city, col, row) {
-  return [[1, 0], [-1, 0], [0, 1], [0, -1]]
-    .filter(([dc, dr]) => city.isLand(col + dc, row + dr)).length;
+export function shoreContact(city, col, row, pending = null) {
+  return SIDES.filter(([dc, dr]) => standingOn(city, col + dc, row + dr, pending)).length;
 }
 
 export function isWater(city, x, z) {

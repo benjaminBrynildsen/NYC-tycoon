@@ -3,7 +3,7 @@
 
 import { CONFIG, DISTRICTS, USES, STYLES, FORMS, REGIONS, HOODS, ERAS, eraAt, buildableSf,
          massing, minFloors, maxFloors, ownsWholeBlock, BLOCK_ASSEMBLY_FLOORS, canReclaim,
-         shoreContact, mulberry32, recomputeParkFront } from './world.js';
+         shoreContact, mulberry32, recomputeParkFront, SIGNAGE_YEAR } from './world.js';
 import { landmarkById, landmarkStatus, LANDMARKS } from './landmarks.js';
 import { tickContracts, contractBias, titleFor, rankFor, nextRank } from './contracts.js';
 
@@ -222,13 +222,51 @@ export function sf(n) {
 // ---------------------------------------------------------------- valuation
 
 /** How built-up the neighbourhood is. Development pulls land value up around it. */
+/**
+ * Lots bucketed by grid cell, so a neighbourhood query does not have to walk
+ * the whole city. Rebuilt whenever the lot count changes — which now happens
+ * every time a fill lands, and can happen a great many times in a game where
+ * making ground costs nine million a cell.
+ */
+export function lotIndex(city) {
+  if (city._lotIndex && city._lotIndexAt === city.lots.length) return city._lotIndex;
+  const m = new Map();
+  for (const l of city.lots) {
+    const key = `${l.col},${l.row}`;
+    let bucket = m.get(key);
+    if (!bucket) m.set(key, bucket = []);
+    bucket.push(l);
+  }
+  city._lotIndex = m;
+  city._lotIndexAt = city.lots.length;
+  return m;
+}
+
+/**
+ * How built-up a lot's surroundings are, 0 to 1. This is what makes land
+ * appreciate as the city grows around it.
+ *
+ * It used to walk every lot in the city for every lot in the city, once a
+ * month — fine at five hundred lots and quadratic thereafter. Reclamation can
+ * now double the lot count in a decade, so it reads a bucket index instead
+ * and only looks at the cells the radius can actually reach.
+ */
 export function localIntensity(state, lot, radius = 150) {
+  const index = lotIndex(state.city);
+  const span = Math.ceil(radius / CONFIG.PITCH);
+  const r2 = radius * radius;
   let built = 0, capacity = 0;
-  for (const l of state.city.lots) {
-    const dx = l.x - lot.x, dz = l.z - lot.z;
-    if (dx * dx + dz * dz > radius * radius) continue;
-    capacity += buildableSf(l);
-    if (l.building) built += l.building.gsf;
+  for (let dr = -span; dr <= span; dr++) {
+    for (let dc = -span; dc <= span; dc++) {
+      const bucket = index.get(`${lot.col + dc},${lot.row + dr}`);
+      if (!bucket) continue;
+      for (const l of bucket) {
+        const dx = l.x - lot.x, dz = l.z - lot.z;
+        if (dx * dx + dz * dz > r2) continue;
+        capacity += buildableSf(l);
+        if (l.building) built += l.building.gsf;
+      }
+    }
   }
   return capacity > 0 ? built / capacity : 0;
 }
@@ -246,8 +284,118 @@ export function premiums(state, lot) {
   const corridor = 1 + corridorFame * 0.38;
   const blight = 1 - (lot._blight ?? 0) * 0.34;
   const intensity = 0.65 + (lot._intensity ?? 0.35) * 0.9;
-  return { water, park, corridor, blight, intensity,
-           total: water * park * corridor * blight * intensity };
+  // Ground you made is worth what stands on it. Refreshed monthly by
+  // updateMadeGround; 1 on land that was always there.
+  const made = lot.reclaimed ? (lot.block._madeMul ?? 1) : 1;
+  return { water, park, corridor, blight, intensity, made,
+           total: water * park * corridor * blight * intensity * made };
+}
+
+/**
+ * Which buildings may carry signs.
+ *
+ * Two gates, both of them rules the city already has: the sign code only
+ * changed in 1980, and only a designated subdistrict may light a flank wall.
+ * Midtown is the one the map starts with — and made ground that has become a
+ * destination is granted the same rights, because that is precisely the case
+ * the code was written for.
+ */
+function updateSignage(state) {
+  if (currentYear(state) < SIGNAGE_YEAR) return;
+  let changed = false;
+  for (const lot of state.city.lots) {
+    const zoned = HOODS[lot.hood]?.signage || lot.block.destination;
+    const want = !!(zoned && lot.building && lot.building.floors >= 6);
+    if (want !== !!lot._signs) { lot._signs = want; changed = true; }
+  }
+  // The boards are geometry, so the buildings that gained them have to be
+  // rebuilt — otherwise the code changes and nothing on the street does.
+  if (changed) state._dirtyGeometry = true;
+}
+
+/** How much a landmass has to have on it before the ferries start running. */
+const DESTINATION_GSF = 1_400_000;
+
+/**
+ * What made ground is worth.
+ *
+ * Fill is cheap and four lots arrive with every cell, so if made ground were
+ * priced like the rest of the city then the whole game would be to run a
+ * causeway out to the edge of the harbour and stop. It is priced as what it
+ * is instead — spoil and rock, worth about what the barges cost — and the
+ * value comes from what gets built on it. Sink a tower into an island and the
+ * ground under the whole island follows; leave it bare and it stays bare.
+ *
+ * Landmass-wide on purpose. One good building lifts its neighbours, which is
+ * how a district happens, and it means a causeway with nothing on it is worth
+ * nothing however long it is.
+ */
+export function updateMadeGround(state) {
+  const made = new Map();
+  for (const b of state.city.blocks) if (b.reclaimed) made.set(`${b.col},${b.row}`, b);
+  if (!made.size) return;
+
+  const seen = new Set();
+  for (const [key, start] of made) {
+    if (seen.has(key)) continue;
+    // Flood the landmass this block belongs to.
+    const group = [];
+    const queue = [key];
+    seen.add(key);
+    while (queue.length) {
+      const k = queue.pop();
+      const block = made.get(k);
+      if (!block) continue;
+      group.push(block);
+      const [c, r] = k.split(',').map(Number);
+      for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const n = `${c + dc},${r + dr}`;
+        if (seen.has(n) || !made.has(n)) continue;
+        seen.add(n);
+        queue.push(n);
+      }
+    }
+
+    let invested = 0, lots = 0, gsf = 0, tallest = 0, landmark = false;
+    for (const block of group) {
+      for (const lot of block.lots) {
+        lots++;
+        const b = lot.building;
+        if (!b) continue;
+        invested += buildingValue(state, lot);
+        gsf += b.gsf;
+        tallest = Math.max(tallest, b.floors);
+        if (b.landmark) landmark = true;
+      }
+    }
+    const perLot = invested / Math.max(1, lots);
+    // Calibrated against a fully built island: towers on every lot put about
+    // $300M of building on each one, which is where the ceiling bites. Bare
+    // ground sits at 1, and the neighbourhood-intensity term in premiums()
+    // already carries some of this — the two together take a made lot from
+    // about $1.5M of spoil to $25-30M of address.
+    const mul = 1 + Math.min(3.5, perLot / 86e6);
+    // Somewhere worth crossing the water for. A skyline of its own, or one
+    // building people have heard of.
+    const destination = gsf >= DESTINATION_GSF && (tallest >= 25 || landmark);
+    for (const block of group) {
+      block._madeMul = mul * (destination ? 1.18 : 1);
+      block._madeLots = lots;
+      block._madeInvested = invested;
+      if (destination && !block.destination) block.destination = true;
+    }
+    // Any block in the landmass remembering the story is enough: a cell that
+    // joins later must not run it again.
+    if (destination && !group.some((b) => b._destinationSaid)) {
+      for (const block of group) block._destinationSaid = true;
+      const where = group[0].lots[0];
+      pushNews(state, 'reclaim', 'THE FERRIES START RUNNING TO THE NEW GROUND',
+        `${sf(gsf)} now stands on ground that was open water, and the city has put a `
+        + `${tallest}-storey skyline on it. People are crossing the harbour to look at it, `
+        + `which is worth more to the land than the buildings are: everything on this `
+        + `landmass is reassessed.`, where);
+    }
+  }
 }
 
 export function landValue(state, lot) {
@@ -331,7 +479,13 @@ export function rentPerSf(state, lot, use, floors, quality = 1) {
   const view = 1 + floors / 150 + Math.pow(floors / 105, 2) * 1.0;
   const eff = coreEfficiency(floors) / coreEfficiency(10);
   const p = premiums(state, lot);
-  const place = p.water * p.park * p.corridor * p.blight;
+  // Intensity and the made-ground premium are land terms, not rent terms, so
+  // they stay out of this — otherwise the value of a building would feed the
+  // value of its own ground and back again.
+  const place = p.water * p.park * p.corridor * p.blight
+    // Somewhere people cross the water to see rents better than somewhere
+    // they do not. This is what the ferries are worth.
+    * (lot.block.destination ? 1.15 : 1);
   return u.rent * DISTRICTS[lot.district].rentMul * view * eff * quality * place * state.cycle;
 }
 
@@ -799,24 +953,38 @@ export function takeOverFirm(state, targetId, actorId = 'player') {
 
 // ------------------------------------------------------------- making land
 
-export const RECLAIM_BASE = 38_000_000;
+/**
+ * What a cell of harbour costs to turn into ground.
+ *
+ * This has come down a long way on purpose. Fill used to be a late-game
+ * set piece at $185M a cell; the point of it now is that you can lay out a
+ * causeway in an afternoon and go and build on it. The money is not meant to
+ * be made by owning the dirt — see `madeGround`, which starts reclaimed land
+ * at almost nothing and lets what you build on it pull the value up.
+ */
+export const RECLAIM_BASE = 9_000_000;
+
+/** Cells already paid for, which count as shore for the next one. */
+export function pendingFills(state) {
+  return new Set(state.fills.map((f) => `${f.col},${f.row}`));
+}
 
 /**
  * Less shoreline to build off means more fill, more cofferdam, more money.
  * Standing takes a slice off the top: a house the harbour commission trusts
  * gets its licences faster and its barges cheaper.
  */
-export function reclaimCost(state, col, row, actorId = 'player') {
-  // One side of shoreline used to cost 2.26x a sheltered corner, which made
-  // reaching out into open water — the only way to build an island — the most
-  // expensive thing in the game by a distance. It is a surcharge now, not a
-  // wall: a single contact runs about half again, not two and a quarter times.
-  const contact = shoreContact(state.city, col, row);
+export function reclaimCost(state, col, row, actorId = 'player', pending = null) {
+  // Open water costs a little more than a sheltered corner and that is all.
+  // It was a wall at 0.42 a side, a surcharge at 0.18, and at 0.10 it is a
+  // rounding difference — reaching out is the interesting move, so it should
+  // not be the punished one.
+  const contact = shoreContact(state.city, col, row, pending ?? pendingFills(state));
   const discount = 1 - (termsFor(state, actorId).fillDiscount ?? 0);
-  return RECLAIM_BASE * (1 + (4 - contact) * 0.18) * state.cycle * discount;
+  return RECLAIM_BASE * (1 + (4 - contact) * 0.10) * state.cycle * discount;
 }
 
-export function canReclaimHere(state, actorId, col, row) {
+export function canReclaimHere(state, actorId, col, row, pending = null) {
   const a = state.actors[actorId];
   if (!a) return 'Unknown developer.';
   // Making new ground is licensed on reputation, not on the size of your
@@ -827,8 +995,11 @@ export function canReclaimHere(state, actorId, col, row) {
          + `You are a ${termsFor(state, actorId).title} on ${a.standing ?? 0} standing`
          + `${need ? ` — ${need.at - (a.standing ?? 0)} more earns ${need.title}` : ''}.`;
   }
-  if (!canReclaim(state.city, col, row)) return 'Nothing to build off here — pick water beside the shore.';
-  if (state.fills.some((f) => f.col === col && f.row === row)) return 'Already being filled.';
+  const booked = pending ?? pendingFills(state);
+  if (booked.has(`${col},${row}`)) return 'Already being filled.';
+  if (!canReclaim(state.city, col, row, booked)) {
+    return 'Nothing to build off here — pick water beside the shore, or beside ground you have already booked.';
+  }
   return null;
 }
 
@@ -870,12 +1041,23 @@ function announceIsland(state, ownerId, island) {
     island.lots[0]);
 }
 
-/** How many neighbouring cells of made ground this developer already owns. */
-function ownGroundNear(city, actorId, col, row) {
+/**
+ * Cells of made ground this developer owns, indexed by cell. Built once for a
+ * whole sweep — the linear scan this replaced ran over every block in the city
+ * four times for every candidate cell in the harbour.
+ */
+function ownedGroundIndex(city, actorId) {
+  const own = new Set();
+  for (const b of city.blocks) {
+    if (b.reclaimed && b.lots.some((l) => l.owner === actorId)) own.add(`${b.col},${b.row}`);
+  }
+  return own;
+}
+
+function ownGroundNear(own, col, row) {
   let n = 0;
   for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-    const block = city.blocks.find((b) => b.reclaimed && b.col === col + dc && b.row === row + dr);
-    if (block && block.lots.some((l) => l.owner === actorId)) n++;
+    if (own.has(`${col + dc},${row + dr}`)) n++;
   }
   return n;
 }
@@ -1310,6 +1492,8 @@ function monthTick(state) {
     a.lastNOI = noi;
   }
 
+  updateMadeGround(state);
+  updateSignage(state);
   checkEra(state);
   checkUnlocks(state);
   checkRank(state);
@@ -1651,15 +1835,19 @@ function rivalTurn(state, a) {
   // same reason you are, and they will race you to the fourth cell.
   if (state.rnd() < 0.15 * band.heat) {
     const city = state.city;
+    // Built once for the whole sweep. Rebuilding it per cell walked the fill
+    // list a thousand times a turn and was most of a month tick on its own.
+    const booked = pendingFills(state);
+    const own = ownedGroundIndex(city, a.id);
     let spot = null, bestV = -Infinity;
     for (let row = 0; row < CONFIG.ROWS; row++) {
       for (let col = 0; col < CONFIG.COLS; col++) {
-        if (canReclaimHere(state, a.id, col, row)) continue;   // returns a reason, or null
-        const cost = reclaimCost(state, col, row, a.id);
+        if (canReclaimHere(state, a.id, col, row, booked)) continue;  // a reason, or null
+        const cost = reclaimCost(state, col, row, a.id, booked);
         if (cost > a.cash * 0.35) continue;
-        const own = ownGroundNear(city, a.id, col, row);
-        const v = own * 1.2e8 - cost;
-        if (v > bestV) { bestV = v; spot = { col, row, cost, own }; }
+        const near = ownGroundNear(own, col, row);
+        const v = near * 1.2e8 - cost;
+        if (v > bestV) { bestV = v; spot = { col, row, cost, own: near }; }
       }
     }
     // Extending their own made ground is the cheap half of an island, so they

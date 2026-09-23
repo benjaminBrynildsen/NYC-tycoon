@@ -769,7 +769,7 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
     <p class="meta" id="water-meta"></p>
     <div class="kv"><span>Cost to fill</span><b id="water-cost"></b></div>
     <div class="kv"><span>Time</span><b>24 months</b></div>
-    <div class="kv"><span>You get</span><b>4 lots · FAR 10 · waterfront</b></div>
+    <div class="kv"><span>You get</span><b id="water-gives">4 lots · FAR 10 · waterfront</b></div>
     <button id="do-reclaim" class="primary">Fill it</button>
     <p class="hint" id="water-note"></p>
   </div>
@@ -873,8 +873,10 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
           rank is what buys you leverage, cheap money and a licence to fill water</p>
         <p>Retain an architect for a signature design — there is one of each ever built,
           and your rivals want the same drawings</p>
-        <p>Fill water beside the shore; four cells joined up is an island, and the city
-          rezones the whole of it</p>
+        <p>Fill water for $9M a cell, off the shore or off ground you have only just
+          booked — four cells joined up is an island</p>
+        <p>Made ground is spoil until you build on it: what stands on an island is what
+          the ground under it is worth</p>
       </div>
     </div>
     <p class="sub small">Buy land. Build on it. Rent pays you monthly and development pulls up the value of everything around it — including your rivals' land. The market runs in cycles; leverage is how you go fast and how you die.</p>
@@ -943,9 +945,10 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
 import * as THREE7 from "three";
 
 // src/world.js
+var SHORE = 8;
 var CONFIG = {
-  COLS: 13,
-  ROWS: 20,
+  COLS: 13 + SHORE * 2,
+  ROWS: 20 + SHORE * 2,
   BLOCK: 60,
   // metres
   STREET: 18,
@@ -995,14 +998,16 @@ var CENTRAL_PARK = { rows: [14, 16], cols: [2, 4] };
 var BROOKLYN = { rows: [1, 5], cols: [8, 11] };
 var QUEENS = { rows: [9, 12], cols: [8, 10] };
 var inBox = (b, col, row) => row >= b.rows[0] && row <= b.rows[1] && col >= b.cols[0] && col <= b.cols[1];
+var isl = (col, row) => [col - SHORE, row - SHORE];
 function regionAt(col, row) {
-  if (inBox(BROOKLYN, col, row)) return "brooklyn";
-  if (inBox(QUEENS, col, row)) return "queens";
-  const span = MANHATTAN_ROWS[row];
-  if (span && col >= span[0] && col <= span[1]) return "manhattan";
+  const [c, r] = isl(col, row);
+  if (inBox(BROOKLYN, c, r)) return "brooklyn";
+  if (inBox(QUEENS, c, r)) return "queens";
+  const span = MANHATTAN_ROWS[r];
+  if (span && c >= span[0] && c <= span[1]) return "manhattan";
   return null;
 }
-var isParkCell = (col, row) => inBox(CENTRAL_PARK, col, row);
+var isParkCell = (col, row) => inBox(CENTRAL_PARK, ...isl(col, row));
 var REGIONS = {
   manhattan: { name: "Manhattan", unlockAt: 0 },
   brooklyn: { name: "Brooklyn", unlockAt: 1e9 },
@@ -1013,16 +1018,19 @@ var HOODS = {
   tribeca: { name: "Tribeca", tier: "mid" },
   village: { name: "The Village", tier: "edge" },
   chelsea: { name: "Chelsea", tier: "mid" },
-  midtown: { name: "Midtown", tier: "core" },
+  // The signage subdistrict: the one place the code does not merely permit
+  // lit signs on a flank wall but expects them.
+  midtown: { name: "Midtown", tier: "core", signage: true },
   upperWest: { name: "Upper West Side", tier: "mid" },
   upperEast: { name: "Upper East Side", tier: "mid" },
   harlem: { name: "Harlem", tier: "res" },
-  landfill: { name: "Reclaimed Land", tier: "mid" },
+  landfill: { name: "Reclaimed Land", tier: "made" },
   island: { name: "The New Island", tier: "island" },
   heights: { name: "Brooklyn Heights", tier: "edge" },
   lic: { name: "Long Island City", tier: "res" }
 };
-function hoodAt(col, row, region) {
+function hoodAt(worldCol, worldRow, region) {
+  const [col, row] = isl(worldCol, worldRow);
   if (region === "brooklyn") return "heights";
   if (region === "queens") return "lic";
   if (row <= 1) return "financial";
@@ -1038,10 +1046,14 @@ var DISTRICTS = {
   mid: { far: 10, landBase: 140, rentMul: 1.05, name: "C5" },
   edge: { far: 6, landBase: 80, rentMul: 0.95, name: "C4" },
   res: { far: 3, landBase: 45, rentMul: 0.85, name: "R6" },
-  // Made ground that has grown into an island. Not the Financial District,
-  // but zoned harder than the spoil heap it started as, and with water on
-  // every side — which is the whole of what you paid for.
-  island: { far: 12, landBase: 175, rentMul: 1.1, name: "C5-W" }
+  // Raw fill. Spoil and rock with a street grid painted on it: worth about
+  // what the barges cost and not a dollar more. Everything that makes made
+  // ground valuable has to be built on it — see madeGround() in the economy.
+  made: { far: 10, landBase: 15, rentMul: 0.92, name: "M1" },
+  // Made ground that has grown into an island. Zoned harder than the spoil
+  // heap it started as, with water on every side — but still cheap dirt until
+  // somebody puts something on it.
+  island: { far: 14, landBase: 15, rentMul: 1.06, name: "C5-W" }
 };
 var ERAS = [
   {
@@ -1103,6 +1115,7 @@ function eraAt(year) {
   for (const e of ERAS) if (year >= e.from) era = e;
   return era;
 }
+var SIGNAGE_YEAR = 1980;
 var MAST_FLOORS = 50;
 var BLOCK_ASSEMBLY_FLOORS = 150;
 var ABSOLUTE_MAX_FLOORS = 300;
@@ -1122,16 +1135,21 @@ function ordinal(n) {
   const s = ["th", "st", "nd", "rd"][n % 100 > 10 && n % 100 < 14 ? 0 : Math.min(n % 10, 4) % 4] || "th";
   return `${n}${s}`;
 }
-function avenueName(col, region) {
+function avenueName(worldCol, region) {
+  const col = worldCol - SHORE;
   const list = AVENUES[region];
   const base = region === "manhattan" ? 0 : region === "brooklyn" ? BROOKLYN.cols[0] : QUEENS.cols[0];
+  if (col < base) return `${ordinal(base - col)} Harbour Ave`;
   return list[Math.min(col - base, list.length - 1)] ?? list[list.length - 1];
 }
-function crossName(row, region) {
-  if (region === "manhattan") return `${ordinal(1 + row * 5)} St`;
+function crossName(worldRow, region) {
+  const row = worldRow - SHORE;
+  if (region === "manhattan") {
+    return row < 0 ? `${ordinal(-row)} Battery St` : `${ordinal(1 + row * 5)} St`;
+  }
   const list = CROSS[region];
   const base = region === "brooklyn" ? BROOKLYN.rows[0] : QUEENS.rows[0];
-  return list[Math.min(row - base, list.length - 1)] ?? list[list.length - 1];
+  return list[Math.min(Math.max(0, row - base), list.length - 1)] ?? list[list.length - 1];
 }
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -1398,9 +1416,12 @@ function generateCity(seed = 7, startYear = 1998) {
   return city2;
 }
 var ISLAND_CELLS = 4;
-function madeGroup(blocks, col, row, phantom = false) {
+function madeGroup(blocks, col, row, phantom = false, pending = null) {
   const made = /* @__PURE__ */ new Map();
   for (const b of blocks) if (b.reclaimed) made.set(`${b.col},${b.row}`, b);
+  if (pending) {
+    for (const key of pending) if (!made.has(key)) made.set(key, null);
+  }
   const pretend = phantom && !made.has(`${col},${row}`);
   if (pretend) made.set(`${col},${row}`, null);
   const seen = /* @__PURE__ */ new Set();
@@ -1420,8 +1441,8 @@ function madeGroup(blocks, col, row, phantom = false) {
   }
   return { group, size: seen.size };
 }
-function islandSizeIfFilled(city2, col, row) {
-  return madeGroup(city2.blocks, col, row, true).size;
+function islandSizeIfFilled(city2, col, row, pending = null) {
+  return madeGroup(city2.blocks, col, row, true, pending).size;
 }
 function promoteIsland(city2, blocks, col, row) {
   const group = madeGroup(blocks, col, row).group;
@@ -1442,7 +1463,13 @@ function promoteIsland(city2, blocks, col, row) {
       lots.push(lot);
     }
   }
-  return { cells: group.length, lots, rezoned, fresh: rezoned > 0, owners: [...owners] };
+  return {
+    cells: group.length,
+    lots,
+    rezoned,
+    fresh: rezoned === group.length,
+    owners: [...owners]
+  };
 }
 function recomputeParkFront(city2) {
   const parks = city2.blocks.filter((b) => b.isPark);
@@ -1456,13 +1483,17 @@ function cellOf(x, z) {
     row: Math.round((CONFIG.DEPTH / 2 - CONFIG.PITCH / 2 - z) / CONFIG.PITCH)
   };
 }
-function canReclaim(city2, col, row) {
-  if (col < 0 || row < 0 || col >= CONFIG.COLS || row >= CONFIG.ROWS) return false;
-  if (city2.isLand(col, row)) return false;
-  return [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dc, dr]) => city2.isLand(col + dc, row + dr));
+function standingOn(city2, col, row, pending) {
+  return city2.isLand(col, row) || !!pending?.has(`${col},${row}`);
 }
-function shoreContact(city2, col, row) {
-  return [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dc, dr]) => city2.isLand(col + dc, row + dr)).length;
+var SIDES = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+function canReclaim(city2, col, row, pending = null) {
+  if (col < 0 || row < 0 || col >= CONFIG.COLS || row >= CONFIG.ROWS) return false;
+  if (standingOn(city2, col, row, pending)) return false;
+  return SIDES.some(([dc, dr]) => standingOn(city2, col + dc, row + dr, pending));
+}
+function shoreContact(city2, col, row, pending = null) {
+  return SIDES.filter(([dc, dr]) => standingOn(city2, col + dc, row + dr, pending)).length;
 }
 function lotAt(city2, x, z) {
   let best = null, bestD = Infinity;
@@ -2398,13 +2429,35 @@ function sf(n) {
   if (n >= 1e3) return `${(n / 1e3).toFixed(0)}K sf`;
   return `${Math.round(n)} sf`;
 }
+function lotIndex(city2) {
+  if (city2._lotIndex && city2._lotIndexAt === city2.lots.length) return city2._lotIndex;
+  const m = /* @__PURE__ */ new Map();
+  for (const l of city2.lots) {
+    const key = `${l.col},${l.row}`;
+    let bucket = m.get(key);
+    if (!bucket) m.set(key, bucket = []);
+    bucket.push(l);
+  }
+  city2._lotIndex = m;
+  city2._lotIndexAt = city2.lots.length;
+  return m;
+}
 function localIntensity(state2, lot, radius = 150) {
+  const index = lotIndex(state2.city);
+  const span = Math.ceil(radius / CONFIG.PITCH);
+  const r2 = radius * radius;
   let built = 0, capacity = 0;
-  for (const l of state2.city.lots) {
-    const dx = l.x - lot.x, dz = l.z - lot.z;
-    if (dx * dx + dz * dz > radius * radius) continue;
-    capacity += buildableSf(l);
-    if (l.building) built += l.building.gsf;
+  for (let dr = -span; dr <= span; dr++) {
+    for (let dc = -span; dc <= span; dc++) {
+      const bucket = index.get(`${lot.col + dc},${lot.row + dr}`);
+      if (!bucket) continue;
+      for (const l of bucket) {
+        const dx = l.x - lot.x, dz = l.z - lot.z;
+        if (dx * dx + dz * dz > r2) continue;
+        capacity += buildableSf(l);
+        if (l.building) built += l.building.gsf;
+      }
+    }
   }
   return capacity > 0 ? built / capacity : 0;
 }
@@ -2415,14 +2468,87 @@ function premiums(state2, lot) {
   const corridor = 1 + corridorFame * 0.38;
   const blight = 1 - (lot._blight ?? 0) * 0.34;
   const intensity = 0.65 + (lot._intensity ?? 0.35) * 0.9;
+  const made = lot.reclaimed ? lot.block._madeMul ?? 1 : 1;
   return {
     water,
     park,
     corridor,
     blight,
     intensity,
-    total: water * park * corridor * blight * intensity
+    made,
+    total: water * park * corridor * blight * intensity * made
   };
+}
+function updateSignage(state2) {
+  if (currentYear(state2) < SIGNAGE_YEAR) return;
+  let changed = false;
+  for (const lot of state2.city.lots) {
+    const zoned = HOODS[lot.hood]?.signage || lot.block.destination;
+    const want = !!(zoned && lot.building && lot.building.floors >= 6);
+    if (want !== !!lot._signs) {
+      lot._signs = want;
+      changed = true;
+    }
+  }
+  if (changed) state2._dirtyGeometry = true;
+}
+var DESTINATION_GSF = 14e5;
+function updateMadeGround(state2) {
+  const made = /* @__PURE__ */ new Map();
+  for (const b of state2.city.blocks) if (b.reclaimed) made.set(`${b.col},${b.row}`, b);
+  if (!made.size) return;
+  const seen = /* @__PURE__ */ new Set();
+  for (const [key, start] of made) {
+    if (seen.has(key)) continue;
+    const group = [];
+    const queue = [key];
+    seen.add(key);
+    while (queue.length) {
+      const k = queue.pop();
+      const block = made.get(k);
+      if (!block) continue;
+      group.push(block);
+      const [c, r] = k.split(",").map(Number);
+      for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const n = `${c + dc},${r + dr}`;
+        if (seen.has(n) || !made.has(n)) continue;
+        seen.add(n);
+        queue.push(n);
+      }
+    }
+    let invested = 0, lots = 0, gsf = 0, tallest = 0, landmark = false;
+    for (const block of group) {
+      for (const lot of block.lots) {
+        lots++;
+        const b = lot.building;
+        if (!b) continue;
+        invested += buildingValue(state2, lot);
+        gsf += b.gsf;
+        tallest = Math.max(tallest, b.floors);
+        if (b.landmark) landmark = true;
+      }
+    }
+    const perLot = invested / Math.max(1, lots);
+    const mul = 1 + Math.min(3.5, perLot / 86e6);
+    const destination = gsf >= DESTINATION_GSF && (tallest >= 25 || landmark);
+    for (const block of group) {
+      block._madeMul = mul * (destination ? 1.18 : 1);
+      block._madeLots = lots;
+      block._madeInvested = invested;
+      if (destination && !block.destination) block.destination = true;
+    }
+    if (destination && !group.some((b) => b._destinationSaid)) {
+      for (const block of group) block._destinationSaid = true;
+      const where = group[0].lots[0];
+      pushNews(
+        state2,
+        "reclaim",
+        "THE FERRIES START RUNNING TO THE NEW GROUND",
+        `${sf(gsf)} now stands on ground that was open water, and the city has put a ${tallest}-storey skyline on it. People are crossing the harbour to look at it, which is worth more to the land than the buildings are: everything on this landmass is reassessed.`,
+        where
+      );
+    }
+  }
 }
 function landValue(state2, lot) {
   const rights = buildableSf(lot);
@@ -2456,7 +2582,7 @@ function rentPerSf(state2, lot, use, floors, quality = 1) {
   const view = 1 + floors / 150 + Math.pow(floors / 105, 2) * 1;
   const eff = coreEfficiency(floors) / coreEfficiency(10);
   const p = premiums(state2, lot);
-  const place = p.water * p.park * p.corridor * p.blight;
+  const place = p.water * p.park * p.corridor * p.blight * (lot.block.destination ? 1.15 : 1);
   return u.rent * DISTRICTS[lot.district].rentMul * view * eff * quality * place * state2.cycle;
 }
 function costPerSf(lot, use, floors) {
@@ -2860,21 +2986,27 @@ function takeOverFirm(state2, targetId, actorId = "player") {
   state2._dirtyGeometry = true;
   return { ok: true, lots, cash: me.cash, debt: me.debt };
 }
-var RECLAIM_BASE = 38e6;
-function reclaimCost(state2, col, row, actorId = "player") {
-  const contact = shoreContact(state2.city, col, row);
-  const discount = 1 - (termsFor(state2, actorId).fillDiscount ?? 0);
-  return RECLAIM_BASE * (1 + (4 - contact) * 0.18) * state2.cycle * discount;
+var RECLAIM_BASE = 9e6;
+function pendingFills(state2) {
+  return new Set(state2.fills.map((f) => `${f.col},${f.row}`));
 }
-function canReclaimHere(state2, actorId, col, row) {
+function reclaimCost(state2, col, row, actorId = "player", pending = null) {
+  const contact = shoreContact(state2.city, col, row, pending ?? pendingFills(state2));
+  const discount = 1 - (termsFor(state2, actorId).fillDiscount ?? 0);
+  return RECLAIM_BASE * (1 + (4 - contact) * 0.1) * state2.cycle * discount;
+}
+function canReclaimHere(state2, actorId, col, row, pending = null) {
   const a = state2.actors[actorId];
   if (!a) return "Unknown developer.";
   if (!termsFor(state2, actorId).fill) {
     const need = nextRank(a.standing ?? 0);
     return `The harbour commission licences fill to a Developer and above. You are a ${termsFor(state2, actorId).title} on ${a.standing ?? 0} standing${need ? ` \u2014 ${need.at - (a.standing ?? 0)} more earns ${need.title}` : ""}.`;
   }
-  if (!canReclaim(state2.city, col, row)) return "Nothing to build off here \u2014 pick water beside the shore.";
-  if (state2.fills.some((f) => f.col === col && f.row === row)) return "Already being filled.";
+  const booked = pending ?? pendingFills(state2);
+  if (booked.has(`${col},${row}`)) return "Already being filled.";
+  if (!canReclaim(state2.city, col, row, booked)) {
+    return "Nothing to build off here \u2014 pick water beside the shore, or beside ground you have already booked.";
+  }
   return null;
 }
 function startReclaim(state2, col, row, actorId) {
@@ -2910,11 +3042,17 @@ function announceIsland(state2, ownerId, island) {
     island.lots[0]
   );
 }
-function ownGroundNear(city2, actorId, col, row) {
+function ownedGroundIndex(city2, actorId) {
+  const own = /* @__PURE__ */ new Set();
+  for (const b of city2.blocks) {
+    if (b.reclaimed && b.lots.some((l) => l.owner === actorId)) own.add(`${b.col},${b.row}`);
+  }
+  return own;
+}
+function ownGroundNear(own, col, row) {
   let n = 0;
   for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-    const block = city2.blocks.find((b) => b.reclaimed && b.col === col + dc && b.row === row + dr);
-    if (block && block.lots.some((l) => l.owner === actorId)) n++;
+    if (own.has(`${col + dc},${row + dr}`)) n++;
   }
   return n;
 }
@@ -3319,6 +3457,8 @@ function monthTick(state2) {
     a.cash += noi - tax - a.debt * interestFor(state2, id) / 12;
     a.lastNOI = noi;
   }
+  updateMadeGround(state2);
+  updateSignage(state2);
   checkEra(state2);
   checkUnlocks(state2);
   checkRank(state2);
@@ -3603,17 +3743,19 @@ function rivalTurn(state2, a) {
   }
   if (state2.rnd() < 0.15 * band.heat) {
     const city2 = state2.city;
+    const booked = pendingFills(state2);
+    const own = ownedGroundIndex(city2, a.id);
     let spot = null, bestV = -Infinity;
     for (let row = 0; row < CONFIG.ROWS; row++) {
       for (let col = 0; col < CONFIG.COLS; col++) {
-        if (canReclaimHere(state2, a.id, col, row)) continue;
-        const cost = reclaimCost(state2, col, row, a.id);
+        if (canReclaimHere(state2, a.id, col, row, booked)) continue;
+        const cost = reclaimCost(state2, col, row, a.id, booked);
         if (cost > a.cash * 0.35) continue;
-        const own = ownGroundNear(city2, a.id, col, row);
-        const v = own * 12e7 - cost;
+        const near = ownGroundNear(own, col, row);
+        const v = near * 12e7 - cost;
         if (v > bestV) {
           bestV = v;
-          spot = { col, row, cost, own };
+          spot = { col, row, cost, own: near };
         }
       }
     }
@@ -4034,6 +4176,95 @@ function volumes(lot, b, rnd) {
   out.push({ w: Math.max(w, floor), d: Math.max(d, floor), floors: remaining, y0: y });
   return out;
 }
+var ADS = [
+  ["COMET", "COLA", "#d23b2f", "#ffe8a3"],
+  ["HALVORSEN", "ESTATES", "#1b4f8a", "#e9f2ff"],
+  ["KESTREL", "AIRWAYS", "#0f6b52", "#eafff4"],
+  ["VANCE", "BROS.", "#7a2b6b", "#ffe6fb"],
+  ["THE", "LEDGER", "#2b2b2b", "#f6d24a"],
+  ["ATLAS", "RADIO", "#8a4a10", "#ffdca8"],
+  ["NEON", "NIGHTLY", "#12235c", "#69e6ff"],
+  ["UPTOWN", "DENIM", "#a3122f", "#ffd9de"]
+];
+function billboardCanvas(variant, emissive) {
+  const key = `bb_${variant}_${emissive ? "e" : "d"}`;
+  if (canvasCache.has(key)) return canvasCache.get(key);
+  const [top, bottom, bg, ink] = ADS[variant % ADS.length];
+  const W = 256, H = 128;
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = emissive ? "#05060a" : bg;
+  g.fillRect(0, 0, W, H);
+  g.fillStyle = emissive ? "#ffe9b0" : "rgba(255,255,255,0.5)";
+  for (let x = 6; x < W - 4; x += 14) {
+    g.fillRect(x, 5, 6, 5);
+    g.fillRect(x, H - 10, 6, 5);
+  }
+  for (let y = 16; y < H - 12; y += 14) {
+    g.fillRect(5, y, 5, 6);
+    g.fillRect(W - 10, y, 5, 6);
+  }
+  g.fillStyle = emissive ? ink : ink;
+  g.textAlign = "center";
+  g.font = "bold 44px system-ui, sans-serif";
+  g.fillText(top, W / 2, 58);
+  g.font = "bold 34px system-ui, sans-serif";
+  g.fillText(bottom, W / 2, 98);
+  canvasCache.set(key, c);
+  return c;
+}
+function billboardMaterial(cache, variant) {
+  const key = `sign_${variant}`;
+  if (cache.has(key)) return cache.get(key);
+  const face = new THREE.CanvasTexture(billboardCanvas(variant, false));
+  face.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.MeshStandardMaterial({
+    map: face,
+    emissiveMap: new THREE.CanvasTexture(billboardCanvas(variant, true)),
+    emissive: 16777215,
+    emissiveIntensity: 0,
+    roughness: 0.55,
+    metalness: 0.1
+  });
+  m.userData.signGlow = true;
+  cache.set(key, m);
+  return m;
+}
+function billboards(lot, b, vols, cache, rnd) {
+  const out = [];
+  const frame2 = solid(cache, "signframe", 1908514, 0.9, 0.4);
+  const picks = vols.length > 1 ? [vols[0], vols[1]] : [vols[0]];
+  picks.forEach((v, i) => {
+    if (v.floors < 3) return;
+    const variant = (lot.seed + i * 3) % ADS.length;
+    const wide = Math.min(v.w, v.d) * 0.82;
+    const tall = Math.min(wide * 0.5, v.floors * FH * 0.42);
+    const y = (v.y0 + v.floors) * FH - tall * 0.75;
+    const alongX = (lot.seed + i) % 2 === 1;
+    const dir = (lot.seed >> i + 1) % 2 ? 1 : -1;
+    const x = lot.x + (v.dx ?? 0);
+    const D = 0.5;
+    const panel = new THREE.Mesh(
+      new THREE.BoxGeometry(alongX ? wide : D, tall, alongX ? D : wide),
+      billboardMaterial(cache, variant)
+    );
+    const back = new THREE.Mesh(
+      new THREE.BoxGeometry(alongX ? wide + 1.6 : D * 0.7, tall + 1.6, alongX ? D * 0.7 : wide + 1.6),
+      frame2
+    );
+    const off = (alongX ? v.d / 2 : v.w / 2) + D / 2 + 0.25;
+    const px = alongX ? x : x + off * dir;
+    const pz = alongX ? lot.z + off * dir : lot.z;
+    panel.position.set(px, y, pz);
+    back.position.set(px - (alongX ? 0 : dir * 0.32), y, pz - (alongX ? dir * 0.32 : 0));
+    panel.castShadow = back.castShadow = true;
+    panel.userData.lotId = back.userData.lotId = lot.id;
+    out.push(back, panel);
+  });
+  return out;
+}
 function crownMeshes(kind, cache, x, y, z, w, floors) {
   const out = [];
   const add = (geo, mat, dy) => {
@@ -4144,6 +4375,7 @@ function makeBuilding(lot, b, cache) {
       }
     }
   }
+  if (lot._signs) for (const m of billboards(lot, b, vols, cache, rnd)) group.add(m);
   if ((type === "loft" || type === "brownstone") && b.floors >= 4) {
     const v = vols[0];
     const fe = new THREE.Mesh(
@@ -4822,6 +5054,7 @@ var CityScene = class {
     this._airships();
     this._crowd();
     this._highlight();
+    this._works();
     this._vision();
     this._avatar();
     this._playerCar();
@@ -5939,6 +6172,69 @@ var CityScene = class {
     tmpS.set(1, 1, 1);
     for (const m of [this.pCoat, this.pHead, this.pLegA, this.pLegB]) m.instanceMatrix.needsUpdate = true;
   }
+  // ------------------------------------------------------------ the barges
+  _works() {
+    this.works = new THREE4.Group();
+    this.scene.add(this.works);
+    this._worksSig = null;
+  }
+  /**
+   * Fill that has been paid for but is still under the barges.
+   *
+   * Booking a cell used to change nothing you could see for two years, which
+   * made laying out a causeway an act of faith in a spreadsheet. The spoil
+   * platform goes in the water the moment the cheque clears and rises out of
+   * it as the months run, so a chain of them reads as a plan.
+   */
+  syncWorks(state2) {
+    const sig = state2.fills.map((f) => `${f.col},${f.row}:${Math.round(
+      (state2.day - f.startDay) / Math.max(1, f.endDay - f.startDay) * 12
+    )}`).join("|");
+    if (sig === this._worksSig) return;
+    this._worksSig = sig;
+    this.works.traverse((o) => {
+      if (o.isMesh) o.geometry?.dispose();
+    });
+    this.works.clear();
+    if (!state2.fills.length) return;
+    const { PITCH } = CONFIG;
+    const keep = (key, make) => {
+      if (!this.matCache.has(key)) this.matCache.set(key, make());
+      return this.matCache.get(key);
+    };
+    const rock = keep("spoil", () => new THREE4.MeshStandardMaterial({
+      color: 7037783,
+      roughness: 1
+    }));
+    const dam = keep("cofferdam", () => new THREE4.MeshStandardMaterial({
+      color: 3095106,
+      roughness: 0.8,
+      metalness: 0.3
+    }));
+    for (const f of state2.fills) {
+      const p = cellCenter(f.col, f.row);
+      const done = Math.max(0, Math.min(
+        1,
+        (state2.day - f.startDay) / Math.max(1, f.endDay - f.startDay)
+      ));
+      for (const [dx, dz, w, d] of [
+        [0, PITCH / 2, PITCH, 2.4],
+        [0, -PITCH / 2, PITCH, 2.4],
+        [PITCH / 2, 0, 2.4, PITCH],
+        [-PITCH / 2, 0, 2.4, PITCH]
+      ]) {
+        const wall = new THREE4.Mesh(new THREE4.BoxGeometry(w, 3.2, d), dam);
+        wall.position.set(p.x + dx, WATER_Y + 0.8, p.z + dz);
+        wall.castShadow = wall.receiveShadow = true;
+        this.works.add(wall);
+      }
+      const h = 0.6 + done * 2.4;
+      const spoil = new THREE4.Mesh(new THREE4.BoxGeometry(PITCH - 3, h, PITCH - 3), rock);
+      spoil.position.set(p.x, WATER_Y + h / 2, p.z);
+      spoil.receiveShadow = true;
+      this.works.add(spoil);
+    }
+  }
   // -------------------------------------------------------------- highlight
   _highlight() {
     this.highlightGroup = new THREE4.Group();
@@ -6170,6 +6466,7 @@ var CityScene = class {
           for (const m of Array.isArray(child.material) ? child.material : [child.material]) {
             if (!m) continue;
             if (m.emissiveMap) m.emissiveIntensity = lit * 0.95 * (m.userData.litScale ?? 1);
+            else if (m.userData.signGlow) m.emissiveIntensity = 0.25 + lit * 1.9;
             else if (m.userData.shopGlow) m.emissiveIntensity = lit * 0.55;
           }
         }
@@ -7729,7 +8026,7 @@ function pickAt(clientX, clientY) {
   const hit = new THREE7.Vector3();
   if (!ray.ray.intersectPlane(groundPlane, hit)) return;
   const { col, row } = cellOf(hit.x, hit.z);
-  if (canReclaim(city, col, row)) showWater(col, row);
+  if (canReclaim(city, col, row, pendingFills(state))) showWater(col, row);
   else hideWater();
 }
 var waterPanel = document.getElementById("water-panel");
@@ -7741,9 +8038,10 @@ function showWater(col, row) {
   const cost = reclaimCost(state, col, row, "player");
   const why = canReclaimHere(state, "player", col, row);
   const pending = state.fills.find((f) => f.col === col && f.row === row);
-  const size = islandSizeIfFilled(city, col, row);
-  const island = size >= ISLAND_CELLS ? "This cell joins up an island \u2014 the whole landmass is rezoned waterfront, FAR 12." : `${size} of ${ISLAND_CELLS} cells towards an island.`;
-  document.getElementById("water-meta").textContent = pending ? `Fill in progress \u2014 ${((pending.endDay - state.day) / 30).toFixed(1)} months to go.` : `Open water beside the shore. Four lots in two years, and they are yours. ${island}`;
+  const size = islandSizeIfFilled(city, col, row, pendingFills(state));
+  const island = size >= ISLAND_CELLS ? "This cell joins up an island \u2014 the whole landmass is rezoned waterfront, FAR 14." : `${size} of ${ISLAND_CELLS} cells towards an island.`;
+  document.getElementById("water-meta").textContent = pending ? `Fill in progress \u2014 ${((pending.endDay - state.day) / 30).toFixed(1)} months to go.` : `Open water beside the shore, or beside ground you have already booked. ${island}`;
+  document.getElementById("water-gives").textContent = `4 lots \xB7 FAR ${size >= ISLAND_CELLS ? 14 : 10} \xB7 spoil until you build on it`;
   document.getElementById("water-cost").textContent = money2(cost);
   const btn = document.getElementById("do-reclaim");
   btn.disabled = !!why || !!pending;
@@ -7752,7 +8050,7 @@ function showWater(col, row) {
   btn.onclick = () => {
     const r = startReclaim(state, col, row, "player");
     if (!r.ok) return ui.toast(r.why, true);
-    ui.toast(`Barges booked. ${money2(r.cost)} for four lots of new ground in two years.`);
+    ui.toast(`Barges booked \u2014 ${money2(r.cost)}. The cofferdam goes in now; book the next cell off it straight away. Made ground is only worth what you put on it.`);
     ui.refreshTop();
     showWater(col, row);
   };
@@ -7913,7 +8211,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "53134be \xB7 2026-09-23 17:24" : "dev";
+var BUILD = true ? "fb05efe \xB7 2026-09-23 20:26" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
@@ -8089,6 +8387,7 @@ function frame(now) {
     scene.rebuildTerrain();
     scene.refreshCorridorLabels();
   }
+  scene.syncWorks(state);
   if (state._dirtyGeometry) {
     state._dirtyGeometry = false;
     scene.syncBuildings();
@@ -8216,6 +8515,8 @@ window.__game = {
   use: useElevatorOrCar,
   CONFIG,
   canReclaim,
-  islandSizeIfFilled
+  islandSizeIfFilled,
+  canReclaimHere,
+  pendingFills
 };
 </script>

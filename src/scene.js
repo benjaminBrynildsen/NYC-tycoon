@@ -167,6 +167,7 @@ export class CityScene {
     this._airships();
     this._crowd();
     this._highlight();
+    this._works();
     this._vision();
     this._avatar();
     this._playerCar();
@@ -1340,6 +1341,64 @@ export class CityScene {
     for (const m of [this.pCoat, this.pHead, this.pLegA, this.pLegB]) m.instanceMatrix.needsUpdate = true;
   }
 
+  // ------------------------------------------------------------ the barges
+
+  _works() {
+    this.works = new THREE.Group();
+    this.scene.add(this.works);
+    this._worksSig = null;
+  }
+
+  /**
+   * Fill that has been paid for but is still under the barges.
+   *
+   * Booking a cell used to change nothing you could see for two years, which
+   * made laying out a causeway an act of faith in a spreadsheet. The spoil
+   * platform goes in the water the moment the cheque clears and rises out of
+   * it as the months run, so a chain of them reads as a plan.
+   */
+  syncWorks(state) {
+    const sig = state.fills.map((f) => `${f.col},${f.row}:${Math.round(
+      ((state.day - f.startDay) / Math.max(1, f.endDay - f.startDay)) * 12)}`).join('|');
+    if (sig === this._worksSig) return;
+    this._worksSig = sig;
+    this.works.traverse((o) => { if (o.isMesh) o.geometry?.dispose(); });
+    this.works.clear();
+    if (!state.fills.length) return;
+
+    const { PITCH } = CONFIG;
+    const keep = (key, make) => {
+      if (!this.matCache.has(key)) this.matCache.set(key, make());
+      return this.matCache.get(key);
+    };
+    const rock = keep('spoil', () => new THREE.MeshStandardMaterial({
+      color: 0x6b6357, roughness: 1 }));
+    const dam = keep('cofferdam', () => new THREE.MeshStandardMaterial({
+      color: 0x2f3a42, roughness: 0.8, metalness: 0.3 }));
+
+    for (const f of state.fills) {
+      const p = cellCenter(f.col, f.row);
+      const done = Math.max(0, Math.min(1,
+        (state.day - f.startDay) / Math.max(1, f.endDay - f.startDay)));
+      // The cofferdam goes in first and stands the whole time; the spoil
+      // inside it climbs out of the water as the barges empty.
+      for (const [dx, dz, w, d] of [
+        [0, PITCH / 2, PITCH, 2.4], [0, -PITCH / 2, PITCH, 2.4],
+        [PITCH / 2, 0, 2.4, PITCH], [-PITCH / 2, 0, 2.4, PITCH],
+      ]) {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 3.2, d), dam);
+        wall.position.set(p.x + dx, WATER_Y + 0.8, p.z + dz);
+        wall.castShadow = wall.receiveShadow = true;
+        this.works.add(wall);
+      }
+      const h = 0.6 + done * 2.4;
+      const spoil = new THREE.Mesh(new THREE.BoxGeometry(PITCH - 3, h, PITCH - 3), rock);
+      spoil.position.set(p.x, WATER_Y + h / 2, p.z);
+      spoil.receiveShadow = true;
+      this.works.add(spoil);
+    }
+  }
+
   // -------------------------------------------------------------- highlight
 
   _highlight() {
@@ -1565,6 +1624,7 @@ export class CityScene {
           for (const m of Array.isArray(child.material) ? child.material : [child.material]) {
             if (!m) continue;
             if (m.emissiveMap) m.emissiveIntensity = lit * 0.95 * (m.userData.litScale ?? 1);
+            else if (m.userData.signGlow) m.emissiveIntensity = 0.25 + lit * 1.9;
             else if (m.userData.shopGlow) m.emissiveIntensity = lit * 0.55;
           }
         }
