@@ -234,17 +234,22 @@ export class UI {
     $('s-cash').className = me.cash < 0 ? 'bad' : 'good';
     $('s-worth').textContent = money(netWorth(s, 'player'));
     $('s-gsf').textContent = sf(me.gsfBuilt);
+    // The precise cycle number is detail, not a heading — a phone shows the
+    // word and drops the decimals.
     const c = s.cycle;
-    $('s-cycle').textContent = c > 1.15 ? `Boom ${c.toFixed(2)}` : c < 0.9 ? `Slump ${c.toFixed(2)}` : `Steady ${c.toFixed(2)}`;
+    const mood = c > 1.15 ? 'Boom' : c < 0.9 ? 'Slump' : 'Steady';
+    $('s-cycle').innerHTML = `${mood}<span class="drop-sm"> ${c.toFixed(2)}</span>`;
     $('s-cycle').className = c > 1.15 ? 'good' : c < 0.9 ? 'bad' : '';
+    // The countdown rides on the date's own label rather than taking a column
+    // of its own — on a phone the bar had run to seven of them and wrapped.
     const left = yearsLeft(s);
-    $('s-race').textContent = left > 0 ? `${s.endYear} · ${left}y` : 'over';
+    $('s-race').textContent = left > 0 ? `${left}y left` : 'the end';
     $('s-race').className = left <= 3 ? 'last' : left <= 10 ? 'soon' : '';
     // The field shrinks when a firm is taken over, so count who is left.
     const board = leaderboard(s);
     const rank = board.findIndex((a) => a.isPlayer) + 1;
-    $('s-rank').textContent =
-      `${rank}${['st', 'nd', 'rd', 'th'][Math.min(rank - 1, 3)]} of ${board.length}`;
+    $('s-rank').innerHTML = `${rank}${['st', 'nd', 'rd', 'th'][Math.min(rank - 1, 3)]}`
+      + `<span class="drop-sm"> of ${board.length}</span>`;
     if (!$('portfolio').classList.contains('hidden')) this.refreshPortfolio();
   }
 
