@@ -133,6 +133,7 @@ export function setupTouch(controls, ui, scene, canvas, actions) {
   $('tb-board').onclick = () => controls.toggleBoard();
   $('tb-vision').onclick = () => actions.vision();
   $('tb-action').onclick = () => actions.use();
+  $('tb-jump').onclick = () => controls.jump();
   $('tb-run').onclick = () => {
     const on = $('tb-run').classList.toggle('on');
     if (on) controls.keys.add('ShiftLeft'); else controls.keys.delete('ShiftLeft');

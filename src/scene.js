@@ -1,7 +1,7 @@
 // Everything you can see. Reads world + sim state, never writes to it.
 
 import * as THREE from 'three';
-import { CONFIG, cellCenter, cellOf, mulberry32 } from './world.js';
+import { CONFIG, cellCenter, cellOf, lotAt, mulberry32 } from './world.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeBuilding, roofPropGeometries } from './architecture.js';
 import { Post } from './post.js';
@@ -120,6 +120,9 @@ export const QUALITY = {
 };
 
 const PICK_MAT = new THREE.MeshBasicMaterial({ visible: false });
+
+// The river sits a little under the pavement, so a kerb reads as a kerb.
+export const WATER_Y = -0.6;
 
 // Buildings are batched in squares of this many blocks. Per block the batches
 // were too small to share much — a block holds three or four buildings and
@@ -287,7 +290,7 @@ export class CityScene {
     });
     const plane = new THREE.Mesh(new THREE.PlaneGeometry(11000, 11000), mat);
     plane.rotation.x = -Math.PI / 2;
-    plane.position.set(0, -0.6, 0);
+    plane.position.set(0, WATER_Y, 0);
     this.scene.add(freeze(plane));
   }
 
@@ -1144,6 +1147,36 @@ export class CityScene {
         this.crowdBoost.delete(`${cell.col},${cell.row}`);
       }
     }
+  }
+
+  /**
+   * The solid thing under a point, and how high it is: a roof if you are over
+   * a building, the pavement if you are over land, the river if you are not.
+   * This is what falling, landing and swimming are all decided against.
+   */
+  surfaceAt(x, z) {
+    const lot = lotAt(this.city, x, z);
+    const g = lot && this.buildingByLot.get(lot.id);
+    if (g) {
+      // A tower steps back as it rises, so the thing under your feet is the
+      // highest volume that actually covers this point — the top roof over
+      // the tower, a setback terrace out at the edges, the street past that.
+      const dx = Math.abs(x - lot.x), dz = Math.abs(z - lot.z);
+      const decks = g.userData.decks ?? [];
+      for (let i = decks.length - 1; i >= 0; i--) {
+        const d = decks[i];
+        if (dx <= d.hw && dz <= d.hd) {
+          const roof = this.roofOf(lot.id);
+          // Only the top deck has a parapet to keep you on it.
+          return { y: d.top, lot, roof: roof && i === decks.length - 1 ? roof
+                   : { x: lot.x, z: lot.z, y: d.top, hw: d.hw - 1.2, hd: d.hd - 1.2,
+                       floors: roof?.floors ?? 0 } };
+        }
+      }
+    }
+    const { col, row } = cellOf(x, z);
+    if (!this.city.isLand(col, row)) return { y: WATER_Y, water: true };
+    return { y: 0 };
   }
 
   /** Where a building's lift lets you out. */

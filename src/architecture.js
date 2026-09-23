@@ -490,6 +490,11 @@ export function makeBuilding(lot, b, cache) {
   const topVol = vols[vols.length - 1];
   group.userData = {
     lotId: lot.id, type, props, mast, height: b.floors * FH,
+    // Every deck this building has, lowest first: a setback is a surface you
+    // can land on, not a line drawn on a slab.
+    decks: vols.map((v) => ({
+      top: (v.y0 + v.floors) * FH + 1.2, hw: v.w / 2, hd: v.d / 2,
+    })),
     // Where the lift lets you out, and how far you can walk before the parapet.
     roof: { y: (topVol.y0 + topVol.floors) * FH + 1.2,
             hw: topVol.w / 2 - 1.2, hd: topVol.d / 2 - 1.2,

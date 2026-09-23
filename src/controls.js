@@ -3,6 +3,7 @@
 
 import * as THREE from 'three';
 import { CONFIG, lotAt } from './world.js';
+import { WATER_Y } from './scene.js';
 
 export const MODE = { STREET: 'street', CAR: 'car', BOARD: 'board' };
 
@@ -22,6 +23,10 @@ export function requestLock(el) {
 }
 
 const TRANSITION = 1.1;   // seconds, each way
+const GRAVITY = 22;       // m/s², brisk enough that a long fall still resolves
+const TERMINAL = 58;
+const JUMP_SPEED = 7.6;   // 1.3m — honestly clears a 1.15m parapet
+const AIR_CONTROL = 0.92; // a jump keeps nearly all the speed it left with
 
 export class Controls {
   constructor(scene, canvas) {
@@ -31,9 +36,13 @@ export class Controls {
     this.firstPerson = false;
 
     this.pos = new THREE.Vector3(0, 0, CONFIG.PITCH * 2.2);
-    this.groundY = 0;        // raised when you are standing on a roof
-    this.platform = null;    // {x, z, hw, hd, y} while up there
+    this.groundY = 0;        // your actual altitude: pavement, roof, or mid-air
+    this.platform = null;    // {x, z, hw, hd, y} while standing on a roof
     this.riding = null;      // the lift, mid-journey
+    this.vy = 0;             // vertical speed while falling
+    this.airborne = false;
+    this.swimming = false;
+    this.fellFrom = 0;       // altitude the current fall started at
     this.yaw = Math.PI;
     this.pitch = -0.08;
     this.vel = new THREE.Vector3();
@@ -148,6 +157,10 @@ export class Controls {
   travelTo(x, z) {
     const d = Math.hypot(x - this.pos.x, z - this.pos.z);
     this.pos.set(x, 0, z + CONFIG.LOT * 0.9);
+    // Arrive on your feet, whatever you were doing when you left.
+    this.groundY = 0; this.vy = 0;
+    this.airborne = this.swimming = false;
+    this.platform = null;
     this.car.pos.copy(this.pos);
     return d;
   }
@@ -158,6 +171,7 @@ export class Controls {
    */
   startRide(platform) {
     if (this.riding || this.mode !== MODE.STREET) return false;
+    if (this.airborne || this.swimming) return false;
     const up = !!platform;
     this.riding = {
       t: 0, dur: 2.2, up,
@@ -208,9 +222,28 @@ export class Controls {
     this._updateCamera(dt, sceneRef);
   }
 
+  /** Ask for a jump; the next walk step decides whether you get one. */
+  jump() {
+    if (this.mode !== MODE.STREET || this.riding) return false;
+    if (this.swimming) { this.vy = Math.max(this.vy, 2.4); return true; }   // a splash-about
+    if (this.airborne) return false;
+    this.vy = JUMP_SPEED;
+    this.airborne = true;
+    this.fellFrom = this.groundY;
+    // You keep the speed you left with. Walking off a parapet drops you just
+    // past it; a run at the edge throws you well clear of the building.
+    this.airSpeed = this._walkSpeed();
+    return true;
+  }
+
+  _walkSpeed() {
+    return (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) ? 9.5 : 4.2;
+  }
+
   _updateWalk(dt) {
-    const run = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
-    const speed = run ? 9.5 : 4.2;
+    const speed = this.swimming ? 2.1
+      : this.airborne ? (this.airSpeed ?? 4.2) * AIR_CONTROL
+      : this._walkSpeed();
     let { fx, fz } = this.moveAxis();
     const len = Math.hypot(fx, fz) || 1;
     fx /= len; fz /= len;
@@ -221,18 +254,84 @@ export class Controls {
     const dz = (fz * cos - fx * sin) * speed * dt;
 
     let nx = this.pos.x + dx, nz = this.pos.z + dz;
-    if (this.platform) {
-      // Up here the parapet is the only thing that stops you.
+    if (this.platform && !this.airborne) {
+      // Standing on a roof, the parapet is the only thing that stops you —
+      // which is why you have to jump to get over it.
       const p = this.platform;
-      this.pos.x = Math.max(p.x - p.hw, Math.min(p.x + p.hw, nx));
-      this.pos.z = Math.max(p.z - p.hd, Math.min(p.z + p.hd, nz));
+      nx = Math.max(p.x - p.hw, Math.min(p.x + p.hw, nx));
+      nz = Math.max(p.z - p.hd, Math.min(p.z + p.hd, nz));
+    } else if (this.airborne) {
+      // In the air nothing blocks you except the side of a building: you may
+      // not drift into something whose roof is above your head.
+      const ahead = this.s.surfaceAt(nx, nz);
+      if (ahead.y > this.groundY + 0.4) { nx = this.pos.x; nz = this.pos.z; }
     } else {
       [nx, nz] = this.s.resolveCollision(nx, nz, 0.6);
-      const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
-      this.pos.x = Math.max(-lx, Math.min(lx, nx));
-      this.pos.z = Math.max(-lz, Math.min(lz, nz));
     }
+    const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
+    this.pos.x = Math.max(-lx, Math.min(lx, nx));
+    this.pos.z = Math.max(-lz, Math.min(lz, nz));
+
+    this._updateVertical(dt);
     this.moving = Math.hypot(dx, dz) > 0.001;
+  }
+
+  /**
+   * Gravity, landing, and the river. `groundY` is the player's real altitude,
+   * so walking off a kerb into the water and stepping off a 60th-floor parapet
+   * are the same piece of code.
+   */
+  _updateVertical(dt) {
+    const surface = this.s.surfaceAt(this.pos.x, this.pos.z);
+    this.landedOn = null;
+
+    if (this.swimming) {
+      if (!surface.water) {                 // you reached the shore and climbed out
+        this.swimming = false;
+        this.groundY = surface.y;
+        this.platform = surface.roof ?? null;
+        this.landedOn = 'shore';
+        return;
+      }
+      // Bob, with a little of whatever push the last jump had left in it.
+      this.vy += (WATER_Y - 0.85 - this.groundY) * 9 * dt - this.vy * 3.4 * dt;
+      this.groundY += this.vy * dt;
+      return;
+    }
+
+    if (!this.airborne) {
+      // The ground can vanish from under you: walk off a roof, or off the
+      // embankment into the river.
+      if (this.groundY - surface.y > 0.45) {
+        this.airborne = true;
+        this.platform = null;
+        this.fellFrom = this.groundY;
+        this.airSpeed = this._walkSpeed();
+        this.vy = 0;
+      } else {
+        this.groundY = surface.y;
+        return;
+      }
+    }
+
+    this.vy = Math.max(-TERMINAL, this.vy - GRAVITY * dt);
+    this.groundY += this.vy * dt;
+    if (this.groundY > surface.y) return;
+
+    // Landed.
+    this.groundY = surface.y;
+    this.airborne = false;
+    this.fallHeight = Math.max(0, this.fellFrom - surface.y);
+    this.vy = 0;
+    if (surface.water) {
+      this.swimming = true;
+      this.platform = null;
+      this.groundY = WATER_Y - 0.85;
+      this.landedOn = 'water';
+    } else {
+      this.platform = surface.roof ?? null;
+      this.landedOn = this.fallHeight > 6 ? 'hard' : 'ground';
+    }
   }
 
   _updateCar(dt) {
@@ -264,6 +363,7 @@ export class Controls {
 
   enterCar() {
     if (this.mode !== MODE.STREET || this.platform || this.riding) return false;
+    if (this.airborne || this.swimming) return false;
     if (this.pos.distanceTo(this.s.playerCar.position) > 6) return false;
     this.car.pos.copy(this.s.playerCar.position);
     this.mode = MODE.CAR;
@@ -294,7 +394,7 @@ export class Controls {
   }
 
   _streetCameraPose() {
-    const eye = (this.mode === MODE.CAR ? 2.0 : 1.72) + this.groundY;
+    const eye = (this.mode === MODE.CAR ? 2.0 : this.swimming ? 1.05 : 1.72) + this.groundY;
     const head = new THREE.Vector3(this.pos.x, eye, this.pos.z);
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
     if (this.firstPerson) return { pos: head, q };

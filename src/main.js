@@ -168,6 +168,23 @@ function showWater(col, row) {
   };
 }
 
+/**
+ * A fall is worth a line, once. There is no health here and there is not going
+ * to be — the joke is that the city does not care.
+ */
+let swimToast = 0;
+function reportLanding(kind, height) {
+  if (kind === 'water') {
+    if (state.day - swimToast < 0.4) return;
+    swimToast = state.day;
+    ui.toast(height > 20
+      ? `${Math.round(height)} metres into the river. Swim for the kerb — walk at the shore and you'll climb out.`
+      : 'In the drink. Swim at the shore and you climb out.');
+  } else if (kind === 'hard' && height > 14) {
+    ui.toast(`You walked off ${Math.round(height)} metres of building. Nobody on the street looked up.`);
+  }
+}
+
 /** The building or site worth putting a label on, near where you're standing. */
 function nearbyNotable() {
   const f = controls.focusPoint;
@@ -212,7 +229,12 @@ addEventListener('keydown', (e) => {
       if (controls.mode === MODE.STREET) controls.firstPerson = !controls.firstPerson;
       break;
     case 'KeyE': useElevatorOrCar(); break;
-    case 'Space': e.preventDefault(); ui.setSpeed(speed === 0 ? 1 : 0); break;
+    case 'Space':
+      e.preventDefault();
+      // On your feet the bar is a jump; from the board it is still the pause.
+      if (controls.mode === MODE.STREET) controls.jump();
+      else ui.setSpeed(speed === 0 ? 1 : 0);
+      break;
     case 'Digit1': ui.setSpeed(1); break;
     case 'Digit2': ui.setSpeed(2); break;
     case 'Digit3': ui.setSpeed(3); break;
@@ -492,6 +514,8 @@ function frame(now) {
       ? 'ESC — free the cursor  ·  TAB — rise to the board'
       : 'click the view to look around  ·  TAB — rise to the board';
   }
+
+  if (controls.landedOn) reportLanding(controls.landedOn, controls.fallHeight ?? 0);
 
   const labelLot = controls.mode === MODE.BOARD
     ? ui.selected

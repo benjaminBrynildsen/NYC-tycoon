@@ -469,6 +469,7 @@ body.touch #crosshair, body.touch #modehint { display: none; }
 }
 #touchpad button {
   pointer-events: auto; flex: 0 0 auto; width: 62px; height: 62px; border-radius: 50%;
+  font-size: 12px;
   font: inherit; font-size: 13px; font-weight: 700; letter-spacing: .04em;
   background: rgba(16,20,27,.86); color: var(--ink);
   border: 1px solid rgba(255,255,255,.22); backdrop-filter: blur(10px);
@@ -494,7 +495,7 @@ body.touch #crosshair, body.touch #modehint { display: none; }
     padding: 58px 10px 16px; background: rgba(8,10,14,.94);
     transform: translateX(102%); transition: transform .22s ease;
     border-left: 1px solid var(--line); z-index: 26;
-    padding-bottom: 96px;   /* clear of the button cluster */
+    padding-bottom: 110px;  /* clear of the button cluster */
   }
   #rail.open { transform: none; }
 
@@ -681,6 +682,7 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
   <div id="stick" class="touch-only"><i id="stick-knob"></i></div>
   <div id="touchpad" class="touch-only">
     <button id="tb-menu" title="Panels">☰</button>
+    <button id="tb-jump" title="Jump">JUMP</button>
     <button id="tb-run" title="Run">RUN</button>
     <button id="tb-vision" title="The Vision">V</button>
     <button id="tb-action" title="Lift / car">E</button>
@@ -701,12 +703,14 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
       <div>
         <h4>On the street</h4>
         <p><kbd>W A S D</kbd> or <kbd>arrows</kbd> · <kbd>Shift</kbd> run · <kbd>Mouse</kbd> look</p>
+        <p><kbd>Space</kbd> jump — off a parapet, or into the river</p>
         <p><kbd>V</kbd> raise the Vision on the lot you're standing on</p>
         <p><kbd>E</kbd> car, or the lift to a roof · <kbd>F</kbd> first person</p>
         <p><kbd>Esc</kbd> frees the cursor so you can click the panels</p>
         <p class="touchline">On a phone: left thumb walks, right thumb looks. On the map,
           drag to pan, pinch to zoom, twist to rotate and slide two fingers up or down to tilt
-          towards the skyline. Tap a building for its details.</p>
+          towards the skyline. Tap a building for its details. JUMP works off a parapet
+          and into the river.</p>
       </div>
       <div>
         <h4>On the board</h4>
@@ -2613,6 +2617,13 @@ function makeBuilding(lot, b, cache) {
     props,
     mast,
     height: b.floors * FH,
+    // Every deck this building has, lowest first: a setback is a surface you
+    // can land on, not a line drawn on a slab.
+    decks: vols.map((v) => ({
+      top: (v.y0 + v.floors) * FH + 1.2,
+      hw: v.w / 2,
+      hd: v.d / 2
+    })),
     // Where the lift lets you out, and how far you can walk before the parapet.
     roof: {
       y: (topVol.y0 + topVol.floors) * FH + 1.2,
@@ -3169,6 +3180,7 @@ var QUALITY = {
   }
 };
 var PICK_MAT = new THREE4.MeshBasicMaterial({ visible: false });
+var WATER_Y = -0.6;
 var TILE = 3;
 var tileKey = (block) => `${Math.floor(block.col / TILE)},${Math.floor(block.row / TILE)}`;
 var CityScene = class {
@@ -3318,7 +3330,7 @@ var CityScene = class {
     });
     const plane = new THREE4.Mesh(new THREE4.PlaneGeometry(11e3, 11e3), mat);
     plane.rotation.x = -Math.PI / 2;
-    plane.position.set(0, -0.6, 0);
+    plane.position.set(0, WATER_Y, 0);
     this.scene.add(freeze(plane));
   }
   // ----------------------------------------------------------------- ground
@@ -4127,6 +4139,36 @@ var CityScene = class {
       }
     }
   }
+  /**
+   * The solid thing under a point, and how high it is: a roof if you are over
+   * a building, the pavement if you are over land, the river if you are not.
+   * This is what falling, landing and swimming are all decided against.
+   */
+  surfaceAt(x, z) {
+    const lot = lotAt(this.city, x, z);
+    const g = lot && this.buildingByLot.get(lot.id);
+    if (g) {
+      const dx = Math.abs(x - lot.x), dz = Math.abs(z - lot.z);
+      const decks = g.userData.decks ?? [];
+      for (let i = decks.length - 1; i >= 0; i--) {
+        const d = decks[i];
+        if (dx <= d.hw && dz <= d.hd) {
+          const roof = this.roofOf(lot.id);
+          return { y: d.top, lot, roof: roof && i === decks.length - 1 ? roof : {
+            x: lot.x,
+            z: lot.z,
+            y: d.top,
+            hw: d.hw - 1.2,
+            hd: d.hd - 1.2,
+            floors: roof?.floors ?? 0
+          } };
+        }
+      }
+    }
+    const { col, row } = cellOf(x, z);
+    if (!this.city.isLand(col, row)) return { y: WATER_Y, water: true };
+    return { y: 0 };
+  }
   /** Where a building's lift lets you out. */
   roofOf(lotId) {
     return this.buildingByLot.get(lotId)?.userData.roof ?? null;
@@ -4513,6 +4555,10 @@ function requestLock(el) {
   }
 }
 var TRANSITION = 1.1;
+var GRAVITY = 22;
+var TERMINAL = 58;
+var JUMP_SPEED = 7.6;
+var AIR_CONTROL = 0.92;
 var Controls = class {
   constructor(scene2, canvas2) {
     this.s = scene2;
@@ -4523,6 +4569,10 @@ var Controls = class {
     this.groundY = 0;
     this.platform = null;
     this.riding = null;
+    this.vy = 0;
+    this.airborne = false;
+    this.swimming = false;
+    this.fellFrom = 0;
     this.yaw = Math.PI;
     this.pitch = -0.08;
     this.vel = new THREE5.Vector3();
@@ -4635,6 +4685,10 @@ var Controls = class {
   travelTo(x, z) {
     const d = Math.hypot(x - this.pos.x, z - this.pos.z);
     this.pos.set(x, 0, z + CONFIG.LOT * 0.9);
+    this.groundY = 0;
+    this.vy = 0;
+    this.airborne = this.swimming = false;
+    this.platform = null;
     this.car.pos.copy(this.pos);
     return d;
   }
@@ -4644,6 +4698,7 @@ var Controls = class {
    */
   startRide(platform) {
     if (this.riding || this.mode !== MODE.STREET) return false;
+    if (this.airborne || this.swimming) return false;
     const up = !!platform;
     this.riding = {
       t: 0,
@@ -4690,9 +4745,25 @@ var Controls = class {
     else if (this.mode === MODE.STREET) this._updateWalk(dt);
     this._updateCamera(dt, sceneRef);
   }
+  /** Ask for a jump; the next walk step decides whether you get one. */
+  jump() {
+    if (this.mode !== MODE.STREET || this.riding) return false;
+    if (this.swimming) {
+      this.vy = Math.max(this.vy, 2.4);
+      return true;
+    }
+    if (this.airborne) return false;
+    this.vy = JUMP_SPEED;
+    this.airborne = true;
+    this.fellFrom = this.groundY;
+    this.airSpeed = this._walkSpeed();
+    return true;
+  }
+  _walkSpeed() {
+    return this.keys.has("ShiftLeft") || this.keys.has("ShiftRight") ? 9.5 : 4.2;
+  }
   _updateWalk(dt) {
-    const run = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
-    const speed2 = run ? 9.5 : 4.2;
+    const speed2 = this.swimming ? 2.1 : this.airborne ? (this.airSpeed ?? 4.2) * AIR_CONTROL : this._walkSpeed();
     let { fx, fz } = this.moveAxis();
     const len = Math.hypot(fx, fz) || 1;
     fx /= len;
@@ -4701,17 +4772,73 @@ var Controls = class {
     const dx = (fx * cos + fz * sin) * speed2 * dt;
     const dz = (fz * cos - fx * sin) * speed2 * dt;
     let nx = this.pos.x + dx, nz = this.pos.z + dz;
-    if (this.platform) {
+    if (this.platform && !this.airborne) {
       const p = this.platform;
-      this.pos.x = Math.max(p.x - p.hw, Math.min(p.x + p.hw, nx));
-      this.pos.z = Math.max(p.z - p.hd, Math.min(p.z + p.hd, nz));
+      nx = Math.max(p.x - p.hw, Math.min(p.x + p.hw, nx));
+      nz = Math.max(p.z - p.hd, Math.min(p.z + p.hd, nz));
+    } else if (this.airborne) {
+      const ahead = this.s.surfaceAt(nx, nz);
+      if (ahead.y > this.groundY + 0.4) {
+        nx = this.pos.x;
+        nz = this.pos.z;
+      }
     } else {
       [nx, nz] = this.s.resolveCollision(nx, nz, 0.6);
-      const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
-      this.pos.x = Math.max(-lx, Math.min(lx, nx));
-      this.pos.z = Math.max(-lz, Math.min(lz, nz));
     }
+    const lx = CONFIG.WIDTH / 2 + 70, lz = CONFIG.DEPTH / 2 + 70;
+    this.pos.x = Math.max(-lx, Math.min(lx, nx));
+    this.pos.z = Math.max(-lz, Math.min(lz, nz));
+    this._updateVertical(dt);
     this.moving = Math.hypot(dx, dz) > 1e-3;
+  }
+  /**
+   * Gravity, landing, and the river. `groundY` is the player's real altitude,
+   * so walking off a kerb into the water and stepping off a 60th-floor parapet
+   * are the same piece of code.
+   */
+  _updateVertical(dt) {
+    const surface = this.s.surfaceAt(this.pos.x, this.pos.z);
+    this.landedOn = null;
+    if (this.swimming) {
+      if (!surface.water) {
+        this.swimming = false;
+        this.groundY = surface.y;
+        this.platform = surface.roof ?? null;
+        this.landedOn = "shore";
+        return;
+      }
+      this.vy += (WATER_Y - 0.85 - this.groundY) * 9 * dt - this.vy * 3.4 * dt;
+      this.groundY += this.vy * dt;
+      return;
+    }
+    if (!this.airborne) {
+      if (this.groundY - surface.y > 0.45) {
+        this.airborne = true;
+        this.platform = null;
+        this.fellFrom = this.groundY;
+        this.airSpeed = this._walkSpeed();
+        this.vy = 0;
+      } else {
+        this.groundY = surface.y;
+        return;
+      }
+    }
+    this.vy = Math.max(-TERMINAL, this.vy - GRAVITY * dt);
+    this.groundY += this.vy * dt;
+    if (this.groundY > surface.y) return;
+    this.groundY = surface.y;
+    this.airborne = false;
+    this.fallHeight = Math.max(0, this.fellFrom - surface.y);
+    this.vy = 0;
+    if (surface.water) {
+      this.swimming = true;
+      this.platform = null;
+      this.groundY = WATER_Y - 0.85;
+      this.landedOn = "water";
+    } else {
+      this.platform = surface.roof ?? null;
+      this.landedOn = this.fallHeight > 6 ? "hard" : "ground";
+    }
   }
   _updateCar(dt) {
     const c = this.car;
@@ -4739,6 +4866,7 @@ var Controls = class {
   }
   enterCar() {
     if (this.mode !== MODE.STREET || this.platform || this.riding) return false;
+    if (this.airborne || this.swimming) return false;
     if (this.pos.distanceTo(this.s.playerCar.position) > 6) return false;
     this.car.pos.copy(this.s.playerCar.position);
     this.mode = MODE.CAR;
@@ -4766,7 +4894,7 @@ var Controls = class {
     return { pos, q };
   }
   _streetCameraPose() {
-    const eye = (this.mode === MODE.CAR ? 2 : 1.72) + this.groundY;
+    const eye = (this.mode === MODE.CAR ? 2 : this.swimming ? 1.05 : 1.72) + this.groundY;
     const head = new THREE5.Vector3(this.pos.x, eye, this.pos.z);
     const q = new THREE5.Quaternion().setFromEuler(new THREE5.Euler(this.pitch, this.yaw, 0, "YXZ"));
     if (this.firstPerson) return { pos: head, q };
@@ -5568,6 +5696,7 @@ function setupTouch(controls2, ui2, scene2, canvas2, actions) {
   $2("tb-board").onclick = () => controls2.toggleBoard();
   $2("tb-vision").onclick = () => actions.vision();
   $2("tb-action").onclick = () => actions.use();
+  $2("tb-jump").onclick = () => controls2.jump();
   $2("tb-run").onclick = () => {
     const on = $2("tb-run").classList.toggle("on");
     if (on) controls2.keys.add("ShiftLeft");
@@ -5707,6 +5836,16 @@ function showWater(col, row) {
     showWater(col, row);
   };
 }
+var swimToast = 0;
+function reportLanding(kind, height) {
+  if (kind === "water") {
+    if (state.day - swimToast < 0.4) return;
+    swimToast = state.day;
+    ui.toast(height > 20 ? `${Math.round(height)} metres into the river. Swim for the kerb \u2014 walk at the shore and you'll climb out.` : "In the drink. Swim at the shore and you climb out.");
+  } else if (kind === "hard" && height > 14) {
+    ui.toast(`You walked off ${Math.round(height)} metres of building. Nobody on the street looked up.`);
+  }
+}
 function nearbyNotable() {
   const f = controls.focusPoint;
   let best = null, bd = 85 * 85;
@@ -5755,7 +5894,8 @@ addEventListener("keydown", (e) => {
       break;
     case "Space":
       e.preventDefault();
-      ui.setSpeed(speed === 0 ? 1 : 0);
+      if (controls.mode === MODE.STREET) controls.jump();
+      else ui.setSpeed(speed === 0 ? 1 : 0);
       break;
     case "Digit1":
       ui.setSpeed(1);
@@ -5828,7 +5968,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "49cb2e0 \xB7 2026-09-23 02:08" : "dev";
+var BUILD = true ? "6084312 \xB7 2026-09-23 02:13" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
@@ -6000,6 +6140,7 @@ function frame(now) {
   if (controls.mode !== MODE.BOARD) {
     document.getElementById("modehint").textContent = document.pointerLockElement ? "ESC \u2014 free the cursor  \xB7  TAB \u2014 rise to the board" : "click the view to look around  \xB7  TAB \u2014 rise to the board";
   }
+  if (controls.landedOn) reportLanding(controls.landedOn, controls.fallHeight ?? 0);
   const labelLot = controls.mode === MODE.BOARD ? ui.selected : visionLot || nearbyNotable();
   ui.updateWorldLabel(labelLot, scene.camera);
   uiAccum += dt;

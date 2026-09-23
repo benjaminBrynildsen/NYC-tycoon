@@ -467,6 +467,7 @@ body.touch #crosshair, body.touch #modehint { display: none; }
 }
 #touchpad button {
   pointer-events: auto; flex: 0 0 auto; width: 62px; height: 62px; border-radius: 50%;
+  font-size: 12px;
   font: inherit; font-size: 13px; font-weight: 700; letter-spacing: .04em;
   background: rgba(16,20,27,.86); color: var(--ink);
   border: 1px solid rgba(255,255,255,.22); backdrop-filter: blur(10px);
@@ -492,7 +493,7 @@ body.touch #crosshair, body.touch #modehint { display: none; }
     padding: 58px 10px 16px; background: rgba(8,10,14,.94);
     transform: translateX(102%); transition: transform .22s ease;
     border-left: 1px solid var(--line); z-index: 26;
-    padding-bottom: 96px;   /* clear of the button cluster */
+    padding-bottom: 110px;  /* clear of the button cluster */
   }
   #rail.open { transform: none; }
 
