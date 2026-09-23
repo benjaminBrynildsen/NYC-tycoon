@@ -311,7 +311,6 @@ function toggleVision() {
 const origToggle = controls.toggleBoard.bind(controls);
 controls.toggleBoard = () => {
   const up = origToggle();
-  document.getElementById('board-panel').classList.toggle('hidden', !up);
   document.getElementById('crosshair').style.display = up ? 'none' : '';
   document.getElementById('modehint').textContent = up
     ? 'TAB — drop back to the street  ·  click a lot to inspect'
@@ -354,7 +353,12 @@ function beginGame(message) {
   requestLock(canvas);
   ui.refreshTop();
   ui.refreshNews();
+  ui.refreshBoard();
   ui.toast(message);
+  // On a phone everything but the view lives behind one button, so say so.
+  if (isTouch()) {
+    setTimeout(() => ui.toast('Tap ☰ for the jobs on the table, your rank, and who is beating you.'), 7000);
+  }
 }
 
 document.getElementById('begin').onclick = () => {
@@ -570,7 +574,7 @@ function frame(now) {
     ui.refreshTop();
     ui.refreshNews();
     ui.refreshJobs();
-    if (controls.mode === MODE.BOARD) ui.refreshBoard();
+    ui.refreshBoard();
     if (ui.selected) {
       const keep = ui.selected;
       ui.select(keep);

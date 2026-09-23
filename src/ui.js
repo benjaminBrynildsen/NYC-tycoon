@@ -286,23 +286,32 @@ export class UI {
       ? '<b class="good">Brooklyn and Queens are open.</b>'
       : `<div class="gatebar"><i style="width:${pct(Math.min(1, b.total / gate))}"></i></div>`
         + `<span>${money(b.total)} of ${money(gate)} — the boroughs open at a billion</span>`;
-    const me = this.state.actors.player;
-    const st = me.standing ?? 0;
-    const rank = rankFor(st);
-    const next = nextRank(st);
-    $('pf-rank').innerHTML =
-      `<div class="rankrow"><b>${esc(rank.title)}</b><span>${st} standing</span></div>`
-      + `<p class="perk">${esc(rank.perk)}</p>`
-      + (next
-        ? `<div class="gatebar"><i style="width:${pct(Math.min(1, st / next.at))}"></i></div>`
-          + `<span>${next.at - st} more delivered and you are a ${esc(next.title)} — ${esc(next.perk)}</span>`
-        : '<span>Nothing left to prove to the trade.</span>');
+    $('pf-rank').innerHTML = this._rankHtml();
 
     $('pf-holdings').textContent =
       `${b.lots} lots · ${b.built} buildings · ${sf(b.gsf)} · ${this.state.projects.filter((p) => p.owner === 'player').length} under construction`;
   }
 
+  /** Where you stand with the trade, and what the next rung is worth. */
+  _rankHtml() {
+    const st = this.state.actors.player.standing ?? 0;
+    const rank = rankFor(st);
+    const next = nextRank(st);
+    return `<div class="rankrow"><b>${esc(rank.title)}</b><span>${st} standing</span></div>`
+      + `<p class="perk">${esc(rank.perk)}</p>`
+      + (next
+        ? `<div class="gatebar"><i style="width:${pct(Math.min(1, st / next.at))}"></i></div>`
+          + `<span>${next.at - st} more and you are a ${esc(next.title)} — ${esc(next.perk)}</span>`
+        : '<span>Nothing left to prove to the trade.</span>');
+  }
+
   refreshBoard() {
+    const sp = $('sp-rank');
+    if (sp) {
+      const sig = `${this.state.actors.player.standing ?? 0}`;
+      if (sig !== this._rankSig) { this._rankSig = sig; sp.innerHTML = this._rankHtml(); }
+    }
+
     const s = this.state;
     $('leaderboard').innerHTML = leaderboard(s).map((a) => `
       <li data-actor="${a.id}" class="${a.isPlayer ? 'me' : ''}${this.highlightOwner === a.id ? ' lit' : ''}">

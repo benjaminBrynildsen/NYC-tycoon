@@ -490,12 +490,30 @@ body.touch #crosshair, body.touch #modehint { display: none; }
   /* The right rail slides in rather than eating the screen. */
   #rail {
     top: 0; right: 0; bottom: 0; width: min(310px, 88vw); max-height: none;
-    padding: 58px 10px 16px; background: rgba(8,10,14,.94);
+    padding: 58px 10px 110px; background: rgba(8,10,14,.94);
     transform: translateX(102%); transition: transform .22s ease;
     border-left: 1px solid var(--line); z-index: 26;
-    padding-bottom: 110px;  /* clear of the button cluster */
+    -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
   }
-  #rail.open { transform: none; }
+  /* The drawer is a real surface on a phone, not an overlay of loose cards —
+     without pointer events of its own there is nothing to drag to scroll it,
+     and everything below the fold was unreachable. */
+  #rail.open { transform: none; pointer-events: auto; }
+
+  /* With the drawer open you are reading, not walking, so everything but the
+     button that closes it gets out of the way. Otherwise the cluster sits on
+     top of the drawer and eats the right-hand column — which is where all the
+     money is. */
+  #rail.open ~ #touchpad button:not(#tb-menu) { display: none; }
+
+  /* The thumb cluster sits on top of the bottom sheets, so the sheets have to
+     keep their content out from under it. Values were landing behind the
+     buttons and the last action button was half covered. */
+  #lot-panel, #build-panel, #portfolio, #water-panel {
+    padding-right: 88px;
+  }
+  #lot-panel > button:first-child, #build-panel > button:first-child,
+  #portfolio > button:first-child, #water-panel > button:first-child { right: 92px; }
 
   /* Panels become bottom sheets. */
   #lot-panel, #build-panel, #portfolio, #water-panel {

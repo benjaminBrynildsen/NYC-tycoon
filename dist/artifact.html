@@ -492,12 +492,30 @@ body.touch #crosshair, body.touch #modehint { display: none; }
   /* The right rail slides in rather than eating the screen. */
   #rail {
     top: 0; right: 0; bottom: 0; width: min(310px, 88vw); max-height: none;
-    padding: 58px 10px 16px; background: rgba(8,10,14,.94);
+    padding: 58px 10px 110px; background: rgba(8,10,14,.94);
     transform: translateX(102%); transition: transform .22s ease;
     border-left: 1px solid var(--line); z-index: 26;
-    padding-bottom: 110px;  /* clear of the button cluster */
+    -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
   }
-  #rail.open { transform: none; }
+  /* The drawer is a real surface on a phone, not an overlay of loose cards —
+     without pointer events of its own there is nothing to drag to scroll it,
+     and everything below the fold was unreachable. */
+  #rail.open { transform: none; pointer-events: auto; }
+
+  /* With the drawer open you are reading, not walking, so everything but the
+     button that closes it gets out of the way. Otherwise the cluster sits on
+     top of the drawer and eats the right-hand column — which is where all the
+     money is. */
+  #rail.open ~ #touchpad button:not(#tb-menu) { display: none; }
+
+  /* The thumb cluster sits on top of the bottom sheets, so the sheets have to
+     keep their content out from under it. Values were landing behind the
+     buttons and the last action button was half covered. */
+  #lot-panel, #build-panel, #portfolio, #water-panel {
+    padding-right: 88px;
+  }
+  #lot-panel > button:first-child, #build-panel > button:first-child,
+  #portfolio > button:first-child, #water-panel > button:first-child { right: 92px; }
 
   /* Panels become bottom sheets. */
   #lot-panel, #build-panel, #portfolio, #water-panel {
@@ -653,7 +671,13 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
       <div id="joblist"></div>
       <p class="hint" id="jobs-hint"></p>
     </div>
-    <div id="board-panel" class="panel hidden">
+    <div id="standing-panel" class="panel">
+      <h3>Your standing</h3>
+      <div id="sp-rank"></div>
+      <p class="hint">Standing comes from finishing what the city asks for — contracts
+        above, and blocks you sell it for parkland. Money alone does not buy it.</p>
+    </div>
+    <div id="board-panel" class="panel">
       <h3>Standings</h3>
       <ol id="leaderboard"></ol>
       <p class="hint" id="lb-hint">Click a firm to see what they own</p>
@@ -767,7 +791,8 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
         <p class="touchline">On a phone: left thumb walks, right thumb looks. On the map,
           drag to pan, pinch to zoom, twist to rotate and slide two fingers up or down to tilt
           towards the skyline. Tap a building for its details. JUMP works off a parapet
-          and into the river.</p>
+          and into the river. Everything else — the jobs the city is offering, your rank,
+          and the standings — is behind <kbd>&#9776;</kbd>.</p>
       </div>
       <div>
         <h4>On the board</h4>
@@ -775,6 +800,8 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
         <p><kbd>Click</kbd> a lot to inspect · <kbd>Right-drag</kbd> orbit · <kbd>Scroll</kbd> zoom</p>
         <p><kbd>1–5</kbd> speed up time (to a month a second) · <kbd>Space</kbd> pause</p>
         <p>Own all four lots on a block to build past 150 floors</p>
+        <p>Deliver what the city asks for to climb from Speculator to Titan —
+          rank is what buys you leverage, cheap money and a licence to fill water</p>
       </div>
     </div>
     <p class="sub small">Buy land. Build on it. Rent pays you monthly and development pulls up the value of everything around it — including your rivals' land. The market runs in cycles; leverage is how you go fast and how you die.</p>
@@ -6177,14 +6204,25 @@ var UI = class {
     const gate = REGIONS.brooklyn.unlockAt;
     const open = canWorkIn(this.state, "player", "brooklyn");
     $("pf-gate").innerHTML = open ? '<b class="good">Brooklyn and Queens are open.</b>' : `<div class="gatebar"><i style="width:${pct(Math.min(1, b.total / gate))}"></i></div><span>${money2(b.total)} of ${money2(gate)} \u2014 the boroughs open at a billion</span>`;
-    const me = this.state.actors.player;
-    const st = me.standing ?? 0;
-    const rank = rankFor(st);
-    const next = nextRank(st);
-    $("pf-rank").innerHTML = `<div class="rankrow"><b>${esc(rank.title)}</b><span>${st} standing</span></div><p class="perk">${esc(rank.perk)}</p>` + (next ? `<div class="gatebar"><i style="width:${pct(Math.min(1, st / next.at))}"></i></div><span>${next.at - st} more delivered and you are a ${esc(next.title)} \u2014 ${esc(next.perk)}</span>` : "<span>Nothing left to prove to the trade.</span>");
+    $("pf-rank").innerHTML = this._rankHtml();
     $("pf-holdings").textContent = `${b.lots} lots \xB7 ${b.built} buildings \xB7 ${sf(b.gsf)} \xB7 ${this.state.projects.filter((p) => p.owner === "player").length} under construction`;
   }
+  /** Where you stand with the trade, and what the next rung is worth. */
+  _rankHtml() {
+    const st = this.state.actors.player.standing ?? 0;
+    const rank = rankFor(st);
+    const next = nextRank(st);
+    return `<div class="rankrow"><b>${esc(rank.title)}</b><span>${st} standing</span></div><p class="perk">${esc(rank.perk)}</p>` + (next ? `<div class="gatebar"><i style="width:${pct(Math.min(1, st / next.at))}"></i></div><span>${next.at - st} more and you are a ${esc(next.title)} \u2014 ${esc(next.perk)}</span>` : "<span>Nothing left to prove to the trade.</span>");
+  }
   refreshBoard() {
+    const sp = $("sp-rank");
+    if (sp) {
+      const sig = `${this.state.actors.player.standing ?? 0}`;
+      if (sig !== this._rankSig) {
+        this._rankSig = sig;
+        sp.innerHTML = this._rankHtml();
+      }
+    }
     const s = this.state;
     $("leaderboard").innerHTML = leaderboard(s).map((a) => `
       <li data-actor="${a.id}" class="${a.isPlayer ? "me" : ""}${this.highlightOwner === a.id ? " lit" : ""}">
@@ -7013,7 +7051,6 @@ function toggleVision() {
 var origToggle = controls.toggleBoard.bind(controls);
 controls.toggleBoard = () => {
   const up = origToggle();
-  document.getElementById("board-panel").classList.toggle("hidden", !up);
   document.getElementById("crosshair").style.display = up ? "none" : "";
   document.getElementById("modehint").textContent = up ? "TAB \u2014 drop back to the street  \xB7  click a lot to inspect" : "TAB \u2014 rise to the board";
   scene.setBoardMode(up);
@@ -7025,7 +7062,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "9213144 \xB7 2026-09-23 14:01" : "dev";
+var BUILD = true ? "3de5b38 \xB7 2026-09-23 14:42" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");
@@ -7052,7 +7089,11 @@ function beginGame(message) {
   requestLock(canvas);
   ui.refreshTop();
   ui.refreshNews();
+  ui.refreshBoard();
   ui.toast(message);
+  if (isTouch()) {
+    setTimeout(() => ui.toast("Tap \u2630 for the jobs on the table, your rank, and who is beating you."), 7e3);
+  }
 }
 document.getElementById("begin").onclick = () => {
   beginGame("You own one building. Find something under-built and take it.");
@@ -7211,7 +7252,7 @@ function frame(now) {
     ui.refreshTop();
     ui.refreshNews();
     ui.refreshJobs();
-    if (controls.mode === MODE.BOARD) ui.refreshBoard();
+    ui.refreshBoard();
     if (ui.selected) {
       const keep = ui.selected;
       ui.select(keep);
