@@ -13,7 +13,7 @@ import {
   leaderboard, buyLot, sellLot, startProject, formatDate, occupancyFor, rentPerSf,
   premiums, blockCharacter, rushQuote, rushProject, nameBuilding, worthBreakdown,
   makeOffer, reservePrice, regionGate, canWorkIn, demolitionBlock, LANDMARK_FLOORS,
-  blockSpareSf, sellAll, currentYear, currentEra, maxLtcFor,
+  blockSpareSf, sellAll, sellLots, holdings, currentYear, currentEra, maxLtcFor,
   parkOffer, sellBlockToCity, yearsLeft, LEVELS, heatLabel,
 } from './economy.js';
 
@@ -122,6 +122,8 @@ export class UI {
     this.onJobHighlight = () => 0;
     this.highlightOwner = null;
     this.highlightJob = null;
+    this.picked = new Set();        // lot ids ticked in the holdings list
+    this.holdFilter = 'all';
     this.design = { style: 'masonry', form: 'stepped', variant: 1, landmark: null };
 
     $('lot-close').onclick = () => this.closeLot();
@@ -148,6 +150,62 @@ export class UI {
         : 'Nothing to sell.', !r.count);
       this.refreshTop(); this.refreshBoard(); this.onDirty();
     };
+    for (const b of document.querySelectorAll('#hold-filters .hf')) {
+      b.onclick = () => {
+        this.holdFilter = b.dataset.filter;
+        for (const x of document.querySelectorAll('#hold-filters .hf')) {
+          x.classList.toggle('on', x === b);
+        }
+        this._holdSig = null;
+        this.refreshHoldings();
+      };
+    }
+    // "Select all" means everything the filter is currently showing — picking
+    // a filter and then taking all of it is the whole workflow.
+    $('hold-all').onclick = () => {
+      for (const h of holdings(this.state, 'player')) {
+        if (h.busy) continue;
+        if (this.holdFilter === 'vacant' && h.building_) continue;
+        if (this.holdFilter === 'built' && !h.building_) continue;
+        if (this.holdFilter === 'under' && !h.underwater) continue;
+        this.picked.add(h.lot.id);
+      }
+      this._holdSig = null;
+      this.refreshHoldings();
+    };
+    $('hold-none').onclick = () => {
+      this.picked.clear();
+      this._holdSig = null;
+      this.refreshHoldings();
+    };
+
+    // Two-step, the same as selling the lot — there is no undo here either.
+    const selBtn = $('do-sellsel');
+    selBtn.onclick = () => {
+      const chosen = this.state.city.lots.filter((l) => this.picked.has(l.id));
+      if (!chosen.length) return;
+      if (!this._armPick) {
+        this._armPick = true;
+        selBtn.textContent = `Confirm — sell ${chosen.length}`;
+        selBtn.classList.add('danger');
+        clearTimeout(this._pickT);
+        this._pickT = setTimeout(() => { this.disarmPick(); this.refreshHoldings(); }, 5000);
+        return;
+      }
+      this.disarmPick();
+      const r = sellLots(this.state, chosen, 'player');
+      this.picked.clear();
+      this.toast(r.count
+        ? `Sold ${r.count} ${r.count === 1 ? 'property' : 'properties'} for ${money(r.gross)}`
+          + (r.repaid ? `, ${money(r.repaid)} to the bank` : '')
+          + `${r.shortfall ? `, still ${money(r.shortfall)} short` : ''}.`
+          + (r.held ? ` ${r.held} left — still under construction.` : '')
+        : 'Nothing sellable in that selection.', !r.count);
+      this._holdSig = null;
+      this.refreshTop(); this.refreshBoard(); this.onDirty();
+      this.refreshPortfolio();
+    };
+
     // Delegated: the standings list is rebuilt on a timer, so a handler bound
     // to each row would be thrown away between press and release.
     $('leaderboard').addEventListener('click', (e) => {
@@ -308,7 +366,82 @@ export class UI {
     const p = $('portfolio');
     p.classList.toggle('hidden');
     this.disarmSell();
+    this.disarmPick();
     if (!p.classList.contains('hidden')) this.refreshPortfolio();
+  }
+
+  /**
+   * The holdings list, and the reason it exists: selling one lot at a time
+   * through the map is fine for a decision and hopeless for a clear-out, and
+   * "sell everything" is the only other thing there was. This is the middle —
+   * tick what you want gone and watch the total before you commit.
+   */
+  refreshHoldings() {
+    const all = holdings(this.state, 'player');
+    const rows = all.filter((h) => this.holdFilter === 'all'
+      || (this.holdFilter === 'vacant' && !h.building_ && !h.busy)
+      || (this.holdFilter === 'built' && h.building_)
+      || (this.holdFilter === 'under' && h.underwater));
+    // Anything that stopped being yours, or went under a crane, stops counting.
+    const live = new Set(all.filter((h) => !h.busy).map((h) => h.lot.id));
+    for (const id of [...this.picked]) if (!live.has(id)) this.picked.delete(id);
+
+    const sig = rows.map((h) => `${h.lot.id}:${Math.round(h.net / 1e5)}:${h.busy ? 1 : 0}`
+      + `:${this.picked.has(h.lot.id) ? 1 : 0}`).join('|') + `|${this.holdFilter}`;
+    if (sig !== this._holdSig) {
+      this._holdSig = sig;
+      $('hold-list').innerHTML = rows.length ? rows.map((h) => {
+        const b = h.building_;
+        const what = h.busy ? `${h.lot.project.floors} floors going up`
+          : b ? `${b.floors} floors · ${USES[b.use].name}`
+          : 'vacant site';
+        const on = this.picked.has(h.lot.id);
+        return `<div class="hold${on ? ' on' : ''}${h.busy ? ' busy' : ''}" data-lot="${h.lot.id}">
+          <span class="tick">${h.busy ? '—' : on ? '✓' : ''}</span>
+          <span class="who"><b>${esc(h.lot.name || h.lot.address)}</b>
+            <span>${esc(what)}${h.loan > 0 ? ` · ${money(h.loan)} owed` : ''}</span></span>
+          <span class="amt ${h.net < 0 ? 'bad' : ''}">${money(h.net)}</span>
+        </div>`;
+      }).join('') : '<p class="hint">Nothing here.</p>';
+
+      for (const el of $('hold-list').querySelectorAll('.hold')) {
+        el.onclick = (e) => {
+          const id = +el.dataset.lot;
+          const h = all.find((x) => x.lot.id === id);
+          if (!h) return;
+          // The address takes you to the lot; anywhere else ticks it.
+          if (e.target.closest('b')) { this.select(h.lot); return; }
+          if (h.busy) return this.toast('Under construction — that one cannot be sold.', true);
+          if (this.picked.has(id)) this.picked.delete(id); else this.picked.add(id);
+          this._holdSig = null;
+          this.refreshHoldings();
+        };
+      }
+    }
+
+    // The running total is the whole point, so it updates even when the list
+    // above it has not changed shape.
+    const picked = all.filter((h) => this.picked.has(h.lot.id));
+    const bar = $('hold-bar');
+    bar.classList.toggle('hidden', !picked.length);
+    if (picked.length) {
+      const net = picked.reduce((n, h) => n + h.net, 0);
+      const owed = picked.reduce((n, h) => n + h.loan, 0);
+      const noi = picked.reduce((n, h) => n + h.noi, 0);
+      $('hold-sum').innerHTML =
+        `<b>${picked.length} selected</b>`
+        + `<br><span class="${net < 0 ? 'bad' : 'good'}">${money(net)} to cash</span>`
+        + (owed ? `<br><span class="dimtext">${money(owed)} to the bank</span>` : '')
+        + (noi ? `<br><span class="dimtext">gives up ${money(noi)}/yr</span>` : '');
+      if (!this._armPick) $('do-sellsel').textContent = `Sell ${picked.length} — ${money(net)}`;
+    } else this.disarmPick();
+    this._holdRows = all;
+  }
+
+  disarmPick() {
+    this._armPick = false;
+    const b = $('do-sellsel');
+    if (b) b.classList.remove('danger');
   }
 
   refreshPortfolio() {
@@ -339,6 +472,7 @@ export class UI {
 
     $('pf-holdings').textContent =
       `${b.lots} lots · ${b.built} buildings · ${sf(b.gsf)} · ${this.state.projects.filter((p) => p.owner === 'player').length} under construction`;
+    this.refreshHoldings();
   }
 
   /** Where you stand with the trade, and what the next rung is worth. */
@@ -748,6 +882,11 @@ export class UI {
         ? '<button id="a-build" disabled title="Too tall to clear">Cannot redevelop</button>'
         : `<button id="a-build" class="primary">${lot.building ? 'Redevelop' : 'Build'}</button>`);
       acts.push('<button id="a-sell">Sell</button>');
+      // Ticking lots from the map and selling them together from the portfolio
+      // is the other half of the holdings list: you find a district you are
+      // done with by walking it, not by reading a table.
+      acts.push(`<button id="a-pick"${this.picked.has(lot.id) ? ' class="picked"' : ''}>${
+        this.picked.has(lot.id) ? 'Selected ✓' : 'Add to selection'}</button>`);
     }
     if (owned && lot.project) acts.push('<button id="a-rush" class="primary">Speed up</button>');
     const park = parkOffer(s, lot.block, 'player');
@@ -788,6 +927,17 @@ export class UI {
         : `Sold ${lot.address} for ${money(r.price * 0.97)}.`);
       this._lotSig = null;
       this.select(lot); this.refreshTop(); this.onDirty();
+    });
+    on('a-pick', () => {
+      if (this.picked.has(lot.id)) this.picked.delete(lot.id); else this.picked.add(lot.id);
+      const n = this.picked.size;
+      this.toast(n
+        ? `${n} selected. Sell them together from the net-worth panel.`
+        : 'Selection cleared.');
+      this._lotSig = null;
+      this._holdSig = null;
+      this.select(lot);
+      if (!$('portfolio').classList.contains('hidden')) this.refreshHoldings();
     });
     on('a-rush', () => {
       const r = rushProject(s, lot, 'player', 6);

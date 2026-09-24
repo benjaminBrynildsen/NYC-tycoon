@@ -101,7 +101,8 @@ button.primary, #lot-actions button {
 button.primary { background: var(--accent); color: #06121b; border-color: var(--accent); }
 button.primary:hover { filter: brightness(1.1); }
 button:disabled { opacity: .4; cursor: not-allowed; }
-#lot-actions { display: flex; gap: 8px; margin-top: 12px; }
+#lot-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+#a-pick.picked { background: var(--accent); color: #06121b; border-color: var(--accent); font-weight: 700; }
 .hint { font-size: 10.5px; color: var(--dim); margin: 8px 0 0; line-height: 1.4; }
 
 /* ------------------------------------------------------------- reticle/etc */
@@ -408,6 +409,55 @@ input[type=range].maxed { accent-color: #4ade80; }
   display: block; font-style: normal; font-size: 10px; letter-spacing: .32em;
   color: var(--dim); margin-top: 8px;
 }
+/* ------------------------------------------------------------- holdings */
+#hold-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+#hold-filters { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
+#hold-picks { display: flex; gap: 4px; }
+#hold-tools button {
+  font: inherit; font-size: 10px; letter-spacing: .03em; cursor: pointer;
+  padding: 3px 8px; border-radius: 999px;
+  background: rgba(255,255,255,.06); color: var(--dim); border: 1px solid var(--line);
+}
+#hold-tools button:hover { color: var(--ink); }
+#hold-filters .hf.on { background: var(--accent); color: #06121b; border-color: var(--accent); font-weight: 700; }
+
+/* The list grows and the panel scrolls: one scroll region, not two nested
+   ones. What has to stay reachable is the total and the button, so those
+   stick to the bottom of the panel instead. */
+#hold-list { border-top: 1px solid rgba(255,255,255,.07); }
+.hold {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 6px 4px; border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.hold:hover { background: rgba(255,255,255,.05); }
+.hold.on { background: rgba(94,200,255,.13); box-shadow: inset 2px 0 0 var(--accent); }
+.hold.busy { opacity: .5; cursor: default; }
+.hold .tick {
+  flex: none; width: 16px; height: 16px; border-radius: 4px; font-size: 11px;
+  border: 1px solid var(--line); display: grid; place-items: center;
+  color: #06121b; background: rgba(255,255,255,.05);
+}
+.hold.on .tick { background: var(--accent); border-color: var(--accent); font-weight: 900; }
+.hold .who { flex: 1; min-width: 0; font-size: 11.5px; line-height: 1.25; }
+.hold .who b { font-weight: 600; }
+.hold .who b:hover { color: var(--accent); text-decoration: underline; }
+.hold .who span { display: block; font-size: 10px; color: var(--dim); }
+.hold .amt { flex: none; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.hold .amt.bad { color: var(--bad); }
+
+#hold-bar {
+  position: sticky; bottom: 0; z-index: 2;
+  margin: 0 -16px; padding: 9px 16px;
+  border-top: 1px solid var(--line);
+  background: #10141b;
+  box-shadow: 0 -10px 16px 2px rgba(16,20,27,.92);
+  display: flex; gap: 10px; align-items: center;
+}
+#hold-sum { flex: 1; min-width: 0; font-size: 11px; line-height: 1.4; }
+#hold-sum .dimtext { font-size: 10px; }
+#do-sellsel { flex: none; padding: 8px 12px; font-size: 12px; white-space: nowrap; }
+#do-sellsel.danger { background: var(--bad); border-color: var(--bad); color: #1a0c0a; }
+
 #do-sellall {
   width: 100%; margin-top: 12px; padding: 8px; border-radius: 6px; cursor: pointer;
   font: inherit; font-size: 12px; font-weight: 600;

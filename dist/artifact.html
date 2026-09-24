@@ -103,7 +103,8 @@ button.primary, #lot-actions button {
 button.primary { background: var(--accent); color: #06121b; border-color: var(--accent); }
 button.primary:hover { filter: brightness(1.1); }
 button:disabled { opacity: .4; cursor: not-allowed; }
-#lot-actions { display: flex; gap: 8px; margin-top: 12px; }
+#lot-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+#a-pick.picked { background: var(--accent); color: #06121b; border-color: var(--accent); font-weight: 700; }
 .hint { font-size: 10.5px; color: var(--dim); margin: 8px 0 0; line-height: 1.4; }
 
 /* ------------------------------------------------------------- reticle/etc */
@@ -410,6 +411,55 @@ input[type=range].maxed { accent-color: #4ade80; }
   display: block; font-style: normal; font-size: 10px; letter-spacing: .32em;
   color: var(--dim); margin-top: 8px;
 }
+/* ------------------------------------------------------------- holdings */
+#hold-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+#hold-filters { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
+#hold-picks { display: flex; gap: 4px; }
+#hold-tools button {
+  font: inherit; font-size: 10px; letter-spacing: .03em; cursor: pointer;
+  padding: 3px 8px; border-radius: 999px;
+  background: rgba(255,255,255,.06); color: var(--dim); border: 1px solid var(--line);
+}
+#hold-tools button:hover { color: var(--ink); }
+#hold-filters .hf.on { background: var(--accent); color: #06121b; border-color: var(--accent); font-weight: 700; }
+
+/* The list grows and the panel scrolls: one scroll region, not two nested
+   ones. What has to stay reachable is the total and the button, so those
+   stick to the bottom of the panel instead. */
+#hold-list { border-top: 1px solid rgba(255,255,255,.07); }
+.hold {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 6px 4px; border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.hold:hover { background: rgba(255,255,255,.05); }
+.hold.on { background: rgba(94,200,255,.13); box-shadow: inset 2px 0 0 var(--accent); }
+.hold.busy { opacity: .5; cursor: default; }
+.hold .tick {
+  flex: none; width: 16px; height: 16px; border-radius: 4px; font-size: 11px;
+  border: 1px solid var(--line); display: grid; place-items: center;
+  color: #06121b; background: rgba(255,255,255,.05);
+}
+.hold.on .tick { background: var(--accent); border-color: var(--accent); font-weight: 900; }
+.hold .who { flex: 1; min-width: 0; font-size: 11.5px; line-height: 1.25; }
+.hold .who b { font-weight: 600; }
+.hold .who b:hover { color: var(--accent); text-decoration: underline; }
+.hold .who span { display: block; font-size: 10px; color: var(--dim); }
+.hold .amt { flex: none; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.hold .amt.bad { color: var(--bad); }
+
+#hold-bar {
+  position: sticky; bottom: 0; z-index: 2;
+  margin: 0 -16px; padding: 9px 16px;
+  border-top: 1px solid var(--line);
+  background: #10141b;
+  box-shadow: 0 -10px 16px 2px rgba(16,20,27,.92);
+  display: flex; gap: 10px; align-items: center;
+}
+#hold-sum { flex: 1; min-width: 0; font-size: 11px; line-height: 1.4; }
+#hold-sum .dimtext { font-size: 10px; }
+#do-sellsel { flex: none; padding: 8px 12px; font-size: 12px; white-space: nowrap; }
+#do-sellsel.danger { background: var(--bad); border-color: var(--bad); color: #1a0c0a; }
+
 #do-sellall {
   width: 100%; margin-top: 12px; padding: 8px; border-radius: 6px; cursor: pointer;
   font: inherit; font-size: 12px; font-weight: 600;
@@ -717,6 +767,25 @@ body.touch .touchline { display: block; color: #93a1b3; line-height: 1.5; margin
     <div id="pf-rank"></div>
     <div id="pf-gate"></div>
     <p class="hint" id="pf-holdings"></p>
+
+    <h3>Holdings</h3>
+    <div id="hold-tools">
+      <div id="hold-filters">
+        <button type="button" class="hf on" data-filter="all">All</button>
+        <button type="button" class="hf" data-filter="vacant">Vacant</button>
+        <button type="button" class="hf" data-filter="built">Built</button>
+        <button type="button" class="hf" data-filter="under">Under water</button>
+      </div>
+      <div id="hold-picks">
+        <button type="button" id="hold-all">Select all</button>
+        <button type="button" id="hold-none">Clear</button>
+      </div>
+    </div>
+    <div id="hold-list"></div>
+    <div id="hold-bar" class="hidden">
+      <div id="hold-sum"></div>
+      <button type="button" id="do-sellsel" class="primary">Sell selected</button>
+    </div>
     <button id="do-sellall">Sell all properties</button>
   </div>
 
@@ -3312,6 +3381,50 @@ function pushNews(state2, kind, headline, dek, lot = null) {
     } : null
   });
   if (state2.news.length > 60) state2.news.pop();
+}
+function holdings(state2, actorId) {
+  const out = [];
+  for (const lot of state2.city.lots) {
+    if (lot.owner !== actorId) continue;
+    const land = landValue(state2, lot);
+    const building = lot.building ? buildingValue(state2, lot) : 0;
+    const gross = (land + building) * 0.97;
+    const loan = lot.loan ?? 0;
+    out.push({
+      lot,
+      land,
+      building,
+      loan,
+      value: land + building,
+      gross,
+      net: gross - loan,
+      // a shortfall still follows you
+      noi: lot.building ? buildingNOI(state2, lot) : 0,
+      building_: lot.building,
+      underwater: loan > land + building,
+      busy: !!lot.project
+    });
+  }
+  out.sort((a, b) => b.net - a.net);
+  return out;
+}
+function sellLots(state2, lots, actorId) {
+  let count = 0, gross = 0, net = 0, repaid = 0, shortfall = 0, held = 0;
+  for (const lot of lots) {
+    if (lot.owner !== actorId) continue;
+    if (lot.project) {
+      held++;
+      continue;
+    }
+    const r = sellLot(state2, lot, actorId);
+    if (!r.ok) continue;
+    count++;
+    gross += r.price * 0.97;
+    net += r.net;
+    repaid += r.repaid;
+    shortfall += r.shortfall;
+  }
+  return { count, gross, net, repaid, shortfall, held };
 }
 function sellAll(state2, actorId) {
   let count = 0, total = 0, held = 0;
@@ -7119,6 +7232,8 @@ var UI = class {
     this.onJobHighlight = () => 0;
     this.highlightOwner = null;
     this.highlightJob = null;
+    this.picked = /* @__PURE__ */ new Set();
+    this.holdFilter = "all";
     this.design = { style: "masonry", form: "stepped", variant: 1, landmark: null };
     $("lot-close").onclick = () => this.closeLot();
     $("build-close").onclick = () => $("build-panel").classList.add("hidden");
@@ -7140,6 +7255,57 @@ var UI = class {
       this.refreshTop();
       this.refreshBoard();
       this.onDirty();
+    };
+    for (const b of document.querySelectorAll("#hold-filters .hf")) {
+      b.onclick = () => {
+        this.holdFilter = b.dataset.filter;
+        for (const x of document.querySelectorAll("#hold-filters .hf")) {
+          x.classList.toggle("on", x === b);
+        }
+        this._holdSig = null;
+        this.refreshHoldings();
+      };
+    }
+    $("hold-all").onclick = () => {
+      for (const h of holdings(this.state, "player")) {
+        if (h.busy) continue;
+        if (this.holdFilter === "vacant" && h.building_) continue;
+        if (this.holdFilter === "built" && !h.building_) continue;
+        if (this.holdFilter === "under" && !h.underwater) continue;
+        this.picked.add(h.lot.id);
+      }
+      this._holdSig = null;
+      this.refreshHoldings();
+    };
+    $("hold-none").onclick = () => {
+      this.picked.clear();
+      this._holdSig = null;
+      this.refreshHoldings();
+    };
+    const selBtn = $("do-sellsel");
+    selBtn.onclick = () => {
+      const chosen = this.state.city.lots.filter((l) => this.picked.has(l.id));
+      if (!chosen.length) return;
+      if (!this._armPick) {
+        this._armPick = true;
+        selBtn.textContent = `Confirm \u2014 sell ${chosen.length}`;
+        selBtn.classList.add("danger");
+        clearTimeout(this._pickT);
+        this._pickT = setTimeout(() => {
+          this.disarmPick();
+          this.refreshHoldings();
+        }, 5e3);
+        return;
+      }
+      this.disarmPick();
+      const r = sellLots(this.state, chosen, "player");
+      this.picked.clear();
+      this.toast(r.count ? `Sold ${r.count} ${r.count === 1 ? "property" : "properties"} for ${money2(r.gross)}` + (r.repaid ? `, ${money2(r.repaid)} to the bank` : "") + `${r.shortfall ? `, still ${money2(r.shortfall)} short` : ""}.` + (r.held ? ` ${r.held} left \u2014 still under construction.` : "") : "Nothing sellable in that selection.", !r.count);
+      this._holdSig = null;
+      this.refreshTop();
+      this.refreshBoard();
+      this.onDirty();
+      this.refreshPortfolio();
     };
     $("leaderboard").addEventListener("click", (e) => {
       const li = e.target.closest("li[data-actor]");
@@ -7279,7 +7445,67 @@ var UI = class {
     const p = $("portfolio");
     p.classList.toggle("hidden");
     this.disarmSell();
+    this.disarmPick();
     if (!p.classList.contains("hidden")) this.refreshPortfolio();
+  }
+  /**
+   * The holdings list, and the reason it exists: selling one lot at a time
+   * through the map is fine for a decision and hopeless for a clear-out, and
+   * "sell everything" is the only other thing there was. This is the middle —
+   * tick what you want gone and watch the total before you commit.
+   */
+  refreshHoldings() {
+    const all = holdings(this.state, "player");
+    const rows = all.filter((h) => this.holdFilter === "all" || this.holdFilter === "vacant" && !h.building_ && !h.busy || this.holdFilter === "built" && h.building_ || this.holdFilter === "under" && h.underwater);
+    const live = new Set(all.filter((h) => !h.busy).map((h) => h.lot.id));
+    for (const id of [...this.picked]) if (!live.has(id)) this.picked.delete(id);
+    const sig = rows.map((h) => `${h.lot.id}:${Math.round(h.net / 1e5)}:${h.busy ? 1 : 0}:${this.picked.has(h.lot.id) ? 1 : 0}`).join("|") + `|${this.holdFilter}`;
+    if (sig !== this._holdSig) {
+      this._holdSig = sig;
+      $("hold-list").innerHTML = rows.length ? rows.map((h) => {
+        const b = h.building_;
+        const what = h.busy ? `${h.lot.project.floors} floors going up` : b ? `${b.floors} floors \xB7 ${USES[b.use].name}` : "vacant site";
+        const on = this.picked.has(h.lot.id);
+        return `<div class="hold${on ? " on" : ""}${h.busy ? " busy" : ""}" data-lot="${h.lot.id}">
+          <span class="tick">${h.busy ? "\u2014" : on ? "\u2713" : ""}</span>
+          <span class="who"><b>${esc(h.lot.name || h.lot.address)}</b>
+            <span>${esc(what)}${h.loan > 0 ? ` \xB7 ${money2(h.loan)} owed` : ""}</span></span>
+          <span class="amt ${h.net < 0 ? "bad" : ""}">${money2(h.net)}</span>
+        </div>`;
+      }).join("") : '<p class="hint">Nothing here.</p>';
+      for (const el of $("hold-list").querySelectorAll(".hold")) {
+        el.onclick = (e) => {
+          const id = +el.dataset.lot;
+          const h = all.find((x) => x.lot.id === id);
+          if (!h) return;
+          if (e.target.closest("b")) {
+            this.select(h.lot);
+            return;
+          }
+          if (h.busy) return this.toast("Under construction \u2014 that one cannot be sold.", true);
+          if (this.picked.has(id)) this.picked.delete(id);
+          else this.picked.add(id);
+          this._holdSig = null;
+          this.refreshHoldings();
+        };
+      }
+    }
+    const picked = all.filter((h) => this.picked.has(h.lot.id));
+    const bar = $("hold-bar");
+    bar.classList.toggle("hidden", !picked.length);
+    if (picked.length) {
+      const net = picked.reduce((n, h) => n + h.net, 0);
+      const owed = picked.reduce((n, h) => n + h.loan, 0);
+      const noi = picked.reduce((n, h) => n + h.noi, 0);
+      $("hold-sum").innerHTML = `<b>${picked.length} selected</b><br><span class="${net < 0 ? "bad" : "good"}">${money2(net)} to cash</span>` + (owed ? `<br><span class="dimtext">${money2(owed)} to the bank</span>` : "") + (noi ? `<br><span class="dimtext">gives up ${money2(noi)}/yr</span>` : "");
+      if (!this._armPick) $("do-sellsel").textContent = `Sell ${picked.length} \u2014 ${money2(net)}`;
+    } else this.disarmPick();
+    this._holdRows = all;
+  }
+  disarmPick() {
+    this._armPick = false;
+    const b = $("do-sellsel");
+    if (b) b.classList.remove("danger");
   }
   refreshPortfolio() {
     const b = worthBreakdown(this.state);
@@ -7291,6 +7517,7 @@ var UI = class {
     $("pf-gate").innerHTML = open ? '<b class="good">Brooklyn and Queens are open.</b>' : `<div class="gatebar"><i style="width:${pct(Math.min(1, b.total / gate))}"></i></div><span>${money2(b.total)} of ${money2(gate)} \u2014 the boroughs open at a billion</span>`;
     $("pf-rank").innerHTML = this._rankHtml();
     $("pf-holdings").textContent = `${b.lots} lots \xB7 ${b.built} buildings \xB7 ${sf(b.gsf)} \xB7 ${this.state.projects.filter((p) => p.owner === "player").length} under construction`;
+    this.refreshHoldings();
   }
   /** Where you stand with the trade, and what the next rung is worth. */
   _rankHtml() {
@@ -7639,6 +7866,7 @@ var UI = class {
     if (owned && !lot.project) {
       acts.push(standing ? '<button id="a-build" disabled title="Too tall to clear">Cannot redevelop</button>' : `<button id="a-build" class="primary">${lot.building ? "Redevelop" : "Build"}</button>`);
       acts.push('<button id="a-sell">Sell</button>');
+      acts.push(`<button id="a-pick"${this.picked.has(lot.id) ? ' class="picked"' : ""}>${this.picked.has(lot.id) ? "Selected \u2713" : "Add to selection"}</button>`);
     }
     if (owned && lot.project) acts.push('<button id="a-rush" class="primary">Speed up</button>');
     const park = parkOffer(s, lot.block, "player");
@@ -7685,6 +7913,16 @@ var UI = class {
       this.select(lot);
       this.refreshTop();
       this.onDirty();
+    });
+    on("a-pick", () => {
+      if (this.picked.has(lot.id)) this.picked.delete(lot.id);
+      else this.picked.add(lot.id);
+      const n = this.picked.size;
+      this.toast(n ? `${n} selected. Sell them together from the net-worth panel.` : "Selection cleared.");
+      this._lotSig = null;
+      this._holdSig = null;
+      this.select(lot);
+      if (!$("portfolio").classList.contains("hidden")) this.refreshHoldings();
     });
     on("a-rush", () => {
       const r = rushProject(s, lot, "player", 6);
@@ -8211,7 +8449,7 @@ controls.toggleBoard = () => {
   }
   return up;
 };
-var BUILD = true ? "fb05efe \xB7 2026-09-23 20:26" : "dev";
+var BUILD = true ? "49f54b0 \xB7 2026-09-24 17:14" : "dev";
 document.getElementById("buildstamp").textContent = `city ${SEED} \xB7 ${START_YEAR} \xB7 build ${BUILD}`;
 console.log(`Air Rights \u2014 build ${BUILD}`);
 var resetBtn = document.getElementById("reset");

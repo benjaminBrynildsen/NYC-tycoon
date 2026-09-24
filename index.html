@@ -55,6 +55,25 @@
     <div id="pf-rank"></div>
     <div id="pf-gate"></div>
     <p class="hint" id="pf-holdings"></p>
+
+    <h3>Holdings</h3>
+    <div id="hold-tools">
+      <div id="hold-filters">
+        <button type="button" class="hf on" data-filter="all">All</button>
+        <button type="button" class="hf" data-filter="vacant">Vacant</button>
+        <button type="button" class="hf" data-filter="built">Built</button>
+        <button type="button" class="hf" data-filter="under">Under water</button>
+      </div>
+      <div id="hold-picks">
+        <button type="button" id="hold-all">Select all</button>
+        <button type="button" id="hold-none">Clear</button>
+      </div>
+    </div>
+    <div id="hold-list"></div>
+    <div id="hold-bar" class="hidden">
+      <div id="hold-sum"></div>
+      <button type="button" id="do-sellsel" class="primary">Sell selected</button>
+    </div>
     <button id="do-sellall">Sell all properties</button>
   </div>
 

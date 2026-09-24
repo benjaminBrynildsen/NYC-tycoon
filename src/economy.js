@@ -1349,6 +1349,56 @@ export function pushNews(state, kind, headline, dek, lot = null) {
   if (state.news.length > 60) state.news.pop();
 }
 
+/**
+ * Everything you own, priced the way the holdings list needs it: what it would
+ * fetch, what the bank takes out of that, and what actually reaches your cash.
+ * Sorted by what you would walk away with, because that is the order you make
+ * the decision in.
+ */
+export function holdings(state, actorId) {
+  const out = [];
+  for (const lot of state.city.lots) {
+    if (lot.owner !== actorId) continue;
+    const land = landValue(state, lot);
+    const building = lot.building ? buildingValue(state, lot) : 0;
+    const gross = (land + building) * 0.97;          // brokerage
+    const loan = lot.loan ?? 0;
+    out.push({
+      lot, land, building, loan,
+      value: land + building,
+      gross,
+      net: gross - loan,                             // a shortfall still follows you
+      noi: lot.building ? buildingNOI(state, lot) : 0,
+      building_: lot.building,
+      underwater: loan > land + building,
+      busy: !!lot.project,
+    });
+  }
+  out.sort((a, b) => b.net - a.net);
+  return out;
+}
+
+/**
+ * Sell a chosen set rather than one lot or the whole book. Anything still a
+ * hole in the ground is skipped rather than refused, so picking a district and
+ * selling it does not fail because one site is mid-construction.
+ */
+export function sellLots(state, lots, actorId) {
+  let count = 0, gross = 0, net = 0, repaid = 0, shortfall = 0, held = 0;
+  for (const lot of lots) {
+    if (lot.owner !== actorId) continue;
+    if (lot.project) { held++; continue; }
+    const r = sellLot(state, lot, actorId);
+    if (!r.ok) continue;
+    count++;
+    gross += r.price * 0.97;
+    net += r.net;
+    repaid += r.repaid;
+    shortfall += r.shortfall;
+  }
+  return { count, gross, net, repaid, shortfall, held };
+}
+
 /** Liquidate. Sites under construction can't be walked away from. */
 export function sellAll(state, actorId) {
   let count = 0, total = 0, held = 0;
